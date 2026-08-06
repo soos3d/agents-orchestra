@@ -12,8 +12,7 @@ import { hasCommitsSince } from "../git/repo.js";
 import { liveWorktrees, reconcileOrphans } from "../runtime/resume.js";
 import { isCodeTask, type Task } from "../domain/task.js";
 import { createAgentCalls } from "../loop/agentCalls.js";
-import { type Calls } from "../loop/calls.js";
-import { parseRunArgs, runMission } from "./runCommand.js";
+import { parseRunArgs, runMission, type RunDeps } from "./runCommand.js";
 
 export interface Io {
   out(line: string): void;
@@ -90,7 +89,7 @@ async function resume(missionId: string, config: DiscoveredConfig, io: Io): Prom
 
 export interface MainDeps {
   /** Injected so the CLI is testable without a model or an API key. */
-  createCalls?: (config: DiscoveredConfig) => Calls;
+  createCalls?: RunDeps["createCalls"];
 }
 
 export async function main(
@@ -137,7 +136,10 @@ export async function main(
       }
       assertHygiene(config, io);
       return runMission(parsed.options, config, io, {
-        createCalls: deps.createCalls ?? createAgentCalls,
+        createCalls:
+          deps.createCalls ??
+          ((discovered, onSpend) =>
+            createAgentCalls({ config: discovered, onSpend: (_call, spend) => onSpend(spend) })),
       });
     }
 

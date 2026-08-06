@@ -5,6 +5,7 @@
 // the transport policy rather than being handed to a fix task, because a worker
 // that cannot produce its return type has not told us anything about the work.
 import { workerReportSchema, type WorkerReport } from "../domain/report.js";
+import { extractJsonObject } from "../runtime/json.js";
 
 export class WorkerReportError extends Error {
   readonly failure = "transport" as const;
@@ -21,18 +22,8 @@ export class WorkerReportError extends Error {
  *  parser stays testable without a model. */
 export type Reformatter = (raw: string, problem: string) => Promise<string>;
 
-// Workers wrap JSON in prose and fences more often than not, and a reformat round
-// trip to strip ``` is pure waste.
-function extractJson(raw: string): string | undefined {
-  const fenced = /```(?:json)?\s*\n([\s\S]*?)\n?```/.exec(raw);
-  const candidate = (fenced?.[1] ?? raw).trim();
-  const start = candidate.indexOf("{");
-  const end = candidate.lastIndexOf("}");
-  return start === -1 || end <= start ? undefined : candidate.slice(start, end + 1);
-}
-
 function attempt(raw: string): { report: WorkerReport } | { problem: string } {
-  const json = extractJson(raw);
+  const json = extractJsonObject(raw);
   if (json === undefined) return { problem: "no JSON object found in the response" };
 
   let parsed: unknown;

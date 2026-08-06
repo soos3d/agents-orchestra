@@ -8,7 +8,7 @@
 // explicit `--force` (§17: it must never become the habitual default), and a rejected
 // criterion exits non-zero so a pipeline notices.
 import path from "node:path";
-import { type Budget } from "../domain/budget.js";
+import { type Budget, type Spend } from "../domain/budget.js";
 import { type Envelope } from "../domain/envelope.js";
 import { type Estimate } from "../domain/mission.js";
 import { type Task } from "../domain/task.js";
@@ -121,7 +121,10 @@ export function defaultEnvelope(config: DiscoveredConfig, budget: Budget): Envel
 }
 
 export interface RunDeps {
-  createCalls(config: DiscoveredConfig): Calls;
+  /** `onSpend` is where the measured portion of a mission's cost enters the log.
+   *  The loop's own calls are the part actually billed, so they are recorded under
+   *  their own phase rather than folded into task spend (§9.5). */
+  createCalls(config: DiscoveredConfig, onSpend: (spend: Spend) => void): Calls;
   now?: () => Date;
 }
 
@@ -136,11 +139,17 @@ export async function runMission(
   const dir = missionDir(config.stateDir, missionId);
   const budget: Budget = { wallMs: options.budgetMinutes * 60_000 };
 
-  // Built before the mission exists: a machine that cannot reach a model should not
-  // leave a mission directory behind that only ever held one event.
-  const calls = deps.createCalls(config);
-
   const store = createFileStore(dir);
+  const calls = deps.createCalls(config, (spend) =>
+    store.emit({
+      type: "spend_recorded",
+      missionId,
+      actor: "orchestrator",
+      phase: "orchestration",
+      spend,
+    }),
+  );
+
   store.emit({
     type: "mission_created",
     missionId,
