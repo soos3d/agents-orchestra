@@ -143,6 +143,39 @@ describe("orchestra", () => {
       assert.match(io.lines.join("\n"), /no orphaned tasks/);
     });
 
+    // Research is not checkpointed mid-flight, so a mission that died before it had
+    // a plan is a new `run`, not a resume — and saying so beats silently paying for
+    // a second research call.
+    test("points at run when the mission never got a plan, without calling a model", async () => {
+      seedMission();
+      const io = capture();
+      const refuse = (): Calls => {
+        throw new Error("resume must not reach a model here");
+      };
+
+      assert.equal(await main(["resume", "m1"], io, { createCalls: refuse }), 0);
+      assert.match(io.lines.join("\n"), /orchestra run/);
+    });
+
+    test("reports a finished mission instead of re-running it", async () => {
+      seedMission([
+        {
+          ...orchestrator,
+          type: "mission_status",
+          from: "executing",
+          to: "complete",
+          reason: "criteria met",
+        },
+      ]);
+      const io = capture();
+      const refuse = (): Calls => {
+        throw new Error("a complete mission needs no model");
+      };
+
+      assert.equal(await main(["resume", "m1"], io, { createCalls: refuse }), 0);
+      assert.match(io.lines.join("\n"), /already complete/);
+    });
+
     // Reconciliation is itself recorded, so a second resume is a no-op rather than
     // requeueing work the first one already requeued.
     test("a second resume finds nothing left to reconcile", async () => {

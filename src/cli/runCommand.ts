@@ -11,19 +11,11 @@ import path from "node:path";
 import { type Budget, type Spend } from "../domain/budget.js";
 import { type Envelope } from "../domain/envelope.js";
 import { type Estimate } from "../domain/mission.js";
-import { type Task } from "../domain/task.js";
-import { type MissionState } from "../events/fold.js";
-import { createMergeQueue } from "../git/mergeQueue.js";
-import { currentBranch } from "../git/repo.js";
 import { type Calls } from "../loop/calls.js";
-import { dispatch, type DispatchOutcome } from "../loop/dispatch.js";
 import { prepareMission } from "../loop/prepare.js";
-import { runLoop } from "../loop/run.js";
 import { createFileStore } from "../loop/store.js";
-import { createCriterionChecker, createVerifier } from "../loop/verify.js";
-import { type Lease } from "../scheduler/leases.js";
-import { createCliTransport } from "../workers/transport.js";
 import { missionDir, type DiscoveredConfig } from "../config/discover.js";
+import { executeMission } from "./execute.js";
 import { type Io } from "./main.js";
 
 const DEFAULT_BUDGET_MINUTES = 240;
@@ -185,49 +177,11 @@ export async function runMission(
     return 0;
   }
 
-  const result = await runLoop(await loopDeps(store, calls, config));
-  io.out("");
-  io.out(`${missionId}: ${result.status} after ${result.rounds} rounds — ${result.reason}`);
-  return result.status === "complete" ? 0 : 1;
+  // `prepareMission` already signed off and synthesized, so this is the loop and
+  // nothing else — the same call `resume` makes, against the same wiring.
+  const { code } = await executeMission({ store, calls: () => calls, config, io });
+  return code;
 }
-
-async function loopDeps(
-  store: ReturnType<typeof createFileStore>,
-  calls: Calls,
-  config: DiscoveredConfig,
-) {
-  const repo = config.repoRoot;
-  const code = repo
-    ? {
-        repo,
-        worktreeRoot: config.worktreeRoot,
-        into: await currentBranch(repo),
-        mergeQueue: createMergeQueue(repo),
-      }
-    : undefined;
-
-  const transport = createCliTransport();
-  const verify = createVerifier({ calls });
-
-  return {
-    store,
-    calls,
-    cwd: repo ?? config.cwd,
-    checkCriterion: createCriterionChecker({ calls }),
-    dispatch: (task: Task, state: MissionState): Promise<DispatchOutcome> =>
-      dispatch(task, {
-        emit: store.emit,
-        transport,
-        verify,
-        held: heldLeases(state),
-        ...(code ? { code } : {}),
-        cwd: repo ?? config.cwd,
-      }),
-  };
-}
-
-const heldLeases = (state: MissionState): Lease[] =>
-  Object.entries(state.leases).map(([taskId, owns]) => ({ taskId, owns }));
 
 function printPlan(
   criteria: readonly { id: string; statement: string; check: { kind: string } }[],

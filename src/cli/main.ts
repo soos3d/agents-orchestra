@@ -1,5 +1,7 @@
-// The command surface. `run` opens the app (§2b) once the loop lands in Phase 2;
-// everything here is what works without it.
+// The command surface. The app is the primary interface (§2b) and lands in Phase 3;
+// everything here is what the terminal does, which stays a supported mode forever
+// rather than scaffolding — `--plan-only` is the CI gate and `--unattended` is how a
+// trusted recurring mission runs.
 import path from "node:path";
 import { discoverConfig, missionDir, type DiscoveredConfig } from "../config/discover.js";
 import { doctor, formatReport } from "../config/doctor.js";
@@ -12,6 +14,8 @@ import { hasCommitsSince } from "../git/repo.js";
 import { liveWorktrees, reconcileOrphans } from "../runtime/resume.js";
 import { isCodeTask, type Task } from "../domain/task.js";
 import { createAgentCalls } from "../loop/agentCalls.js";
+import { createFileStore } from "../loop/store.js";
+import { executeMission } from "./execute.js";
 import { parseRunArgs, runMission, type RunDeps } from "./runCommand.js";
 
 export interface Io {
@@ -27,7 +31,7 @@ const stdio: Io = {
 const USAGE = `orchestra — a looping orchestrator for any kind of task
 
   orchestra doctor                 what is installed, authed, and missing
-  orchestra resume <missionId>     replay the log, reconcile orphans, rebuild state
+  orchestra resume <missionId>     reconcile orphans, then carry the mission on
   orchestra forget <missionId>     delete everything a mission wrote
   orchestra run "<goal>"           start a mission
 
@@ -48,7 +52,16 @@ function assertHygiene(config: DiscoveredConfig, io: Io): void {
   }
 }
 
-async function resume(missionId: string, config: DiscoveredConfig, io: Io): Promise<number> {
+/** Replay, reconcile, then carry on. The reconciliation half is deliberately kept
+ *  separate from the continuation: what to do next is a pure function of the state it
+ *  rebuilds (`continuationFor`), and rebuilding is worth reporting even when nothing
+ *  can be continued. */
+async function resume(
+  missionId: string,
+  config: DiscoveredConfig,
+  io: Io,
+  createCalls: RunDeps["createCalls"],
+): Promise<number> {
   const dir = missionDir(config.stateDir, missionId);
   const log = createEventLog(dir);
   const events = log.read();
@@ -83,8 +96,26 @@ async function resume(missionId: string, config: DiscoveredConfig, io: Io): Prom
   }
   if (decisions.length === 0) io.out("  no orphaned tasks");
   io.out("");
-  io.out("State rebuilt. Continuing the loop lands in Phase 2.");
-  return 0;
+
+  // The store re-reads the log it was just written to, so the loop runs against the
+  // reconciled state rather than the one this function folded a moment ago.
+  const store = createFileStore(dir);
+  const { code } = await executeMission({
+    store,
+    config,
+    io,
+    calls: () =>
+      createCalls(config, (spend) =>
+        store.emit({
+          type: "spend_recorded",
+          missionId,
+          actor: "orchestrator",
+          phase: "orchestration",
+          spend,
+        }),
+      ),
+  });
+  return code;
 }
 
 export interface MainDeps {
@@ -99,6 +130,13 @@ export async function main(
 ): Promise<number> {
   const [command, ...rest] = argv;
   const config = await discoverConfig();
+
+  // Resolved once so `run` and `resume` reach the model the same way, and so a test
+  // can substitute both with one injection.
+  const createCalls: RunDeps["createCalls"] =
+    deps.createCalls ??
+    ((discovered, onSpend) =>
+      createAgentCalls({ config: discovered, onSpend: (_call, spend) => onSpend(spend) }));
 
   switch (command) {
     case "doctor": {
@@ -125,7 +163,7 @@ export async function main(
         return 1;
       }
       assertHygiene(config, io);
-      return resume(missionId, config, io);
+      return resume(missionId, config, io, createCalls);
     }
 
     case "run": {
@@ -135,12 +173,7 @@ export async function main(
         return 1;
       }
       assertHygiene(config, io);
-      return runMission(parsed.options, config, io, {
-        createCalls:
-          deps.createCalls ??
-          ((discovered, onSpend) =>
-            createAgentCalls({ config: discovered, onSpend: (_call, spend) => onSpend(spend) })),
-      });
+      return runMission(parsed.options, config, io, { createCalls });
     }
 
     case undefined:

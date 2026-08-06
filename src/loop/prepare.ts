@@ -113,14 +113,45 @@ export async function prepareMission(deps: PrepareDeps): Promise<PrepareResult> 
   emit({ ...base, type: "signoff_requested", estimate });
   if (deps.planOnly) return result;
 
-  // Phase 2 approves its own sign-off and records that it did. Phase 3 replaces this
-  // with the screen; the event is the same either way, which is why the criteria
-  // freeze already works.
-  emit({ ...base, type: "signoff_granted", unattended: deps.unattended ?? false });
-  await synthesizeTasks(deps, plan.tasks, 0);
-  move("executing", "signed off");
-
+  await grantSignoff(deps, plan.tasks);
   return result;
+}
+
+export interface SignoffDeps {
+  store: MissionStore;
+  calls: Pick<Calls, "synthesize">;
+  unattended?: boolean;
+  now?: () => string;
+}
+
+/**
+ * Approves a plan and turns it into work: the sign-off event, an agent per task, and
+ * the move to `executing`.
+ *
+ * Phase 2 approves its own sign-off and records that it did; Phase 3 replaces the
+ * decision with the screen and emits exactly this. The event being the same either
+ * way is why the criteria freeze already works — `revise` reads `signedOffAt`, not
+ * who set it.
+ *
+ * `resume` on a `--plan-only` mission also lands here, because typing the command is
+ * the approval (§13). One emitter, so there is one moment criteria freeze at.
+ */
+export async function grantSignoff(
+  deps: SignoffDeps,
+  plan: readonly PlannedTask[],
+): Promise<void> {
+  const state = deps.store.state();
+  const base = { missionId: state.mission.id, actor: "orchestrator" as const };
+
+  deps.store.emit({ ...base, type: "signoff_granted", unattended: deps.unattended ?? false });
+  await synthesizeTasks(deps, plan, 0);
+  deps.store.emit({
+    ...base,
+    type: "mission_status",
+    from: deps.store.state().mission.status,
+    to: "executing",
+    reason: "signed off",
+  });
 }
 
 /** One structured-return retry, quoting the offending edge. A plan that cannot be
@@ -158,7 +189,7 @@ const sourceKind = (kind: Finding["sourceKind"]): Fact["source"]["kind"] =>
   kind === "memory" ? "memory" : "research";
 
 function missionStatus(
-  to: "researching" | "specifying" | "executing",
+  to: "researching" | "specifying",
   from: ReturnType<MissionStore["state"]>["mission"]["status"],
   reason: string,
 ) {
