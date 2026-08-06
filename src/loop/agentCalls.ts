@@ -1,6 +1,16 @@
-// The five decision points, against a real model (§3). The first thing in Phase 2
-// that costs money, and the only part that cannot be tested for free — which is why
-// everything above it is written against the `Calls` interface instead of this file.
+// The five decision points, against a real model (§3).
+//
+// **This is the one file the fixture harness cannot cover**, because it is the thing
+// the harness substitutes for. That is not a gap to close — everything above the
+// `Calls` interface stays testable for free, which is the point — but it does mean a
+// green suite says nothing about the arguments below. Six defects hid here behind 331
+// passing tests until the first real mission ran: an auto-approve list mistaken for a
+// restriction, a turn cap that fired on legitimate answers, prompts that asked for
+// JSON without saying which, a transport that was never built, and a judge that could
+// not open the artifacts it was grading. So: what the model *receives* belongs in a
+// pure function (`queryOptions`, `withSchema`, `JUDGE_TOOLS`) where the next
+// regression is catchable — and still wants one real `--plan-only` run before you
+// believe a change to it.
 //
 // Three rules shape every call here, and all three come from §3:
 //
@@ -12,9 +22,12 @@
 //   the call fails. The same allowance a worker report gets, for the same reason: a
 //   model that cannot produce its return type has told us nothing.
 //
-//   No tools. A decision point reasons over what the prompt carries and nothing
-//   else. Letting it read files would quietly reintroduce the context growth the
-//   whole loop architecture exists to avoid.
+//   No tools, with one exception the spec itself makes. A decision point reasons over
+//   what the prompt carries and nothing else; letting it read files would quietly
+//   reintroduce the context growth the whole loop architecture exists to avoid. The
+//   exception is `judge`, which §3 requires to read artifacts rather than the
+//   worker's report — read-only, and asserted against every other call getting none.
+//   See `JUDGE_TOOLS`.
 import { z } from "zod";
 import { type DiscoveredConfig } from "../config/discover.js";
 import { evidenceSchema } from "../domain/artifacts.js";
