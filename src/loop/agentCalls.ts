@@ -278,6 +278,12 @@ system prompt, its transport, and how its work gets checked.
 Draw tools only from the envelope you are given. You may narrow it and never widen
 it — a request for anything outside it fails validation.
 
+\`transport.id\` must be one of the \`transports\` listed in the input, which are the
+ones that are actually built. Others exist in the design and would fail at dispatch,
+so choosing one costs the task a retry and the mission a replan. When the only
+transport is \`cli\`, set \`transport.target\` to the CLI that suits the task —
+\`claude\` or \`codex\` — whatever kind of work it is.
+
 The system prompt is for the worker, which sees no mission context. Write what it
 needs to do this task well and nothing about the mission around it.
 

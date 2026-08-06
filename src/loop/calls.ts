@@ -65,6 +65,16 @@ export interface SynthesizeInput {
   task: PlannedTask;
   envelope: Envelope;
   toolCatalogue: string[];
+  /**
+   * The transports that actually exist, which is a smaller set than §7's table
+   * describes. Passed in for the same reason the envelope is: the registry is the
+   * authority on what a synthesized agent may run on, and §7 says that decision "is
+   * not left to the planner's judgment". Without it a model reads the table, picks
+   * `agent-sdk`, and the task dies at dispatch instead of at validation.
+   */
+  transports: string[];
+  /** Present only on the one retry, quoting what was wrong with the last spec. */
+  rejected?: string;
 }
 
 export interface ProgressInput {

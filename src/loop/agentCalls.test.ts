@@ -297,6 +297,7 @@ describe("createAgentCalls", () => {
         task: aPlannedTask(),
         envelope: {} as never,
         toolCatalogue: [],
+        transports: ["cli"],
       });
 
       assert.equal(spec.role, "invoice-reconciler");

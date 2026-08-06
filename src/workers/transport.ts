@@ -9,6 +9,16 @@ import { type WorkerRun, type WorkerTransport } from "../loop/dispatch.js";
 import { runClaudeCode } from "./claudeCode.js";
 import { runCodex } from "./codex.js";
 
+/**
+ * The registry: the transports that are actually built, as opposed to the five §7
+ * describes. Synthesis draws from this the way it draws from the envelope — a spec
+ * naming anything else fails at validation, not at dispatch.
+ *
+ * It lives here rather than in `loop/` because this file is what would have to change
+ * to make the list longer, so the two cannot drift.
+ */
+export const AVAILABLE_TRANSPORTS: readonly string[] = ["cli"];
+
 export interface CliTransportOptions {
   timeoutMs?: number;
 }
