@@ -3,7 +3,7 @@
 //
 // This interface is the seam the loop is written against, which is what lets the
 // whole loop run in tests against scripted answers with no model and no spend.
-import { type AgentSpec, type WorkerKind } from "../domain/task.js";
+import { type AgentSpec } from "../domain/task.js";
 import { type Envelope } from "../domain/envelope.js";
 import { type Evidence, type VerifySpec } from "../domain/artifacts.js";
 import {
@@ -70,15 +70,3 @@ export interface Calls {
   progress(input: ProgressInput): Promise<ProgressLedger>;
   judge(input: JudgeInput): Promise<JudgeResult>;
 }
-
-/** Concurrency is per worker kind, not one global number: six parallel research
- *  calls and six parallel browser sessions are not the same risk. */
-export const CONCURRENCY: Record<WorkerKind, number> = {
-  code: 4,
-  research: 4,
-  review: 4,
-  general: 4,
-  // One real logged-in browser session. Parallel tabs in the same account is how
-  // two tasks submit the same form (§11).
-  computer: 1,
-};

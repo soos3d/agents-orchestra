@@ -3,9 +3,16 @@
 // — which is the only way the milestone checklist is assertable at all.
 import { type Budget, zeroSpend } from "../domain/budget.js";
 import { type Envelope } from "../domain/envelope.js";
-import { type Criterion, type PlannedTask, type ProgressLedger } from "../domain/ledger.js";
+import {
+  emptyLedger,
+  type Criterion,
+  type PlannedTask,
+  type ProgressLedger,
+} from "../domain/ledger.js";
+import { type Mission } from "../domain/mission.js";
 import { type WorkerReport } from "../domain/report.js";
 import { type AgentSpec, type Task } from "../domain/task.js";
+import { type MissionState } from "../events/fold.js";
 import { type Calls, type JudgeResult, type ResearchResult } from "../loop/calls.js";
 import { eventSchema, type Event, type EventInput } from "../events/schema.js";
 
@@ -85,6 +92,42 @@ export const aCodeTask = (patch: Partial<Task> = {}): Task =>
     updatedAt: "2026-07-25T10:00:00.000Z",
     ...patch,
   }) as Task;
+
+export const aMission = (patch: Partial<Mission> = {}): Mission => ({
+  id: "m1",
+  goal: "Add a /health endpoint",
+  ledger: emptyLedger(),
+  capabilityEnvelope: anEnvelope(),
+  status: "executing",
+  round: 1,
+  stalls: 0,
+  resets: 0,
+  budget: aBudget(),
+  spend: zeroSpend(),
+  spendByPhase: {},
+  extensions: 0,
+  unattended: false,
+  createdAt: "2026-07-25T10:00:00.000Z",
+  updatedAt: "2026-07-25T10:00:00.000Z",
+  ...patch,
+});
+
+/** Folded state built directly, for the pure functions that read it. The fold path
+ *  itself is covered by `fold.test.ts`; building a log to reach one status here
+ *  would test the folder twice and the function under test once. */
+export const aMissionState = (patch: Partial<MissionState> = {}): MissionState => ({
+  mission: aMission(),
+  tasks: [],
+  reports: [],
+  verifications: {},
+  leases: {},
+  inbox: [],
+  notes: [],
+  workers: {},
+  panicked: false,
+  lastSeq: 1,
+  ...patch,
+});
 
 export const missionCreated = (patch: Partial<EventInput> = {}): EventInput =>
   ({
