@@ -9,7 +9,8 @@
 // judge call gets a criterion shaped from the task. It still reads artifacts and
 // never the worker's report: grading a summary written by the thing being graded is
 // not verification.
-import { type Artifact, type VerifySpec } from "../domain/artifacts.js";
+import { type Artifact, type Evidence, type VerifySpec } from "../domain/artifacts.js";
+import { type Criterion } from "../domain/ledger.js";
 import { type Task } from "../domain/task.js";
 import { needsShell, parseCommand } from "../runtime/command.js";
 import { run } from "../runtime/sh.js";
@@ -54,34 +55,114 @@ export function createVerifier(deps: VerifierDeps): Verifier {
       return { passed: result.met, output: result.evidence.reasoning };
     }
 
-    if (needsShell(spec.command)) {
-      return {
-        passed: false,
-        output:
-          `Verification command '${spec.command}' needs a shell (pipes, redirects, or ` +
-          `substitution), and verification runs a program directly. Wrap it in a script ` +
-          `and name that instead.`,
-      };
-    }
+    return runCommand(spec.command, context.cwd, deps);
+  };
+}
 
-    const { cmd, args } = parseCommand(spec.command);
-    const result = await run(cmd, args, {
-      cwd: context.cwd,
-      timeoutMs: deps.timeoutMs ?? DEFAULT_VERIFY_TIMEOUT_MS,
-      signal: deps.signal,
-    });
-
-    const streams = `${result.stdout}\n${result.stderr}`.trim();
+/** Shared by both levels of check, so a criterion and a task read a failing command
+ *  the same way. Not a shell (defect 6): a piped command says so rather than running
+ *  as a program with a literal `|` argument. */
+async function runCommand(
+  command: string,
+  cwd: string,
+  deps: VerifierDeps,
+): Promise<VerifyResult> {
+  if (needsShell(command)) {
     return {
-      passed: result.code === 0 && !result.timedOut,
+      passed: false,
       output:
-        `exit ${result.code}${result.timedOut ? " (timed out)" : ""}\n` +
-        streams.slice(-OUTPUT_TAIL),
+        `Verification command '${command}' needs a shell (pipes, redirects, or ` +
+        `substitution), and verification runs a program directly. Wrap it in a script ` +
+        `and name that instead.`,
     };
+  }
+
+  const { cmd, args } = parseCommand(command);
+  const result = await run(cmd, args, {
+    cwd,
+    timeoutMs: deps.timeoutMs ?? DEFAULT_VERIFY_TIMEOUT_MS,
+    signal: deps.signal,
+  });
+
+  const streams = `${result.stdout}\n${result.stderr}`.trim();
+  return {
+    passed: result.code === 0 && !result.timedOut,
+    output:
+      `exit ${result.code}${result.timedOut ? " (timed out)" : ""}\n` + streams.slice(-OUTPUT_TAIL),
   };
 }
 
 /** Only artifacts that are a file on disk. A judge cannot open a diff summary. */
 export function artifactPaths(artifacts: readonly Artifact[]): string[] {
   return artifacts.flatMap((artifact) => ("path" in artifact ? [artifact.path] : []));
+}
+
+export interface CriterionContext {
+  /** The tasks that listed this criterion in `satisfies`, and what they produced. */
+  tasks: readonly Task[];
+  /** Where a `command` check runs. The repo, not a worktree: a criterion is about the
+   *  outcome, and by now the work has merged. */
+  cwd: string;
+}
+
+export type CriterionChecker = (
+  criterion: Criterion,
+  context: CriterionContext,
+) => Promise<{ met: boolean; evidence: Evidence }>;
+
+/**
+ * Criterion verification asks whether the *outcome* is met — a different question
+ * from whether a worker did its job, asked at a different time (§4).
+ *
+ * Every answer carries evidence, because `met: true` with nothing behind it is a
+ * model's opinion and the mission terminates on it.
+ */
+export function createCriterionChecker(deps: VerifierDeps): CriterionChecker {
+  return async (criterion, context) => {
+    const artifacts = context.tasks.flatMap((task) => task.artifacts);
+    const byTask = context.tasks.map((task) => task.id);
+    const artifactIds = artifacts.map((artifact) => artifact.id);
+
+    if (criterion.check.kind === "judge") {
+      const result = await deps.calls.judge({
+        criterion,
+        check: criterion.check,
+        artifactPaths: artifactPaths(artifacts),
+      });
+      return {
+        met: result.met,
+        evidence: { ...result.evidence, byTask: result.evidence.byTask.length ? result.evidence.byTask : byTask },
+      };
+    }
+
+    // `writeOutcomeSpec` rejects a criterion whose check is `none`, so reaching here
+    // means one got in another way. It is unmet rather than met: an outcome nothing
+    // checked has not been shown.
+    if (criterion.check.kind === "none") {
+      return {
+        met: false,
+        evidence: {
+          artifactIds,
+          checkOutput: "",
+          reasoning:
+            `Criterion '${criterion.id}' has no check, so nothing can show it is met. ` +
+            `It should have been rejected when the outcome spec was written.`,
+          byTask,
+        },
+      };
+    }
+
+    const result = await runCommand(criterion.check.command, context.cwd, deps);
+    return {
+      met: result.passed,
+      evidence: {
+        artifactIds,
+        checkOutput: result.output,
+        reasoning: result.passed
+          ? `'${criterion.check.command}' passed against the work from ${byTask.join(", ")}.`
+          : `'${criterion.check.command}' did not pass, so the outcome is not met yet.`,
+        byTask,
+      },
+    };
+  };
 }

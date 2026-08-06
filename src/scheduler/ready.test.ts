@@ -230,6 +230,20 @@ describe("standstill", () => {
     assert.equal(standstill(state).kind, "moving");
   });
 
+  // A dependency landing is the most common thing that happens in a round, and the
+  // dependent is still `waiting` until the next round promotes it. Reading that as a
+  // deadlock reports a cycle nearly every round.
+  test("is moving when a waiting task's last dependency just landed", () => {
+    const state = aMissionState({
+      tasks: [
+        aCodeTask({ id: "t1", status: "done" }),
+        aCodeTask({ id: "t2", status: "waiting", dependsOn: ["t1"] }),
+      ],
+    });
+
+    assert.equal(standstill(state).kind, "moving");
+  });
+
   test("settles when every task is terminal", () => {
     const state = aMissionState({
       tasks: [aCodeTask({ id: "t1", status: "done" }), aCodeTask({ id: "t2", status: "failed" })],

@@ -61,3 +61,7 @@ export const LIMITS = {
   maxResets: 3,
   maxExtensions: 2,
 } as const;
+
+/** The same four as plain numbers. `typeof LIMITS` carries literal types, so a
+ *  mission that lowers a ceiling would be rejected by the type of the default. */
+export type Limits = { -readonly [K in keyof typeof LIMITS]: number };

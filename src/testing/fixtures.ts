@@ -13,7 +13,12 @@ import { type Mission } from "../domain/mission.js";
 import { type WorkerReport } from "../domain/report.js";
 import { type AgentSpec, type Task } from "../domain/task.js";
 import { type MissionState } from "../events/fold.js";
-import { type Calls, type JudgeResult, type ResearchResult } from "../loop/calls.js";
+import {
+  type Calls,
+  type JudgeResult,
+  type PlanResult,
+  type ResearchResult,
+} from "../loop/calls.js";
 import { eventSchema, type Event, type EventInput } from "../events/schema.js";
 
 export const anEnvelope = (patch: Partial<Envelope> = {}): Envelope => ({
@@ -119,6 +124,7 @@ export const aMissionState = (patch: Partial<MissionState> = {}): MissionState =
   mission: aMission(),
   tasks: [],
   reports: [],
+  progressLedgers: [],
   verifications: {},
   leases: {},
   inbox: [],
@@ -163,11 +169,22 @@ export function stamp(inputs: readonly EventInput[], clock = fixedClock()): Even
 
 export interface Script {
   research?: ResearchResult[];
-  plan?: PlannedTask[][];
+  plan?: PlanResult[];
   synthesize?: AgentSpec[];
   progress?: ProgressLedger[];
   judge?: JudgeResult[];
 }
+
+export const aPlannedTask = (patch: Partial<PlannedTask> = {}): PlannedTask => ({
+  id: "t1",
+  goal: "Add a /health endpoint",
+  worker: "code",
+  satisfies: ["c1"],
+  motivatedBy: ["f7"],
+  dependsOn: [],
+  estimatedWallMs: 5 * 60_000,
+  ...patch,
+});
 
 export interface ScriptedCalls extends Calls {
   /** How many times each decision point was reached. */

@@ -108,6 +108,10 @@ export type Standstill =
 export function standstill(state: MissionState, options: ReadyOptions = {}): Standstill {
   if (state.tasks.some(occupies)) return { kind: "moving" };
   if (readyTasks(state, options).length > 0) return { kind: "moving" };
+  // A task whose last dependency landed this round is still `waiting` until the next
+  // round promotes it. Counting that as a standstill reports a cycle every time a
+  // dependency chain advances — which is most rounds.
+  if (promotable(state).length > 0) return { kind: "moving" };
 
   const blocked = state.tasks.filter((task) => task.status === "blocked");
   if (blocked.length > 0) return { kind: "blocked", taskIds: blocked.map((task) => task.id) };

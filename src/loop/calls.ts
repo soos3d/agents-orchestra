@@ -9,6 +9,7 @@ import { type Evidence, type VerifySpec } from "../domain/artifacts.js";
 import {
   type Criterion,
   type Finding,
+  type Guess,
   type PlannedTask,
   type ProgressLedger,
   type TaskLedger,
@@ -25,6 +26,18 @@ export interface ResearchResult {
   brief: string;
   findings: Finding[];
   confidence: "high" | "medium" | "low";
+  /**
+   * The outcome spec (§5). Written by the research call rather than by a sixth
+   * decision point, because §3 caps the list at five and the spec has to exist
+   * before `plan` runs — criteria are an *input* to planning.
+   *
+   * Deliberately untyped: this is model output, and `writeOutcomeSpec` is the
+   * boundary that rejects a criterion carrying no check. A `Criterion[]` here would
+   * make the rejectable case unrepresentable and the validation untestable.
+   */
+  criteria?: readonly unknown[];
+  guesses?: Guess[];
+  outOfScope?: string[];
 }
 
 export interface PlanInput {
@@ -33,6 +46,19 @@ export interface PlanInput {
   envelope: Envelope;
   /** Present on a replan; absent on the first plan. */
   reason?: string;
+}
+
+export interface PlanResult {
+  tasks: PlannedTask[];
+  /**
+   * The criteria the planner believes the mission should be judged against.
+   *
+   * Returned rather than applied. After sign-off the loop diffs this against the
+   * frozen set and turns any difference into a `criteria_change_requested` — so a
+   * planner that cannot meet a criterion can *ask* to relax it and can never do it,
+   * whatever it returns here (§3).
+   */
+  criteria?: Criterion[];
 }
 
 export interface SynthesizeInput {
@@ -48,6 +74,12 @@ export interface ProgressInput {
   /** The last few progress ledgers, which is how `isInLoop` is answerable at all. */
   recentProgress: ProgressLedger[];
   counters: { round: number; stalls: number; resets: number };
+  /**
+   * Tasks that can never become ready because a dependency failed (§3). The
+   * scheduler does not cancel them; naming them here is what turns "nothing happened
+   * this round" into a blocking task the replan can act on.
+   */
+  frontier: { taskId: string; blockedBy: string[] }[];
 }
 
 export interface JudgeInput {
@@ -65,7 +97,7 @@ export interface JudgeResult {
 
 export interface Calls {
   research(input: ResearchInput): Promise<ResearchResult>;
-  plan(input: PlanInput): Promise<PlannedTask[]>;
+  plan(input: PlanInput): Promise<PlanResult>;
   synthesize(input: SynthesizeInput): Promise<AgentSpec>;
   progress(input: ProgressInput): Promise<ProgressLedger>;
   judge(input: JudgeInput): Promise<JudgeResult>;

@@ -7,7 +7,12 @@
 // fails the build when an event type is added without deciding what it does to
 // state. That compile error is the real enforcement of the rule above.
 import { addBudget, addSpend, zeroSpend, type Spend } from "../domain/budget.js";
-import { emptyLedger, type Criterion, type TaskLedger } from "../domain/ledger.js";
+import {
+  emptyLedger,
+  type Criterion,
+  type ProgressLedger,
+  type TaskLedger,
+} from "../domain/ledger.js";
 import { type Mission } from "../domain/mission.js";
 import { type WorkerReport } from "../domain/report.js";
 import { isTerminal, type Task } from "../domain/task.js";
@@ -44,6 +49,9 @@ export interface MissionState {
   tasks: Task[];
   /** Reports by round — the orchestrator's entire evidence base each round (§4.1). */
   reports: { taskId: string; round: number; report: WorkerReport }[];
+  /** Every progress ledger, in order. `isInLoop` is a question about the last few
+   *  rounds, so keeping only the current one makes it unanswerable. */
+  progressLedgers: { round: number; ledger: ProgressLedger }[];
   verifications: Record<string, { passed: boolean; output: string }>;
   /** Granted leases by task id, cleared when the task reaches a terminal status (§8). */
   leases: Record<string, string[]>;
@@ -196,6 +204,10 @@ const handlers: Handlers = {
   },
   progress_ledger: (state, event) => {
     state.mission = { ...state.mission, progress: event.ledger };
+    state.progressLedgers = [
+      ...state.progressLedgers,
+      { round: event.round, ledger: event.ledger },
+    ];
   },
   stall_detected: (state, event) => {
     state.mission = { ...state.mission, stalls: event.stalls };
@@ -386,6 +398,7 @@ function seed(event: Extract<Event, { type: "mission_created" }>): MissionState 
     },
     tasks: [],
     reports: [],
+    progressLedgers: [],
     verifications: {},
     leases: {},
     inbox: [],
