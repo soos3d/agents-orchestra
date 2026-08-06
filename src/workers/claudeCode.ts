@@ -1,31 +1,47 @@
-// Claude Code worker: runs a single headless `claude -p` session inside a worktree.
-// Strength: careful multi-file reasoning and refactors.
-import { run } from "../sh.js";
-import { config } from "../config.js";
+// Claude Code as a `cli` transport: one headless `claude -p` session in a worktree.
+//
+// Takes its model and timeout explicitly rather than reading a config singleton, so
+// a synthesized AgentSpec (§7) decides them per task instead of the process deciding
+// them once. Replacing `--dangerously-skip-permissions` with ACP's permission
+// channel is Phase 7 (defect 14).
+import { run } from "../runtime/sh.js";
 
-export async function runClaudeCode(task: string, worktree: string): Promise<string> {
-  // `--output-format json` returns a single JSON object with the final result.
-  // `--dangerously-skip-permissions` is acceptable *because* we run inside a throwaway
-  // worktree; tighten this (allowedTools / a settings file) once the flow is proven.
-  const r = await run(
+export interface CliWorkerOptions {
+  model: string;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
+export const DEFAULT_WORKER_TIMEOUT_MS = 20 * 60_000;
+
+export async function runClaudeCode(
+  task: string,
+  worktree: string,
+  options: CliWorkerOptions,
+): Promise<string> {
+  const result = await run(
     "claude",
     [
       "-p",
       task,
       "--model",
-      config.claudeWorkerModel,
+      options.model,
       "--output-format",
       "json",
       "--dangerously-skip-permissions",
     ],
-    { cwd: worktree, timeoutMs: 20 * 60_000 },
+    {
+      cwd: worktree,
+      timeoutMs: options.timeoutMs ?? DEFAULT_WORKER_TIMEOUT_MS,
+      signal: options.signal,
+    },
   );
 
   try {
-    const parsed = JSON.parse(r.stdout);
-    // Shape: { result: string, ... }. Fall back to raw text if the shape changes.
-    return parsed.result ?? r.stdout;
+    // Shape: { result: string, ... }. Fall back to raw text if the shape drifts —
+    // §12's point about flag drift applies to the output format too.
+    return JSON.parse(result.stdout).result ?? result.stdout;
   } catch {
-    return r.stdout || r.stderr || `claude exited with code ${r.code}`;
+    return result.stdout || result.stderr || `claude exited with code ${result.code}`;
   }
 }

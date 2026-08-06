@@ -1,38 +1,54 @@
-// Codex worker: runs a single headless `codex exec` session inside a worktree.
-// Strength: well-scoped, clearly specified tasks.
+// Codex as a `cli` transport: one headless `codex exec` session in a worktree.
+//
+// `--full-auto` is deprecated (defect 13) and `--sandbox workspace-write` replaces
+// it; `--json` and `--output-schema` are both better than scraping
+// `--output-last-message`. Both are Phase 7, alongside the move to ACP — the change
+// here is only that the model and timeout arrive as arguments rather than from a
+// config singleton.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { run } from "../sh.js";
-import { config } from "../config.js";
+import { run } from "../runtime/sh.js";
+import { DEFAULT_WORKER_TIMEOUT_MS, type CliWorkerOptions } from "./claudeCode.js";
 
-export async function runCodex(task: string, worktree: string): Promise<string> {
-  const outFile = path.join(os.tmpdir(), `codex-${Date.now()}.txt`);
+export async function runCodex(
+  task: string,
+  worktree: string,
+  options: CliWorkerOptions,
+): Promise<string> {
+  const outFile = path.join(os.tmpdir(), `codex-${process.pid}-${outFileCounter++}.txt`);
 
-  // `--full-auto` pre-approves actions (headless codex fails on interactive prompts).
-  // `--output-last-message` captures just the final answer, leaving stdout for events.
-  // Exact approval/sandbox flags vary by codex version — adjust to your install.
-  const r = await run(
+  const result = await run(
     "codex",
     [
       "exec",
       task,
       "--model",
-      config.codexWorkerModel,
+      options.model,
       "--full-auto",
       "--skip-git-repo-check",
       "--output-last-message",
       outFile,
     ],
-    { cwd: worktree, timeoutMs: 20 * 60_000 },
+    {
+      cwd: worktree,
+      timeoutMs: options.timeoutMs ?? DEFAULT_WORKER_TIMEOUT_MS,
+      signal: options.signal,
+    },
   );
 
   try {
-    const msg = fs.readFileSync(outFile, "utf8").trim();
-    fs.unlinkSync(outFile);
-    if (msg) return msg;
+    const message = fs.readFileSync(outFile, "utf8").trim();
+    if (message) return message;
   } catch {
-    /* fall through */
+    /* the file is only written on a clean finish; fall through to the streams */
+  } finally {
+    fs.rmSync(outFile, { force: true });
   }
-  return r.stdout || r.stderr || `codex exited with code ${r.code}`;
+
+  return result.stdout || result.stderr || `codex exited with code ${result.code}`;
 }
+
+// `Date.now()` collided when two workers started in the same millisecond, which is
+// exactly what a parallel dispatch does.
+let outFileCounter = 0;

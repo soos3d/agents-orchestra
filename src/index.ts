@@ -1,14 +1,14 @@
 #!/usr/bin/env node
-// Entry point: `npm run dev -- "your goal here"`
-import { orchestrate } from "./orchestrator.js";
+import { main } from "./cli/main.js";
 
-const goal = process.argv.slice(2).join(" ").trim();
-if (!goal) {
-  console.error('Usage: orchestra "high-level goal for the agent team"');
-  process.exit(1);
-}
-
-orchestrate(goal).catch((err) => {
-  console.error("Orchestrator crashed:", err);
-  process.exit(1);
-});
+main(process.argv.slice(2))
+  .then((code) => {
+    process.exitCode = code;
+  })
+  .catch((err: unknown) => {
+    // Failure messages carry the fix (§2a rule 5), so the message is what a human
+    // reads — the stack only when they ask for it.
+    process.stderr.write(`${(err as Error).message}\n`);
+    if (process.env.ORCHESTRA_DEBUG) process.stderr.write(`${(err as Error).stack}\n`);
+    process.exitCode = 1;
+  });
