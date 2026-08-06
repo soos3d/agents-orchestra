@@ -94,7 +94,17 @@ folded state — which is what makes the whole loop assertable against a canned 
 - The outcome spec is written by the `research` call, and its `criteria` are deliberately typed
   `unknown[]`. That is what keeps a criterion with no check *representable*, so `writeOutcomeSpec`
   can reject it — typing it as `Criterion[]` would make the system's most important validation
-  untestable.
+  untestable. **The cost is that `withSchema` renders it as an unconstrained array**, so the model
+  is told nothing about a criterion by the derived schema — `RESEARCH_PROMPT` spells out
+  `criterionSchema` and the `VerifySpec` union by hand. Change one and change the other.
+- **`agentCalls.ts` is the one file the fixture harness cannot cover**, since it is the thing the
+  harness substitutes for. Four defects hid there behind 331 green tests until the first real-model
+  run. Anything the model *receives* — SDK options, prompt text, a decision point's input — belongs
+  in a pure function (`queryOptions`, `withSchema`, `AVAILABLE_TRANSPORTS`) so the next regression
+  is catchable for free, and still wants one real `--plan-only` run before you believe it.
+- `AVAILABLE_TRANSPORTS` in `workers/transport.ts` is the registry, and it is shorter than §7's
+  table. Synthesis is told what it may pick and a spec outside it fails at validation (§7) — not at
+  dispatch, where it costs a typed retry and a replan to learn the same thing.
 - `attempts` is incremented in `fold`'s `task_status` handler when a task enters `running`; there is
   no separate dispatch event. The §9.4 retry cap reads it.
 - Worktrees are pinned to an explicit base sha, never HEAD. Compare paths through
