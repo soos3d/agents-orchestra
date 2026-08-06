@@ -49,6 +49,58 @@ describe("queryOptions", () => {
   test("loads no settings sources", () => {
     assert.deepEqual(queryOptions({ systemPrompt: "s", prompt: "p", model: "opus" }).settingSources, []);
   });
+
+  test("grants exactly the tools a call asks for", () => {
+    const options = queryOptions({ systemPrompt: "s", prompt: "p", model: "opus", tools: ["Read"] });
+
+    assert.deepEqual(options.tools, ["Read"]);
+  });
+});
+
+// §3 says a judge reads artifacts rather than the worker's report, and `JudgeInput`
+// hands it `artifactPaths`. With no tools it could not open them: against a real
+// model the judge returned "the rubric requires direct verification by reading
+// specs.md, ROADMAP.md, and RISKS.md" and failed the criterion — correct of it, and
+// a contradiction in the code. Judge is the one decision point the spec itself
+// exempts, so the exemption is explicit, read-only, and asserted here.
+describe("the judge's exemption from the no-tools rule", () => {
+  test("can read, and cannot write", async () => {
+    const { run, seen } = transport([
+      JSON.stringify({ met: true, evidence: aJudgeEvidence() }),
+    ]);
+
+    await createAgentCalls({ config, runQuery: run }).judge(aJudgeInput());
+
+    const tools = seen.tools[0]!;
+    assert.ok(tools.includes("Read"), "a judge that cannot read cannot grade artifacts");
+    for (const forbidden of ["Write", "Edit", "Bash", "NotebookEdit"]) {
+      assert.equal(tools.includes(forbidden), false, `judge must not be granted ${forbidden}`);
+    }
+  });
+
+  test("gets the turns a read loop needs, unlike the calls that never loop", async () => {
+    const { run, seen } = transport([
+      JSON.stringify({ met: true, evidence: aJudgeEvidence() }),
+      JSON.stringify(aProgressLedger()),
+    ]);
+    const calls = createAgentCalls({ config, runQuery: run });
+
+    await calls.judge(aJudgeInput());
+    await calls.progress(aProgressInput());
+
+    assert.ok(
+      seen.maxTurns[0]! > seen.maxTurns[1]!,
+      "reading N artifacts takes more turns than answering from the prompt",
+    );
+  });
+
+  test("every other decision point still gets none", async () => {
+    const { run, seen } = transport([JSON.stringify(aProgressLedger())]);
+
+    await createAgentCalls({ config, runQuery: run }).progress(aProgressInput());
+
+    assert.deepEqual(seen.tools[0], []);
+  });
 });
 
 const someSpend = (): Spend => ({
@@ -61,17 +113,21 @@ interface Recorded {
   prompts: string[];
   models: string[];
   systemPrompts: string[];
+  tools: string[][];
+  maxTurns: number[];
 }
 
 /** Answers in order, recording what it was asked. */
 function transport(answers: readonly string[]): { run: RunQuery; seen: Recorded } {
-  const seen: Recorded = { prompts: [], models: [], systemPrompts: [] };
+  const seen: Recorded = { prompts: [], models: [], systemPrompts: [], tools: [], maxTurns: [] };
   let index = 0;
 
-  const run: RunQuery = async ({ prompt, model, systemPrompt }) => {
+  const run: RunQuery = async ({ prompt, model, systemPrompt, tools, maxTurns }) => {
     seen.prompts.push(prompt);
     seen.models.push(model);
     seen.systemPrompts.push(systemPrompt);
+    seen.tools.push(tools ?? []);
+    seen.maxTurns.push(maxTurns ?? 0);
     const text = answers[index++];
     if (text === undefined) throw new Error(`transport ran out of answers at call ${index}`);
     return { text, spend: someSpend() };
@@ -79,6 +135,19 @@ function transport(answers: readonly string[]): { run: RunQuery; seen: Recorded 
 
   return { run, seen };
 }
+
+const aJudgeEvidence = () => ({
+  artifactIds: ["a1"],
+  checkOutput: "the table has 9 rows",
+  reasoning: "every HIGH risk in the source appears exactly once",
+  byTask: ["t1"],
+});
+
+const aJudgeInput = () => ({
+  criterion: aCriterion({ check: { kind: "judge" as const, rubric: "one row per risk" } }),
+  check: { kind: "judge" as const, rubric: "one row per risk" },
+  artifactPaths: ["/work/RISKS.md"],
+});
 
 const aProgressInput = (): ProgressInput => ({
   criteria: [aCriterion()],

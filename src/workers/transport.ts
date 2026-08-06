@@ -5,7 +5,9 @@
 // executed. Which one a task uses is a property of its spec, so the model and the
 // timeout arrive as arguments rather than from a config singleton — a per-task
 // decision made per task.
+import { workerReportSchema } from "../domain/report.js";
 import { type WorkerRun, type WorkerTransport } from "../loop/dispatch.js";
+import { renderSchema } from "../runtime/json.js";
 import { runClaudeCode } from "./claudeCode.js";
 import { runCodex } from "./codex.js";
 
@@ -53,19 +55,32 @@ export function createCliTransport(options: CliTransportOptions = {}): WorkerTra
   };
 }
 
+/**
+ * The report is the orchestrator's entire evidence base (§4.1) — it never sees the
+ * transcript — so a worker that ends its turn in prose has done the work and thrown
+ * it away. Against a real model that happened on four of seven dispatches, because
+ * the instruction described the shape in prose and left the model to infer which
+ * fields were required and what an `Artifact` looks like.
+ *
+ * The schema is rendered from `workerReportSchema` rather than written out, so it
+ * cannot drift from the parser that will reject the answer. The prose that survives
+ * is the part a schema cannot say: that the transcript is discarded, and what the
+ * `outcome` values are actually for.
+ */
 const REPORT_INSTRUCTION = `## How to finish
 
-Your final message must be a single JSON object matching this shape, and nothing else:
+The orchestrator never sees your transcript. Anything not in the object below is
+lost — including work you did. End your turn with a single JSON object matching this
+schema, and nothing after it:
 
-{
-  "outcome": "completed" | "partial" | "blocked" | "failed",
-  "summary": "what you did, under 200 words",
-  "criteriaTouched": ["criterion ids this work bears on"],
-  "claims": ["assertions the orchestrator may treat as findings"],
-  "unknowns": ["what you could not determine"],
-  "deadEnds": ["approaches you tried that do not work"],
-  "artifacts": [{ "kind": "diff", "id": "a1", "branch": "...", "files": [], "insertions": 0, "deletions": 0 }]
-}
+${renderSchema(workerReportSchema)}
 
-The orchestrator never sees your transcript, so anything not in this object is lost.
-Use "blocked" if you need a human, and put the question in "summary".`;
+Every required field must be present; use an empty array where you have nothing.
+
+\`outcome\` is your own verdict, not a formality. Use "completed" only if you did the
+whole task, "partial" if you got some of the way, "failed" if the approach does not
+work, and "blocked" if you need a human — with the question in \`summary\`.
+
+\`deadEnds\` is what stops the next attempt walking into what you already tried, and
+\`unknowns\` becomes the next round's research. A failed task that fills those in is
+worth more than a silent one.`;

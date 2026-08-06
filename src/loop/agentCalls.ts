@@ -27,7 +27,7 @@ import {
   progressLedgerSchema,
 } from "../domain/ledger.js";
 import { agentSpecSchema } from "../domain/task.js";
-import { extractJsonObject } from "../runtime/json.js";
+import { extractJsonObject, renderSchema } from "../runtime/json.js";
 import {
   type Calls,
   type JudgeResult,
@@ -43,6 +43,9 @@ export type RunQuery = (input: {
   systemPrompt: string;
   prompt: string;
   model: string;
+  /** Empty for every call but `judge` — see `JUDGE_TOOLS`. */
+  tools?: string[];
+  maxTurns?: number;
   signal?: AbortSignal;
 }) => Promise<{ text: string; spend: Spend }>;
 
@@ -64,13 +67,37 @@ export const PROGRESS_MODEL = "sonnet";
 /** See `queryOptions` — a backstop, not a budget. */
 export const MAX_TURNS = 6;
 
+/**
+ * The one place §3's "no tools" rule bends, and the spec is what bends it: a judge
+ * reads artifacts rather than the worker's report, because a summary written by the
+ * thing being graded is not evidence. `JudgeInput` hands over `artifactPaths`, and
+ * with an empty tool set there was no way to open them — against a real model the
+ * judge said so and failed the criterion, which was the correct call and an
+ * impossible position to put it in.
+ *
+ * Read-only, deliberately. A judge that can write is a judge that can make the
+ * artifact match the rubric, which is the same circularity §3 removed the worker's
+ * report to avoid. Nothing here mutates anything.
+ */
+export const JUDGE_TOOLS = ["Read", "Glob", "Grep"];
+
+/** Reading N artifacts is a loop; answering from the prompt is not. */
+export const JUDGE_MAX_TURNS = 20;
+
 export function createAgentCalls(deps: AgentCallsDeps): Calls {
   const run = deps.runQuery ?? runViaAgentSdk;
   const model = deps.config.orchestratorModel;
 
   const ask = async <T>(
     call: keyof Calls,
-    spec: { systemPrompt: string; prompt: string; schema: z.ZodType<T>; model?: string },
+    spec: {
+      systemPrompt: string;
+      prompt: string;
+      schema: z.ZodType<T>;
+      model?: string;
+      tools?: string[];
+      maxTurns?: number;
+    },
   ): Promise<T> => {
     const systemPrompt = withSchema(spec.systemPrompt, spec.schema);
 
@@ -79,6 +106,8 @@ export function createAgentCalls(deps: AgentCallsDeps): Calls {
         systemPrompt,
         prompt,
         model: spec.model ?? model,
+        tools: spec.tools ?? [],
+        maxTurns: spec.maxTurns ?? MAX_TURNS,
         ...(deps.signal ? { signal: deps.signal } : {}),
       });
       deps.onSpend?.(call, result.spend);
@@ -134,6 +163,8 @@ export function createAgentCalls(deps: AgentCallsDeps): Calls {
         systemPrompt: JUDGE_PROMPT,
         prompt: describe("Criterion to judge", input),
         schema: judgeSchema,
+        tools: JUDGE_TOOLS,
+        maxTurns: JUDGE_MAX_TURNS,
       }),
   };
 }
@@ -159,11 +190,6 @@ function withSchema(systemPrompt: string, schema: z.ZodType<unknown>): string {
     `Every required field must be present. Return that object and nothing else.`
   );
 }
-
-/** One renderer, so a prompt that quotes a nested type quotes the same thing the
- *  boundary will validate against. */
-const renderSchema = (schema: z.ZodType<unknown>): string =>
-  JSON.stringify(z.toJSONSchema(schema, { io: "input", unrepresentable: "any" }), null, 2);
 
 export class CallFormatError extends Error {
   readonly call: keyof Calls;
@@ -304,10 +330,15 @@ const JUDGE_PROMPT = `You decide whether a mission criterion is met, from the
 artifacts it produced.
 
 You are given artifact paths rather than the worker's own report, because a summary
-written by the thing being graded is not evidence. Read the artifacts.
+written by the thing being graded is not evidence. Open every path you are given and
+read it before deciding — you have Read, Glob, and Grep, and nothing that writes.
 
 Your evidence must name the artifacts you relied on and say why they satisfy the
 criterion's statement. "It looks done" is not evidence.
+
+If a path will not open, or the artifacts cannot settle the criterion either way,
+return \`met: false\` and say exactly that in the evidence. Do not grade what you
+could not read, and do not fill the gap from the goal or the rubric alone.
 
 ${SHAPE}`;
 
@@ -329,7 +360,13 @@ ${SHAPE}`;
  * `error_max_turns` with no answer. The names are close enough that the next person
  * would make the same swap, which is why this is a tested function and not a literal.
  */
-export function queryOptions(spec: { systemPrompt: string; prompt: string; model: string }) {
+export function queryOptions(spec: {
+  systemPrompt: string;
+  prompt: string;
+  model: string;
+  tools?: string[];
+  maxTurns?: number;
+}) {
   return {
     model: spec.model,
     systemPrompt: spec.systemPrompt,
@@ -340,16 +377,24 @@ export function queryOptions(spec: { systemPrompt: string; prompt: string; model
     // a turn cap to interrupt — the ceiling that actually binds is the mission's
     // wall-clock budget (§9.5), so this is only a backstop against a degenerate
     // answer, and it is set where it will not fire on a legitimate one.
-    maxTurns: MAX_TURNS,
+    maxTurns: spec.maxTurns ?? MAX_TURNS,
     // §3: a decision point reasons over what the prompt carries and nothing else.
-    tools: [] as string[],
+    // `judge` is the sole exception the spec itself creates — see `JUDGE_TOOLS`.
+    tools: spec.tools ?? [],
     // Filesystem settings and CLAUDE.md would put whatever is in the repo into every
     // decision point's context, which is the opposite of §4's discipline.
     settingSources: [] as [],
   };
 }
 
-const runViaAgentSdk: RunQuery = async ({ systemPrompt, prompt, model, signal }) => {
+const runViaAgentSdk: RunQuery = async ({
+  systemPrompt,
+  prompt,
+  model,
+  tools,
+  maxTurns,
+  signal,
+}) => {
   // Imported lazily so `--plan-only` against a supplied Calls, and every test above
   // this file, never loads the SDK or looks for credentials.
   const { query } = await import("@anthropic-ai/claude-agent-sdk");
@@ -360,7 +405,13 @@ const runViaAgentSdk: RunQuery = async ({ systemPrompt, prompt, model, signal })
   const response = query({
     prompt,
     options: {
-      ...queryOptions({ systemPrompt, prompt, model }),
+      ...queryOptions({
+        systemPrompt,
+        prompt,
+        model,
+        ...(tools ? { tools } : {}),
+        ...(maxTurns ? { maxTurns } : {}),
+      }),
       abortController: controller,
     },
   });
