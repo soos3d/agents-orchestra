@@ -222,9 +222,13 @@ const handlers: Handlers = {
   },
   task_status: (state, event) => {
     const taskId = requireTaskId(event);
+    // The transition into `running` *is* the dispatch — there is no separate event
+    // for one — so this is where an attempt is counted. Left out, `attempts` keeps
+    // whatever `task_planned` carried and the §9.4 retry cap never binds.
+    const previous = state.tasks.find((task) => task.id === taskId);
     const timing =
       event.to === "running"
-        ? { startedAt: event.at }
+        ? { startedAt: event.at, attempts: (previous?.attempts ?? 0) + 1 }
         : isTerminal(event.to)
           ? { endedAt: event.at }
           : {};

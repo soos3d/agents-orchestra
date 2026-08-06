@@ -87,6 +87,31 @@ describe("fold", () => {
       assert.ok(task.endedAt! > task.startedAt!);
     });
 
+    // There is no `task_dispatched` event: the move into `running` is the dispatch.
+    // Without counting it here, `attempts` stays where task_planned left it and the
+    // §9.4 transport retry cap never binds.
+    test("counts a dispatch as an attempt", () => {
+      const dispatched = (from: string, to: string) => ({
+        ...orchestrator,
+        taskId: "t1",
+        type: "task_status" as const,
+        from,
+        to,
+        reason: "r",
+      });
+
+      const state = foldOf([
+        missionCreated(),
+        { ...orchestrator, type: "task_planned", task: aCodeTask() },
+        dispatched("todo", "running"),
+        dispatched("running", "failed"),
+        dispatched("failed", "todo"),
+        dispatched("todo", "running"),
+      ] as EventInput[]);
+
+      assert.equal(state.tasks[0].attempts, 2);
+    });
+
     test("a status event for an unknown task is corruption", () => {
       assert.throws(
         () =>
