@@ -97,7 +97,10 @@ export async function discoverConfig(cwd = process.cwd()): Promise<DiscoveredCon
       : path.join(base, "..", ".orchestra-worktrees"),
     verify: root ? discoverVerifyCommand(root) : undefined,
     agents: await probeAgents(),
-    orchestratorModel: process.env.ORCHESTRATOR_MODEL || "fable",
+    // An alias rather than a pinned id, so the default follows the latest build the
+    // SDK resolves it to. §14 notes nothing in the design depends on a specific
+    // model; `ORCHESTRATOR_MODEL` is the override when it does.
+    orchestratorModel: process.env.ORCHESTRATOR_MODEL || "opus",
     maxConcurrency: num(process.env.MAX_CONCURRENCY, 4),
   };
 }

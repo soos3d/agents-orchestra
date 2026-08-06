@@ -83,7 +83,7 @@ describe("discoverConfig", () => {
 
     assert.ok(config.stateDir);
     assert.ok(config.worktreeRoot);
-    assert.equal(config.orchestratorModel, "fable");
+    assert.equal(config.orchestratorModel, "opus");
   });
 
   test("puts state beside the repo, never inside a directory git tracks", async () => {
