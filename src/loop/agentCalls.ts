@@ -61,6 +61,9 @@ export interface AgentCallsDeps {
  */
 export const PROGRESS_MODEL = "sonnet";
 
+/** See `queryOptions` — a backstop, not a budget. */
+export const MAX_TURNS = 6;
+
 export function createAgentCalls(deps: AgentCallsDeps): Calls {
   const run = deps.runQuery ?? runViaAgentSdk;
   const model = deps.config.orchestratorModel;
@@ -69,9 +72,11 @@ export function createAgentCalls(deps: AgentCallsDeps): Calls {
     call: keyof Calls,
     spec: { systemPrompt: string; prompt: string; schema: z.ZodType<T>; model?: string },
   ): Promise<T> => {
+    const systemPrompt = withSchema(spec.systemPrompt, spec.schema);
+
     const attempt = async (prompt: string) => {
       const result = await run({
-        systemPrompt: spec.systemPrompt,
+        systemPrompt,
         prompt,
         model: spec.model ?? model,
         ...(deps.signal ? { signal: deps.signal } : {}),
@@ -132,6 +137,33 @@ export function createAgentCalls(deps: AgentCallsDeps): Calls {
       }),
   };
 }
+
+/**
+ * The call's return type, rendered into its own system prompt.
+ *
+ * Every prompt used to end with "Answer with a single JSON object" without saying
+ * which one, which left the model guessing field names it could not have guessed —
+ * a real `research` call came back with `guesses` as an array of strings, because
+ * nothing had told it a `Guess` carries an id, a basis, and an addedRound. The one
+ * reformat attempt then spends a second call teaching what the first should have.
+ *
+ * Derived from the zod schema rather than written by hand, so the two cannot drift:
+ * the prompt is wrong the moment the schema changes, and that is a compile-time file
+ * away rather than a silent runtime rejection. `io: "input"` because the model is
+ * writing the parser's input, and `unrepresentable: "any"` because `criteria` is
+ * deliberately `unknown[]` (§4) and must render rather than throw.
+ */
+function withSchema(systemPrompt: string, schema: z.ZodType<unknown>): string {
+  return (
+    `${systemPrompt}\n\n## The exact shape of your answer\n\n${renderSchema(schema)}\n\n` +
+    `Every required field must be present. Return that object and nothing else.`
+  );
+}
+
+/** One renderer, so a prompt that quotes a nested type quotes the same thing the
+ *  boundary will validate against. */
+const renderSchema = (schema: z.ZodType<unknown>): string =>
+  JSON.stringify(z.toJSONSchema(schema, { io: "input", unrepresentable: "any" }), null, 2);
 
 export class CallFormatError extends Error {
   readonly call: keyof Calls;
@@ -211,6 +243,16 @@ Every criterion needs a \`check\` that will actually produce an answer: a comman
 run, or a rubric for a judge to grade artifacts against. A criterion nothing can
 evaluate means the mission can never legitimately report success, and it is rejected.
 
+Each entry in \`criteria\` has this shape. It is spelled out here because the return
+schema below types \`criteria\` as an open array on purpose — that is what lets an
+uncheckable criterion reach the gate that rejects it, rather than being silently
+dropped at the boundary. Getting the shape right is still on you:
+
+${renderSchema(criterionSchema)}
+
+Note the \`check\` union: \`command\` needs a \`command\` string, \`judge\` needs a
+\`rubric\`, and \`none\` needs a \`reason\` justifying why nothing can check it.
+
 ${SHAPE}`;
 
 const PLAN_PROMPT = `You turn a mission's ledger into a set of tasks.
@@ -270,6 +312,37 @@ ${SHAPE}`;
  * are what make this a decision point rather than an agent: it answers the question
  * in the prompt, and the loop decides what happens next.
  */
+/**
+ * The options a decision point runs under, as a value rather than an inline literal,
+ * because one of them was silently wrong and nothing could assert it.
+ *
+ * `tools: []` is the restriction. `allowedTools: []` — which this used to pass — is
+ * the *auto-approve* list, so it left the whole Claude Code toolset in the model's
+ * context while reading like the opposite. A `research` prompt naming a file made the
+ * model call Read, that consumed the single turn, and the call came back
+ * `error_max_turns` with no answer. The names are close enough that the next person
+ * would make the same swap, which is why this is a tested function and not a literal.
+ */
+export function queryOptions(spec: { systemPrompt: string; prompt: string; model: string }) {
+  return {
+    model: spec.model,
+    systemPrompt: spec.systemPrompt,
+    // Headroom, not a budget. `maxTurns: 1` reads like "one question, one answer" and
+    // is not what it counts: a real `research` call came back `error_max_turns` at
+    // num_turns 2 having produced nothing, because a long structured answer spans
+    // more turns than the one it was asked for. With `tools: []` there is no loop for
+    // a turn cap to interrupt — the ceiling that actually binds is the mission's
+    // wall-clock budget (§9.5), so this is only a backstop against a degenerate
+    // answer, and it is set where it will not fire on a legitimate one.
+    maxTurns: MAX_TURNS,
+    // §3: a decision point reasons over what the prompt carries and nothing else.
+    tools: [] as string[],
+    // Filesystem settings and CLAUDE.md would put whatever is in the repo into every
+    // decision point's context, which is the opposite of §4's discipline.
+    settingSources: [] as [],
+  };
+}
+
 const runViaAgentSdk: RunQuery = async ({ systemPrompt, prompt, model, signal }) => {
   // Imported lazily so `--plan-only` against a supplied Calls, and every test above
   // this file, never loads the SDK or looks for credentials.
@@ -281,27 +354,43 @@ const runViaAgentSdk: RunQuery = async ({ systemPrompt, prompt, model, signal })
   const response = query({
     prompt,
     options: {
-      model,
-      systemPrompt,
-      maxTurns: 1,
-      allowedTools: [],
-      // Filesystem settings and CLAUDE.md would put whatever is in the repo into
-      // every decision point's context, which is the opposite of §4's discipline.
-      settingSources: [],
+      ...queryOptions({ systemPrompt, prompt, model }),
       abortController: controller,
     },
   });
 
   for await (const message of response) {
     if (message.type !== "result") continue;
-    if (message.subtype !== "success") {
-      throw new Error(`The model call ended as '${message.subtype}' with no answer.`);
-    }
+    if (message.subtype !== "success") throw failedResult(message);
     return { text: message.result, spend: spendOf(message.usage, message.duration_ms) };
   }
 
-  throw new Error("The model call ended without returning a result.");
+  throw new Error(
+    "The model call produced no result message. The `claude` CLI exited without " +
+      "answering — check `orchestra doctor` and that you are still logged in.",
+  );
 };
+
+/** A subtype alone is not a fix (§2a rule 5). Each of these has a different cause and
+ *  a different thing to do about it, so each says which. */
+function failedResult(message: { subtype: string; num_turns?: number }): Error {
+  const fixes: Record<string, string> = {
+    error_max_turns:
+      `It used its one turn without answering — usually a tool call, which a decision ` +
+      `point has none of, or a refusal. Check the goal for anything that reads as ` +
+      `instructions to the model rather than a mission.`,
+    error_max_budget_usd: "Raise the mission budget, or narrow the goal.",
+    error_max_structured_output_retries:
+      "The model could not produce the call's schema. Narrow the goal and try again.",
+    error_during_execution:
+      "The `claude` CLI failed mid-call. Run `orchestra doctor` and confirm you are logged in.",
+  };
+
+  return new Error(
+    `The model call ended as '${message.subtype}' after ${message.num_turns ?? 0} turn(s) ` +
+      `with no answer. ${fixes[message.subtype] ?? "Re-run with a narrower goal."}`,
+  );
+}
 
 function spendOf(usage: { input_tokens?: number; output_tokens?: number }, ms: number): Spend {
   return {

@@ -6,10 +6,50 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { type Spend } from "../domain/budget.js";
 import { aCriterion, aPlannedTask, aProgressLedger, anAgentSpec } from "../testing/fixtures.js";
-import { createAgentCalls, CallFormatError, PROGRESS_MODEL, type RunQuery } from "./agentCalls.js";
+import {
+  createAgentCalls,
+  CallFormatError,
+  MAX_TURNS,
+  PROGRESS_MODEL,
+  queryOptions,
+  type RunQuery,
+} from "./agentCalls.js";
 import { type ProgressInput } from "./calls.js";
 
 const config = { orchestratorModel: "fable" };
+
+// The defect these exist for: `allowedTools: []` reads like "no tools" and is not.
+// The SDK defines it as the auto-approve list — the restriction is `tools`. With the
+// wrong one, every decision point carried the whole Claude Code toolset, a `research`
+// prompt naming a file made the model reach for Read, and `maxTurns: 1` ended the
+// call as `error_max_turns` with no answer. §3's "no tools" rule was a comment.
+describe("queryOptions", () => {
+  test("disables every built-in tool, which is the rule the file claims", () => {
+    assert.deepEqual(queryOptions({ systemPrompt: "s", prompt: "p", model: "opus" }).tools, []);
+  });
+
+  test("does not reach for the auto-approve list to do a restriction's job", () => {
+    assert.equal("allowedTools" in queryOptions({ systemPrompt: "s", prompt: "p", model: "opus" }), false);
+  });
+
+  // `maxTurns: 1` reads as "one question, one answer" and counts something else: a
+  // real `research` call died `error_max_turns` at num_turns 2 with nothing produced,
+  // because a long structured answer spans more turns than it was given. With no
+  // tools there is no loop to interrupt, so the cap is a backstop set clear of a
+  // legitimate answer — the ceiling that binds is the mission's wall-clock budget.
+  test("leaves a long structured answer room to finish", () => {
+    const turns = queryOptions({ systemPrompt: "s", prompt: "p", model: "opus" }).maxTurns;
+
+    assert.equal(turns, MAX_TURNS);
+    assert.ok(turns > 1, "a one-turn cap fires on answers that were never going to loop");
+  });
+
+  // Repo settings and CLAUDE.md would put whatever is in the repo into every
+  // decision point's context — the growth the loop architecture exists to avoid.
+  test("loads no settings sources", () => {
+    assert.deepEqual(queryOptions({ systemPrompt: "s", prompt: "p", model: "opus" }).settingSources, []);
+  });
+});
 
 const someSpend = (): Spend => ({
   tokens: { measured: 1200, estimated: 0, unmeasured: 0 },
@@ -46,6 +86,95 @@ const aProgressInput = (): ProgressInput => ({
   recentProgress: [],
   counters: { round: 1, stalls: 0, resets: 0 },
   frontier: [],
+});
+
+// The defect: every decision-point prompt ended with "Answer with a single JSON
+// object" and never said which one. Against a real model the `research` call came
+// back with `guesses` as an array of strings and a `confidence` outside the enum —
+// shapes nobody could have guessed, because `Guess` carries an id, a basis, and an
+// addedRound. One reformat attempt carrying a zod error is not a substitute for
+// having said the shape the first time.
+describe("the schema in the prompt", () => {
+  test("carries the call's own field names and enums", async () => {
+    const { run, seen } = transport([JSON.stringify(aProgressLedger())]);
+
+    await createAgentCalls({ config, runQuery: run }).progress(aProgressInput());
+
+    const system = seen.systemPrompts[0]!;
+    assert.match(system, /isRequestSatisfied/);
+    assert.match(system, /unmetCriteria/);
+  });
+
+  test("names the enum a real model got wrong by inventing a value", async () => {
+    const { run, seen } = transport([
+      JSON.stringify({ brief: "b", findings: [], confidence: "high" }),
+    ]);
+
+    await createAgentCalls({ config, runQuery: run }).research({
+      question: "q",
+      sources: ["codebase"],
+      depth: "deep",
+    });
+
+    assert.match(seen.systemPrompts[0]!, /"high"[\s\S]*"medium"[\s\S]*"low"/);
+  });
+
+  // `criteria` is deliberately `unknown[]` so an uncheckable criterion stays
+  // representable for `writeOutcomeSpec` to reject. That must not make the schema
+  // unrenderable — it renders as an unconstrained array and the gate still runs.
+  test("survives the deliberately-untyped criteria field", async () => {
+    const { run, seen } = transport([
+      JSON.stringify({ brief: "b", findings: [], confidence: "low" }),
+    ]);
+
+    await createAgentCalls({ config, runQuery: run }).research({
+      question: "q",
+      sources: ["codebase"],
+      depth: "deep",
+    });
+
+    assert.match(seen.systemPrompts[0]!, /criteria/);
+  });
+
+  // `criteria: unknown[]` renders as an unconstrained array, so the derived schema
+  // tells the model nothing about a criterion — and against a real model that
+  // produced seven criteria in a row with `check.kind: "command"` and no `command`,
+  // rejected by the spec gate one after another. The type stays `unknown[]` (that is
+  // what keeps an uncheckable criterion representable, §4); the *prompt* stops being
+  // silent about the shape.
+  test("spells out the criterion shape the untyped field cannot", async () => {
+    const { run, seen } = transport([
+      JSON.stringify({ brief: "b", findings: [], confidence: "low" }),
+    ]);
+
+    await createAgentCalls({ config, runQuery: run }).research({
+      question: "q",
+      sources: ["codebase"],
+      depth: "deep",
+    });
+
+    const system = seen.systemPrompts[0]!;
+    // Every arm of VerifySpec, and the field each one requires.
+    assert.match(system, /"command"/);
+    assert.match(system, /"judge"/);
+    assert.match(system, /rubric/);
+    assert.match(system, /statement/);
+  });
+
+  test("still says the rules the schema cannot express", async () => {
+    const { run, seen } = transport([
+      JSON.stringify({ brief: "b", findings: [], confidence: "low" }),
+    ]);
+
+    await createAgentCalls({ config, runQuery: run }).research({
+      question: "q",
+      sources: ["codebase"],
+      depth: "deep",
+    });
+
+    // A criterion with no check is the system's most important validation (§4).
+    assert.match(seen.systemPrompts[0]!, /check/);
+  });
 });
 
 describe("createAgentCalls", () => {
