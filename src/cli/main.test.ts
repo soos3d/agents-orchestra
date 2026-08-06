@@ -8,8 +8,17 @@ import { after, beforeEach, describe, test } from "node:test";
 import { main, type Io } from "./main.js";
 import { createEventLog } from "../events/log.js";
 import { missionDir } from "../config/discover.js";
-import { aCodeTask, fixedClock, missionCreated } from "../testing/fixtures.js";
+import {
+  aCodeTask,
+  aCriterion,
+  anAgentSpec,
+  aPlannedTask,
+  aProgressLedger,
+  fixedClock,
+  missionCreated,
+} from "../testing/fixtures.js";
 import { type EventInput } from "../events/schema.js";
+import { type Calls } from "../loop/calls.js";
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "orchestra-cli-"));
 let stateDir: string;
@@ -158,11 +167,102 @@ describe("orchestra", () => {
   });
 
   describe("run", () => {
-    test("says the loop lands in Phase 2 instead of failing obscurely", async () => {
+    const createCalls = (): Calls => ({
+      research: async () => ({
+        brief: "there is a router and no health route",
+        findings: [
+          { claim: "routes live in src/routes", source: "src/routes", sourceKind: "codebase", confidence: "high" },
+        ],
+        confidence: "high",
+        criteria: [aCriterion()],
+        outOfScope: [],
+        guesses: [],
+      }),
+      plan: async () => ({ tasks: [aPlannedTask({ id: "t1" })] }),
+      synthesize: async () => anAgentSpec(),
+      progress: async () => aProgressLedger(),
+      judge: async () => {
+        throw new Error("not reached under --plan-only");
+      },
+    });
+
+    test("needs a goal", async () => {
       const io = capture();
 
-      assert.equal(await main(["run", "add a /health endpoint"], io), 1);
-      assert.match(io.errors.join("\n"), /Phase 2/);
+      assert.equal(await main(["run"], io), 1);
+      assert.match(io.errors.join("\n"), /Usage: orchestra run/);
+    });
+
+    // §17: a flag that skips reading the plan must never become the habitual default.
+    test("refuses --unattended without --force", async () => {
+      const io = capture();
+
+      assert.equal(await main(["run", "a goal", "--unattended"], io), 1);
+      assert.match(io.errors.join("\n"), /needs --force/);
+    });
+
+    test("rejects an unknown flag rather than ignoring it", async () => {
+      const io = capture();
+
+      assert.equal(await main(["run", "a goal", "--yolo"], io), 1);
+      assert.match(io.errors.join("\n"), /Unknown flag '--yolo'/);
+    });
+
+    describe("--plan-only", () => {
+      test("prints a spec, a plan, and an estimate, and dispatches nothing", async () => {
+        const io = capture();
+
+        const code = await main(["run", "add a /health endpoint", "--plan-only"], io, {
+          createCalls,
+        });
+
+        const output = io.lines.join("\n");
+        assert.equal(code, 0);
+        assert.match(output, /CRITERIA/);
+        assert.match(output, /PLAN/);
+        assert.match(output, /ESTIMATE/);
+        assert.match(output, /nothing dispatched/);
+      });
+
+      // The unmeasured half is shown rather than hidden (§9.5).
+      test("splits measured from unmeasured in the estimate", async () => {
+        const io = capture();
+
+        await main(["run", "add a /health endpoint", "--plan-only"], io, { createCalls });
+
+        assert.match(io.lines.join("\n"), /tokens measured, \d+ CLI runs unmeasured/);
+      });
+
+      test("writes a resumable mission log", async () => {
+        const io = capture();
+
+        await main(["run", "add a /health endpoint", "--plan-only"], io, { createCalls });
+
+        const missions = fs.readdirSync(path.join(stateDir, "missions"));
+        assert.equal(missions.length, 1);
+        assert.ok(fs.existsSync(path.join(stateDir, "missions", missions[0]!, "events.jsonl")));
+      });
+
+      // A usable CI gate: `does this mission still plan sensibly?`
+      test("exits non-zero when a criterion is rejected", async () => {
+        const io = capture();
+        const vague: Calls = {
+          ...createCalls(),
+          research: async () => ({
+            brief: "",
+            findings: [],
+            confidence: "low",
+            criteria: [{ id: "c1", statement: "make the checkout flow less janky" }],
+          }),
+        };
+
+        const code = await main(["run", "a goal", "--plan-only"], io, {
+          createCalls: () => vague,
+        });
+
+        assert.equal(code, 1);
+        assert.match(io.errors.join("\n"), /rejected/);
+      });
     });
   });
 });

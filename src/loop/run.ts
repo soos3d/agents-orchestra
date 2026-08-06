@@ -22,6 +22,7 @@ import { type DispatchOutcome } from "./dispatch.js";
 import { buildPlanInput, buildProgressInput } from "./prompts.js";
 import { isCancellation, retryPolicy } from "./retry.js";
 import { reviseLedger } from "./revise.js";
+import { synthesizeTasks } from "./synthesize.js";
 import { type CriterionChecker } from "./verify.js";
 
 /** The log, and the state folded from it. Injected so the loop runs against a canned
@@ -342,7 +343,7 @@ async function replan(
   }
 
   deps.store.emit({ ...base, type: "ledger_revised", ledger: revision.ledger, reason: "replan" });
-  await synthesizeNewTasks(deps, plan.tasks, round);
+  await synthesizeTasks(deps, plan.tasks, round);
   return undefined;
 }
 
@@ -361,61 +362,6 @@ async function planWithOneRetry(
   );
   const recheck = validatePlan(second.tasks);
   return recheck.ok ? second : { message: recheck.message };
-}
-
-async function synthesizeNewTasks(
-  deps: LoopDeps,
-  planned: Awaited<ReturnType<Calls["plan"]>>["tasks"],
-  round: number,
-): Promise<void> {
-  const state = deps.store.state();
-  const known = new Set(state.tasks.map((task) => task.id));
-  const now = new Date().toISOString();
-
-  for (const entry of planned) {
-    if (known.has(entry.id)) continue;
-
-    const agentSpec = await deps.calls.synthesize({
-      task: entry,
-      envelope: state.mission.capabilityEnvelope,
-      toolCatalogue: state.mission.capabilityEnvelope.toolClasses,
-    });
-
-    deps.store.emit({
-      missionId: state.mission.id,
-      actor: "orchestrator",
-      type: "task_planned",
-      task: {
-        id: entry.id,
-        missionId: state.mission.id,
-        goal: entry.goal,
-        successCriteria: [],
-        satisfies: entry.satisfies,
-        motivatedBy: entry.motivatedBy,
-        worker: entry.worker,
-        agentSpec,
-        dependsOn: entry.dependsOn,
-        // A task with unmet dependencies starts `waiting`, and the scheduler — not a
-        // human — is what ends that wait.
-        status: entry.dependsOn.length > 0 ? "waiting" : "todo",
-        artifacts: [],
-        verify: agentSpec.verify,
-        attempts: 0,
-        budget: { wallMs: entry.estimatedWallMs },
-        createdAt: now,
-        updatedAt: now,
-        ...taskShapeFor(entry.worker, entry.id, round),
-      },
-    } as EventInput);
-  }
-}
-
-/** The fields a Task carries because of its kind. Git belongs to `code` and nowhere
- *  else (§4), so this is where a plan's worker kind becomes a task shape. */
-function taskShapeFor(worker: WorkerKind, id: string, round: number): Record<string, unknown> {
-  if (worker === "code") return { branch: `orchestra/${id}-r${round}`, owns: [] };
-  if (worker === "computer") return { surface: "browser", allowedDomains: [] };
-  return {};
 }
 
 /**

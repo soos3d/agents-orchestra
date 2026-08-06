@@ -11,6 +11,9 @@ import { pruneOrphanWorktrees } from "../git/worktree.js";
 import { hasCommitsSince } from "../git/repo.js";
 import { liveWorktrees, reconcileOrphans } from "../runtime/resume.js";
 import { isCodeTask, type Task } from "../domain/task.js";
+import { createAgentCalls } from "../loop/agentCalls.js";
+import { type Calls } from "../loop/calls.js";
+import { parseRunArgs, runMission } from "./runCommand.js";
 
 export interface Io {
   out(line: string): void;
@@ -27,7 +30,12 @@ const USAGE = `orchestra — a looping orchestrator for any kind of task
   orchestra doctor                 what is installed, authed, and missing
   orchestra resume <missionId>     replay the log, reconcile orphans, rebuild state
   orchestra forget <missionId>     delete everything a mission wrote
-  orchestra run "<goal>"           start a mission`;
+  orchestra run "<goal>"           start a mission
+
+  run flags
+    --plan-only        research, spec, plan, estimate — then stop. Nothing dispatched.
+    --budget <minutes> wall-clock ceiling for the mission (default 240)
+    --unattended       skip sign-off. Requires --force.`;
 
 /** Applied on every run, never once at init: the line somebody deleted is the case
  *  this exists for (§17). */
@@ -80,7 +88,16 @@ async function resume(missionId: string, config: DiscoveredConfig, io: Io): Prom
   return 0;
 }
 
-export async function main(argv: readonly string[], io: Io = stdio): Promise<number> {
+export interface MainDeps {
+  /** Injected so the CLI is testable without a model or an API key. */
+  createCalls?: (config: DiscoveredConfig) => Calls;
+}
+
+export async function main(
+  argv: readonly string[],
+  io: Io = stdio,
+  deps: MainDeps = {},
+): Promise<number> {
   const [command, ...rest] = argv;
   const config = await discoverConfig();
 
@@ -113,12 +130,15 @@ export async function main(argv: readonly string[], io: Io = stdio): Promise<num
     }
 
     case "run": {
+      const parsed = parseRunArgs(rest);
+      if (!parsed.ok) {
+        io.err(parsed.message);
+        return 1;
+      }
       assertHygiene(config, io);
-      io.err(
-        "The mission loop lands in Phase 2. `orchestra doctor` reports readiness today, and\n" +
-          "`orchestra resume <missionId>` replays and reconciles an existing mission.",
-      );
-      return 1;
+      return runMission(parsed.options, config, io, {
+        createCalls: deps.createCalls ?? createAgentCalls,
+      });
     }
 
     case undefined:
