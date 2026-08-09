@@ -372,6 +372,53 @@ describe("createAgentCalls", () => {
       assert.equal(spec.role, "invoice-reconciler");
     });
 
+    // The two ceilings synthesis validates against have to *reach* the model, or the
+    // first answer is always a misunderstanding and the retry does the teaching. This
+    // is the file the fixture harness substitutes for, so what the model receives is
+    // asserted here or nowhere.
+    test("hands synthesis the resolved catalogue and the lease rule", async () => {
+      const { run, seen } = transport([JSON.stringify(anAgentSpec())]);
+      const calls = createAgentCalls({ config, runQuery: run });
+
+      await calls.synthesize({
+        task: aPlannedTask(),
+        envelope: {} as never,
+        toolCatalogue: ["Read", "Glob"],
+        transports: ["cli"],
+      });
+
+      assert.match(seen.prompts[0]!, /Read/);
+      assert.match(seen.prompts[0]!, /Glob/);
+      assert.match(seen.systemPrompts[0]!, /toolCatalogue/);
+      assert.match(seen.systemPrompts[0]!, /owns/);
+      // The schema is rendered into the prompt, so `owns` cannot be described in prose
+      // and absent from the shape the boundary will reject.
+      assert.match(seen.systemPrompts[0]!, /"owns"/);
+    });
+
+    // Defect 22 one level up. §3 gives the judge artifact paths and nothing else, and
+    // nothing told synthesis that — so against a real model three of four tasks came
+    // back with a rubric grading "the final message", which no judge can open. Every
+    // judge-verified task in that mission was unpassable however well it was done.
+    test("tells synthesis that a judge reads files, not the worker's message", async () => {
+      const { run, seen } = transport([JSON.stringify(anAgentSpec())]);
+      const calls = createAgentCalls({ config, runQuery: run });
+
+      await calls.synthesize({
+        task: aPlannedTask(),
+        envelope: {} as never,
+        toolCatalogue: ["Read"],
+        transports: ["cli"],
+      });
+
+      const prompt = seen.systemPrompts[0]!;
+      assert.match(prompt, /files on disk/);
+      assert.match(prompt, /final message/);
+      // The consequence, not just the rule: a document task has to write a file, or
+      // there is nothing for the rubric to be about.
+      assert.match(prompt, /leave\s*\n?a file behind/);
+    });
+
     test("judge returns a verdict with evidence behind it", async () => {
       const { run } = transport([
         JSON.stringify({

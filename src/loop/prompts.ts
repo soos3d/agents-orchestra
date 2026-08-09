@@ -12,6 +12,7 @@
 import { type MissionState } from "../events/fold.js";
 import { unreachable } from "../scheduler/ready.js";
 import { type PlanInput, type ProgressInput, type ResearchInput } from "./calls.js";
+import { pendingNotes } from "./notes.js";
 
 /** How many past ledgers the progress call sees. Enough to recognise a repeat,
  *  short enough that round 15 does not pay for round 1. */
@@ -23,8 +24,21 @@ export function buildResearchInput(
 ): ResearchInput {
   const ledger = state.mission.ledger;
   const gaps = ledger.factsToLookUp.map((entry) => entry.text);
+  // Memory only. A fact this mission's own scan established is not something research
+  // should be told to skip — the filter is what keeps `known` meaning "somebody else
+  // already checked this" (§6).
+  const known = ledger.factsVerified
+    .filter((fact) => fact.source.kind === "memory")
+    .map((fact) => fact.text);
+
+  // Whatever criteria the ledger already holds before research writes any: on a fresh
+  // mission that is nothing, and on a replay it is the saved skeleton (§7). Mapped to
+  // statements alone so no previous run's `met` can reach the call.
+  const priorCriteria = ledger.criteria.map((criterion) => ({ statement: criterion.statement }));
 
   return {
+    ...(known.length > 0 ? { known } : {}),
+    ...(priorCriteria.length > 0 ? { priorCriteria } : {}),
     question:
       gaps.length > 0
         ? `${state.mission.goal}\n\nStill open: ${gaps.join("; ")}`
@@ -48,8 +62,10 @@ export function buildPlanInput(state: MissionState, reason?: string): PlanInput 
 export function buildProgressInput(state: MissionState): ProgressInput {
   const { mission } = state;
   const stranded = unreachable(state);
+  const notes = pendingNotes(state.notes, "global").map((note) => note.text);
 
   return {
+    ...(notes.length > 0 ? { notes } : {}),
     // Carried whole, `met` included: the progress call reads that field and may not
     // infer it (§4).
     criteria: mission.ledger.criteria,

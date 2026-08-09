@@ -107,3 +107,8 @@ export async function discoverConfig(cwd = process.cwd()): Promise<DiscoveredCon
 
 export const missionDir = (stateDir: string, missionId: string): string =>
   path.join(stateDir, "missions", missionId);
+
+/** Semantic memory is cross-mission (§6), so it is a sibling of `missions/` rather
+ *  than something inside one — a mission deleted by `orchestra forget` must not take
+ *  the environment's accumulated lore with it. */
+export const loreDir = (stateDir: string): string => path.join(stateDir, "lore");

@@ -2,7 +2,7 @@
 // halves of that: what it puts in, and what context discipline keeps out.
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { emptyLedger } from "../domain/ledger.js";
+import { emptyLedger, type Fact } from "../domain/ledger.js";
 import {
   aCodeTask,
   aCriterion,
@@ -32,6 +32,67 @@ describe("buildResearchInput", () => {
     });
 
     assert.match(buildResearchInput(state).question, /which port the server binds/);
+  });
+
+  // A saved mission's criteria are a skeleton to converge on, never a result to
+  // reuse (§7): the replay re-runs research, and this is how it knows what last
+  // month's contract looked like without being handed the outcome.
+  describe("a saved mission's criteria skeleton", () => {
+    test("carries the statements, and nothing a previous run concluded", () => {
+      const state = aMissionState({
+        mission: aMission({
+          ledger: {
+            ...emptyLedger(),
+            criteria: [aCriterion({ statement: "every invoice matched", met: true })],
+          },
+        }),
+      });
+
+      assert.deepEqual(buildResearchInput(state).priorCriteria, [
+        { statement: "every invoice matched" },
+      ]);
+    });
+
+    test("is absent on a mission that has none", () => {
+      assert.equal(buildResearchInput(aMissionState()).priorCriteria, undefined);
+    });
+  });
+
+  // Search before you research (§5): a fact memory already established is research
+  // effort that does not have to be spent again. Only memory-sourced facts qualify —
+  // this call's own findings are what it is about to write, and handing them back as
+  // "already known" would tell it not to do its job.
+  describe("what memory already established", () => {
+    const withFacts = (facts: Fact[]) =>
+      aMissionState({ mission: aMission({ ledger: { ...emptyLedger(), factsVerified: facts } }) });
+
+    const aFact = (patch: Partial<Fact> = {}): Fact => ({
+      id: "m1",
+      text: "the API client lives in src/net",
+      addedRound: 0,
+      source: { kind: "memory", ref: "lore-1" },
+      observedAt: "2026-07-01T00:00:00.000Z",
+      ...patch,
+    });
+
+    test("carries memory-sourced facts as known", () => {
+      const input = buildResearchInput(withFacts([aFact()]));
+
+      assert.deepEqual(input.known, ["the API client lives in src/net"]);
+    });
+
+    test("leaves out facts this mission established itself", () => {
+      const state = withFacts([
+        aFact(),
+        aFact({ id: "f1", text: "routes live in src/routes", source: { kind: "research", ref: "src/routes" } }),
+      ]);
+
+      assert.deepEqual(buildResearchInput(state).known, ["the API client lives in src/net"]);
+    });
+
+    test("is absent when memory contributed nothing", () => {
+      assert.equal(buildResearchInput(aMissionState()).known, undefined);
+    });
   });
 });
 

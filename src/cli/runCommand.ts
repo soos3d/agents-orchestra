@@ -10,21 +10,39 @@
 import path from "node:path";
 import { type Budget, type Spend } from "../domain/budget.js";
 import { type Envelope } from "../domain/envelope.js";
+import { type Criterion, type PlannedTask } from "../domain/ledger.js";
 import { type Estimate } from "../domain/mission.js";
 import { type Calls } from "../loop/calls.js";
+import { anyOf, type HumanPort } from "../loop/human.js";
 import { prepareMission } from "../loop/prepare.js";
 import { createFileStore } from "../loop/store.js";
-import { missionDir, type DiscoveredConfig } from "../config/discover.js";
-import { executeMission } from "./execute.js";
+import { type MissionStore } from "../loop/run.js";
+import { loreDir, missionDir, type DiscoveredConfig } from "../config/discover.js";
+import { readLore } from "../memory/lore.js";
+import { loadSavedMission, seedFromSaved, type SavedMission } from "../memory/savedMission.js";
+import { DEFAULT_TOOL_CLASSES } from "../workers/toolCatalogue.js";
+import { type ClientMessage } from "../web/protocol.js";
+import { startWebServer, type RunningServer } from "../web/server.js";
+import { createWebHuman, type WebHuman } from "../web/webHuman.js";
+import { executeMission, promotedAgents } from "./execute.js";
+import { renderCriteria, renderEstimate, renderPlan } from "./render.js";
 import { type Io } from "./main.js";
 
 const DEFAULT_BUDGET_MINUTES = 240;
 
 export interface RunOptions {
+  /** Empty is legal only alongside `saved`, whose goal is then the goal. An explicit
+   *  one wins, because "same job, different month" is what a replay usually is. */
   goal: string;
   planOnly: boolean;
   unattended: boolean;
   force: boolean;
+  /** The saved mission to replay (§7). Scan and research run again regardless. */
+  saved?: string;
+  /** The dashboard is the primary interface (§2b), so it is on unless asked otherwise.
+   *  `--no-web` exists for CI, where binding a port is a nuisance rather than a
+   *  feature and nobody is going to open it. */
+  web: boolean;
   budgetMinutes: number;
 }
 
@@ -34,9 +52,18 @@ export function parseRunArgs(argv: readonly string[]): ParsedRun {
   const goals: string[] = [];
   const flags = new Set<string>();
   let budgetMinutes = DEFAULT_BUDGET_MINUTES;
+  let saved: string | undefined;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
+    if (arg === "--saved") {
+      const name = argv[++i];
+      if (!name || name.startsWith("--")) {
+        return { ok: false, message: "--saved takes a name, e.g. --saved monthly-reconcile." };
+      }
+      saved = name;
+      continue;
+    }
     if (arg === "--budget") {
       const minutes = Number(argv[++i]);
       if (!Number.isFinite(minutes) || minutes <= 0) {
@@ -53,22 +80,31 @@ export function parseRunArgs(argv: readonly string[]): ParsedRun {
   }
 
   const goal = goals.join(" ").trim();
-  if (!goal) return { ok: false, message: 'Usage: orchestra run "<goal>" [--plan-only] [--budget <minutes>]' };
+  // A saved mission carries its own goal, so the positional one becomes an override
+  // rather than a requirement.
+  if (!goal && saved === undefined) {
+    return {
+      ok: false,
+      message:
+        'Usage: orchestra run "<goal>" [--plan-only] [--budget <minutes>] [--saved <name>]',
+    };
+  }
 
   const unknown = [...flags].find(
-    (flag) => !["--plan-only", "--unattended", "--force"].includes(flag),
+    (flag) => !["--plan-only", "--unattended", "--force", "--no-web"].includes(flag),
   );
   if (unknown) return { ok: false, message: `Unknown flag '${unknown}'.` };
 
   const unattended = flags.has("--unattended");
-  // §7 couples the two deliberately: the easy path to skipping sign-off should be a
-  // mission whose criteria a human already approved. `--saved` is Phase 5, so until
-  // then the explicit `--force` is what stands in for that decision.
-  if (unattended && !flags.has("--force")) {
+  // §7 couples the two deliberately: the easy path to skipping sign-off is a mission
+  // whose criteria a human already approved and has not edited since. `--force` is
+  // still offered, because a first run of something you trust is a real case — it is
+  // just the one you have to type out.
+  if (unattended && saved === undefined && !flags.has("--force")) {
     return {
       ok: false,
       message:
-        "--unattended skips sign-off, so it needs --force (or, from Phase 5, --saved).\n" +
+        "--unattended skips sign-off, so it needs --saved <name> or an explicit --force.\n" +
         "A first run of anything deserves a look at the plan.",
     };
   }
@@ -80,7 +116,9 @@ export function parseRunArgs(argv: readonly string[]): ParsedRun {
       planOnly: flags.has("--plan-only"),
       unattended,
       force: flags.has("--force"),
+      web: !flags.has("--no-web"),
       budgetMinutes,
+      ...(saved === undefined ? {} : { saved }),
     },
   };
 }
@@ -103,7 +141,10 @@ export function newMissionId(goal: string, at: Date): string {
  *  work — the repo, no network, and no browser. */
 export function defaultEnvelope(config: DiscoveredConfig, budget: Budget): Envelope {
   return {
-    toolClasses: ["fs.read", "fs.write", "shell.run"],
+    // From the catalogue rather than written out here, because these classes have to
+    // resolve to tools synthesis can actually offer — a class this file invents grants
+    // nothing and every task fails validation on a spelling.
+    toolClasses: [...DEFAULT_TOOL_CLASSES],
     domains: [],
     fsRoots: [config.repoRoot ?? config.cwd],
     network: "none",
@@ -117,6 +158,9 @@ export interface RunDeps {
    *  The loop's own calls are the part actually billed, so they are recorded under
    *  their own phase rather than folded into task spend (§9.5). */
   createCalls(config: DiscoveredConfig, onSpend: (spend: Spend) => void): Calls;
+  /** Injected so a run is testable without a tty. Absent under `--unattended`, and
+   *  absent means nobody is there. */
+  human?: HumanPort;
   now?: () => Date;
 }
 
@@ -127,13 +171,46 @@ export async function runMission(
   deps: RunDeps,
 ): Promise<number> {
   const now = deps.now ?? (() => new Date());
-  const missionId = newMissionId(options.goal, now());
+
+  // Loaded before anything is written, so a name nobody saved costs a message rather
+  // than a mission directory holding one event (§7).
+  let saved: SavedMission | undefined;
+  if (options.saved !== undefined) {
+    try {
+      saved = loadSavedMission(config.stateDir, options.saved);
+    } catch (error) {
+      io.err((error as Error).message);
+      return 1;
+    }
+  }
+
+  const goal = options.goal || saved?.goal || "";
+  const missionId = newMissionId(goal, now());
   const dir = missionDir(config.stateDir, missionId);
   const budget: Budget = { wallMs: options.budgetMinutes * 60_000 };
 
   const store = createFileStore(dir);
+
+  // Every emit pushes to whatever tabs are open. Wrapped rather than built into the
+  // store because the store's job is the log, and a store that knew about sockets
+  // would be a store that could not be tested without one.
+  let server: RunningServer | undefined;
+
+  // Panic reaches the workers through this, and the loop through the `panicked` flag
+  // the event sets. Two mechanisms because they stop different things: the signal
+  // kills what is already running, the flag stops anything else being dispatched.
+  const panic = new AbortController();
+
+  const wired: MissionStore = {
+    state: store.state,
+    emit: (input) => {
+      store.emit(input);
+      server?.publish();
+    },
+  };
+
   const calls = deps.createCalls(config, (spend) =>
-    store.emit({
+    wired.emit({
       type: "spend_recorded",
       missionId,
       actor: "orchestrator",
@@ -142,79 +219,178 @@ export async function runMission(
     }),
   );
 
-  store.emit({
+  wired.emit({
     type: "mission_created",
     missionId,
     actor: "human",
-    goal: options.goal,
-    envelope: defaultEnvelope(config, budget),
+    goal,
+    // A saved mission's envelope is the one a human already scoped (§7), which is what
+    // makes `--unattended --saved` a defensible trade. Its spend ceiling is this run's
+    // though: `--budget` is per run, and silently replaying last month's would make
+    // the flag a no-op on exactly the missions that use it most.
+    envelope: saved
+      ? { ...saved.envelope, maxSpend: budget }
+      : defaultEnvelope(config, budget),
     budget,
     unattended: options.unattended,
   });
 
-  io.out(`${missionId}: ${options.goal}`);
+  if (saved) {
+    // Answers and criteria enter the ledger before the scan, so intake reads the
+    // answers as `known` and research is handed the skeleton to converge on. Both are
+    // ordinary mutable ledger state at this point — sign-off has not happened, which
+    // is the only reason writing criteria here is legal (§3).
+    wired.emit({
+      type: "ledger_revised",
+      missionId,
+      actor: "human",
+      ledger: seedFromSaved(wired.state().mission.ledger, saved),
+      reason: "saved",
+    });
+    io.out(`replaying saved mission '${saved.name}' (saved ${saved.savedAt})`);
+  }
 
-  const prepared = await prepareMission({
-    store,
-    calls,
-    planOnly: options.planOnly,
-    unattended: options.unattended,
-  });
+  io.out(`${missionId}: ${goal}`);
 
-  if (!prepared.ok) {
-    io.err(prepared.reason);
-    for (const rejection of prepared.rejected ?? []) {
-      io.err(`  rejected: ${rejection.criterion} — ${rejection.reason}`);
+  // `--unattended` is the one flag that removes the human, and it is read per run and
+  // never written anywhere (§13, §17): the easy path stays the one where somebody
+  // looked at the plan.
+  const attended = !options.unattended;
+
+  // No dashboard for `--plan-only`: it prints and exits, so a port nobody can reach
+  // in time is a port for nothing. It is the CI mode, and CI has no browser.
+  const web = attended && options.web && !options.planOnly ? createWebHuman() : undefined;
+
+  if (web) {
+    server = await startWebServer({
+      events: () => store.events(),
+      onMessage: (message) =>
+        handleFromDashboard(message, web, wired, missionId, io, () => panic.abort()),
+      onWarn: (message) => io.err(message),
+    });
+    io.out(`dashboard: ${server.url}`);
+  }
+
+  // Either surface may answer; §10's one-inbox rule, one level down.
+  const surfaces = [...(deps.human ? [deps.human] : []), ...(web ? [web] : [])];
+  const human = attended && surfaces.length > 0 ? anyOf(surfaces) : undefined;
+
+  // The server outlives every return below, including the failure ones, so it is
+  // closed in one place rather than at each exit — a missed one leaves the process
+  // holding a port after the mission has finished.
+  try {
+    const prepared = await prepareMission({
+      store: wired,
+      calls,
+      planOnly: options.planOnly,
+      unattended: options.unattended,
+      ...(human ? { human } : {}),
+      // Memory first (§5, §6). Bound here rather than inside `prepareMission`,
+      // which never touches disk — and bound unconditionally, because an optional
+      // dependency nothing passes is a feature that is finished and switched off at
+      // the same time (defects 12b, 23, 24). An absent lore directory is empty
+      // memory, which is what the first mission in a repo has.
+      recall: () => readLore(loreDir(config.stateDir), now(), (message) => io.err(message)),
+      // Procedural memory (§6, §7), bound here for the same reason `recall` is — and
+      // at *this* root as well as `executeMission`'s, because `run` staffs its
+      // approved plan inside `prepareMission` and `resume` staffs it afterwards. One
+      // of the two wired is a feature switched off on the commoner path.
+      profiles: promotedAgents(config, (message) => io.err(message)),
+      onWarn: (message) => io.err(message),
+    });
+
+    if (!prepared.ok) {
+      io.err(prepared.reason);
+      for (const rejection of prepared.rejected ?? []) {
+        io.err(`  rejected: ${rejection.criterion} — ${rejection.reason}`);
+      }
+      return 1;
     }
-    return 1;
+
+    printPlan(prepared.criteria, prepared.plan, prepared.estimate, io);
+
+    if (options.planOnly) {
+      io.out("");
+      io.out(`--plan-only: nothing dispatched. Resume with 'orchestra resume ${missionId}'.`);
+      return 0;
+    }
+
+    // `prepareMission` already signed off and synthesized, so this is the loop and
+    // nothing else — the same call `resume` makes, against the same wiring.
+    const { code } = await executeMission({
+      store: wired,
+      calls: () => calls,
+      config,
+      io,
+      signal: panic.signal,
+      ...(human ? { human } : {}),
+    });
+    return code;
+  } finally {
+    await server?.close();
   }
-
-  printPlan(prepared.criteria, prepared.plan, prepared.estimate, io);
-
-  if (options.planOnly) {
-    io.out("");
-    io.out(`--plan-only: nothing dispatched. Resume with 'orchestra resume ${missionId}'.`);
-    return 0;
-  }
-
-  // `prepareMission` already signed off and synthesized, so this is the loop and
-  // nothing else — the same call `resume` makes, against the same wiring.
-  const { code } = await executeMission({ store, calls: () => calls, config, io });
-  return code;
 }
 
+/**
+ * Everything the dashboard can say, routed.
+ *
+ * Notes and panic are recorded rather than answered: §10's rule is that a note never
+ * blocks and never waits for a turn boundary, so the only correct response to one is
+ * to write it down and let the loop pick it up. Sign-off and intake are the two that
+ * something is actually waiting on, and those go to the port.
+ */
+function handleFromDashboard(
+  message: ClientMessage,
+  human: WebHuman,
+  store: MissionStore,
+  missionId: string,
+  io: Io,
+  onPanic: () => void,
+): { ok: true } | { ok: false; problem: string } {
+  const base = { missionId, actor: "human" as const };
+
+  if (message.kind === "note") {
+    store.emit({
+      ...base,
+      type: "note_received",
+      scope: message.scope,
+      text: message.text,
+      ...(message.taskId ? { taskId: message.taskId } : {}),
+    });
+    return { ok: true };
+  }
+
+  if (message.kind === "panic") {
+    // Recorded here and acted on by the abort signal the CLI already owns (§9.6).
+    // Graceful drain is the wrong response to a worker on the wrong page in a bank,
+    // so this is deliberately not `pause`.
+    store.emit({ ...base, type: "panic", reason: message.reason, by: "dashboard" });
+    io.err(`PANIC requested from the dashboard: ${message.reason}`);
+    onPanic();
+    return { ok: true };
+  }
+
+  return human.deliver(message)
+    ? { ok: true }
+    : { ok: false, problem: "nothing is waiting on that right now." };
+}
+
+/** What `--plan-only` prints. The same renderers the sign-off screen uses, so the CI
+ *  output and the screen a human approves cannot drift apart. */
 function printPlan(
-  criteria: readonly { id: string; statement: string; check: { kind: string } }[],
-  plan: readonly { id: string; goal: string; worker: string; dependsOn: string[] }[],
+  criteria: readonly Criterion[],
+  plan: readonly PlannedTask[],
   estimate: Estimate,
   io: Io,
 ): void {
-  io.out("");
-  io.out("CRITERIA");
-  for (const criterion of criteria) {
-    io.out(`  ${criterion.id}  ${criterion.statement}`);
-    io.out(`      check ▸ ${criterion.check.kind}`);
+  for (const line of [
+    "",
+    ...renderCriteria(criteria),
+    ...renderPlan(plan),
+    ...renderEstimate(estimate, plan),
+  ]) {
+    io.out(line);
   }
-
-  io.out("");
-  io.out("PLAN");
-  for (const task of plan) {
-    const after = task.dependsOn.length > 0 ? ` after ${task.dependsOn.join(", ")}` : "";
-    io.out(`  ${task.id}  [${task.worker}] ${task.goal}${after}`);
-  }
-
-  io.out("");
-  // Measured and unmeasured are reported separately (§9.5): a single confident token
-  // number that omits every CLI worker reads as a cheap mission.
-  const cliTasks = plan.filter((task) => task.worker === "code").length;
-  io.out(
-    `ESTIMATE  ${estimate.taskCount} tasks · ~${Math.round(estimate.wallMs / 60_000)} min · ` +
-      `${estimate.expectedGates} gates`,
-  );
-  io.out(
-    `          ~${Math.round(estimate.tokens / 1000)}k tokens measured, ` +
-      `${cliTasks} CLI runs unmeasured`,
-  );
 }
 
 export const missionPath = (config: DiscoveredConfig, missionId: string): string =>

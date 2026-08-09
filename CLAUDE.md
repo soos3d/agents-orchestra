@@ -9,18 +9,39 @@ spec, plans tasks, synthesizes a purpose-built agent per task, runs them in para
 worktrees, verifies, and re-plans each round. One npm package, one `orchestra` bin, no services
 and no database — setup simplicity is a hard constraint, not a cleanup item.
 
-**Phases 1 and 2 exist.** `orchestra run "<goal>"` researches, writes an outcome spec, plans,
-synthesizes, dispatches, verifies, merges, and replans; `--plan-only` stops after the estimate.
-Other commands: `doctor`, `resume <missionId>`, `forget <missionId>`, `help`.
+**Phases 1–5 exist.** `orchestra run "<goal>"` scans, asks up to three intake questions, researches,
+writes an outcome spec, plans, **waits for a human to sign off**, then synthesizes, dispatches,
+verifies, merges, and replans; `--plan-only` stops after the estimate. An attended run also serves a
+dashboard on loopback (`--no-web` turns it off). Other commands: `doctor`, `resume <missionId>`,
+`forget <missionId>`, `save <missionId> --as <name>`, `promote <missionId> <taskId> --as <name>`,
+`help`.
 
-`src/loop/calls.ts` is still the seam: the five model calls (`research`, `plan`, `synthesize`,
+**Phase 5 added `src/memory/`** — the semantic and procedural tiers (§6, §7), all markdown under
+`<stateDir>`: `lore/` (one fact per file; provenance required at write, `principle` human-only,
+stale entries re-enter the ledger as guesses via `recallToLedger`), `saved/` (saved missions —
+deliberately not `missions/`, which holds state dirs), and `profiles/` (promoted `AgentSpec`s,
+offered to synthesis as hints that still pass full validation). Recall, write-back
+(`memory/writeBack.ts`), and profile loading are optional deps wired in `runCommand.ts` and
+`buildLoopDeps` — each has a composition-root test, which is the defect-12b lesson applied. Replays
+of a saved mission re-run scan and research; `--unattended` requires `--saved` or `--force`.
+
+`src/loop/calls.ts` is still the seam: the model calls (`research`, `intake`, `plan`, `synthesize`,
 `progress`, `judge`) as an interface, implemented for real in `loop/agentCalls.ts` and scripted in
 `testing/fixtures.ts`. **Everything above that interface is tested with no model and no spend, and
 it should stay that way** — a test that needs a live call belongs behind an injected transport.
 
-Unproven: a whole mission of non-coding tasks against a real model (the one open Phase 2 exit
-criterion). Phase 3 — sign-off, intake, the web shell — has not started, so the loop auto-approves
-its own sign-off and records that it did.
+§3 names five decision points and `intake` is the sixth. It is a one-shot call rather than the
+streaming conversation §3 imagined, because §2b caps intake at three questions asked once — which
+keeps it *above* the seam, where the cap and the answers are assertable. That closes defect 15.
+
+`src/loop/human.ts` is the second seam, and it is the one Phase 3 added: the two places a mission
+blocks on a person. The terminal (`cli/terminal.ts`), the dashboard (`web/webHuman.ts`), and
+`unattendedHuman` all implement it, and `anyOf` lets a decision arrive from whichever surface answers
+first. `prepareMission` cannot tell them apart, which is the point.
+
+Still open in Phase 3: `ask_human` does not park a task mid-round, panic has no browser session to
+close until Phase 8, and there is no compose screen — a mission is started with `orchestra run` and
+the dashboard attaches to one that exists.
 
 The design docs are authoritative and code comments cite them by section number (`§9.1`,
 `§2a rule 5`, "defect 13"). Read the cited section before changing the behavior it describes.
@@ -89,6 +110,14 @@ folded state — which is what makes the whole loop assertable against a canned 
 
 ## Gotchas
 
+- **The web layer is below the fixture harness, exactly like `agentCalls.ts`.** Nothing above it
+  substitutes for a socket. Keep what the server *decides* — `eventsSince`, `parseClientMessage`,
+  `renderSignoff` — in pure functions with tests, and leave only plumbing in `web/server.ts`.
+- **End of input is not approval.** `Prompter.ask` returns `undefined` for a closed pipe and `""` for
+  a human pressing Enter, and conflating them hands sign-off to a shell redirect. The same
+  distinction is why the terminal port *rejects* on intake when nothing was answered: these ports
+  race, and a port that cheerfully returns "no answers" wins that race and the browser never gets
+  asked.
 - `events/log.ts` `append` **must stay synchronous** — gapless `seq` depends on an in-memory
   counter advanced only after the write returns.
 - The outcome spec is written by the `research` call, and its `criteria` are deliberately typed
@@ -98,13 +127,32 @@ folded state — which is what makes the whole loop assertable against a canned 
   is told nothing about a criterion by the derived schema — `RESEARCH_PROMPT` spells out
   `criterionSchema` and the `VerifySpec` union by hand. Change one and change the other.
 - **`agentCalls.ts` is the one file the fixture harness cannot cover**, since it is the thing the
-  harness substitutes for. Four defects hid there behind 331 green tests until the first real-model
-  run. Anything the model *receives* — SDK options, prompt text, a decision point's input — belongs
-  in a pure function (`queryOptions`, `withSchema`, `AVAILABLE_TRANSPORTS`) so the next regression
-  is catchable for free, and still wants one real `--plan-only` run before you believe it.
+  harness substitutes for. Five defects hid there behind 331 green tests until the first real-model
+  run, and a sixth (25) behind 461. Anything the model *receives* — SDK options, prompt text, a
+  decision point's input — belongs in a pure function (`queryOptions`, `withSchema`,
+  `AVAILABLE_TRANSPORTS`) so the next regression is catchable for free, and still wants one real run
+  before you believe it.
+- **A judge reads files, and a rubric has to be about them.** §3 hands the judge `artifactPaths` and
+  nothing else. Defect 22 was the judge having no tools to open them; defect 25 was synthesis writing
+  "PASS only if the final message…", which no judge can evaluate. Both made every judge-verified
+  criterion unpassable, and neither was visible to the suite.
 - `AVAILABLE_TRANSPORTS` in `workers/transport.ts` is the registry, and it is shorter than §7's
   table. Synthesis is told what it may pick and a spec outside it fails at validation (§7) — not at
   dispatch, where it costs a typed retry and a replan to learn the same thing.
+- **`workers/toolCatalogue.ts` is the other half of that**, and it translates rather than filters:
+  the envelope is written in *classes* because a human reviews it, and a spec comes back in *tool
+  names*. `resolveClasses` is what synthesis offers the model, `classOf` is what maps the answer back
+  so `violations()` has something to judge. `AgentSpec.tools` is `z.array(z.string())` on purpose —
+  an out-of-envelope tool has to be representable or the validation is untestable, the same argument
+  that keeps `criteria` typed `unknown[]`.
+- **An empty `owns` is not "no restriction", it is a lease that matches nothing.** `readyTasks` skips
+  the overlap check when a code task declares none, and `detectEscape` then counts every changed file
+  as an escape — so a code spec without a lease is refused at synthesis (defect 23).
+- **An optional field on a `Deps` interface is a place a feature can be finished and switched off at
+  once.** `requestExtension`, `owns`, and `reformat` were each built to spec, unit-tested, and
+  reachable only through a parameter no entry point passed; all three surfaced on a real mission
+  rather than in the suite. When you add one, test the composition root that builds it
+  (`buildLoopDeps`, `runMission`), not only the mechanism.
 - `attempts` is incremented in `fold`'s `task_status` handler when a task enters `running`; there is
   no separate dispatch event. The §9.4 retry cap reads it.
 - Worktrees are pinned to an explicit base sha, never HEAD. Compare paths through

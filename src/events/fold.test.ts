@@ -241,6 +241,92 @@ describe("fold", () => {
     });
   });
 
+  // §6's rule, and the reason memory is worth having at all: a fact recalled from the
+  // lore store enters the ledger tier the planner trusts, a stale one enters as a
+  // guess, and both survive a resume because the recall is an event rather than a
+  // variable that lived for one process.
+  describe("memory", () => {
+    const recalled = (): EventInput => ({
+      ...orchestrator,
+      type: "memory_recalled",
+      facts: [
+        {
+          id: "m1",
+          text: "the API client lives in src/net",
+          addedRound: 0,
+          source: { kind: "memory", ref: "lore-1" },
+          observedAt: "2026-07-01T00:00:00.000Z",
+        },
+      ],
+      guesses: [
+        {
+          id: "mg1",
+          text: "Stripe retries webhooks for 3 days",
+          addedRound: 0,
+          confidence: "low",
+          basis: "stale research lore lore-2 — re-verify before relying on it",
+        },
+      ],
+      consulted: 2,
+    });
+
+    test("a recalled fact lands in factsVerified and a stale one in guesses", () => {
+      const state = foldOf([missionCreated(), recalled()]);
+
+      assert.deepEqual(
+        state.mission.ledger.factsVerified.map((fact) => [fact.id, fact.source.kind]),
+        [["m1", "memory"]],
+      );
+      assert.deepEqual(
+        state.mission.ledger.guesses.map((guess) => [guess.id, guess.confidence]),
+        [["mg1", "low"]],
+      );
+    });
+
+    test("recall appends rather than replacing what the ledger already holds", () => {
+      const state = foldOf([
+        missionCreated(),
+        {
+          ...orchestrator,
+          type: "ledger_revised",
+          reason: "research",
+          ledger: {
+            ...emptyLedger(),
+            factsVerified: [
+              {
+                id: "f1",
+                text: "routes live in src/routes",
+                addedRound: 0,
+                source: { kind: "research", ref: "src/routes/index.ts" },
+                observedAt: "2026-07-25T10:00:00.000Z",
+              },
+            ],
+          },
+        },
+        recalled(),
+      ]);
+
+      assert.deepEqual(state.mission.ledger.factsVerified.map((fact) => fact.id), ["f1", "m1"]);
+    });
+
+    // The audit trail for the write-back. Promotion writes files a human can read and
+    // delete, so the log has to say which ones this mission wrote.
+    test("memory_written is recorded without changing mission state", () => {
+      const before = foldOf([missionCreated()]);
+      const after = foldOf([
+        missionCreated(),
+        {
+          ...orchestrator,
+          type: "memory_written",
+          path: "/state/lore/routes-live-in-src-routes-abc123.md",
+          loreType: "observation",
+        },
+      ]);
+
+      assert.deepEqual(after.mission.ledger, before.mission.ledger);
+    });
+  });
+
   describe("criteria and spend", () => {
     test("a criterion check records met, evidence, and the round it ran in", () => {
       const state = foldOf([

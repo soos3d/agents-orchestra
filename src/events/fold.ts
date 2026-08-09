@@ -59,6 +59,17 @@ export interface MissionState {
   notes: Note[];
   workers: Record<string, WorkerHandle>;
   panicked: boolean;
+  /**
+   * The research brief and what the spec ruled out, both shown at sign-off (§13).
+   *
+   * Folded rather than passed along, because sign-off can happen on a different run
+   * than the one that planned: a mission may sit `awaiting_signoff` overnight, and
+   * the screen a human approves has to render from the log alone. Keeping them in a
+   * variable would mean a resumed mission shows an empty spec and asks for approval
+   * anyway.
+   */
+  brief: string;
+  outOfScope: string[];
   lastSeq: number;
 }
 
@@ -168,10 +179,14 @@ const handlers: Handlers = {
       openedAt: event.at,
     }),
   intake_answered: (state, event) => resolveInbox(state, event.questionId, event.at),
-  research_completed: (state, event) => recordSpend(state, "research", event.spend),
+  research_completed: (state, event) => {
+    state.brief = event.brief;
+    recordSpend(state, "research", event.spend);
+  },
 
   // ── the contract ───────────────────────────────────────────────────
   outcome_spec_written: (state, event) => {
+    state.outOfScope = event.outOfScope;
     state.mission = {
       ...state.mission,
       estimate: event.estimate,
@@ -215,6 +230,23 @@ const handlers: Handlers = {
   replan_started: (state, event) => {
     state.mission = { ...state.mission, resets: event.resets, stalls: 0 };
   },
+  // Appended to both tiers, never assigned: the scan's facts may already be there,
+  // and the split between them is §6's rule rather than a detail — a stale fact
+  // arrives as a guess so a memory nobody re-checked cannot be trusted as ground
+  // truth by every later plan. Ids are allocated by the emitter, which is the only
+  // place that can see what the ledger already holds.
+  memory_recalled: (state, event) => {
+    const ledger = state.mission.ledger;
+    state.mission = {
+      ...state.mission,
+      ledger: {
+        ...ledger,
+        factsVerified: [...ledger.factsVerified, ...event.facts],
+        guesses: [...ledger.guesses, ...event.guesses],
+      },
+    };
+  },
+  memory_written: noop, // lore lives on disk, not in mission state; this is the trail
   dead_end_added: (state, event) => {
     state.mission = {
       ...state.mission,
@@ -405,6 +437,8 @@ function seed(event: Extract<Event, { type: "mission_created" }>): MissionState 
     notes: [],
     workers: {},
     panicked: false,
+    brief: "",
+    outOfScope: [],
     lastSeq: event.seq,
   };
 }

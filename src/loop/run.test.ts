@@ -132,6 +132,9 @@ function harness(options: {
     research: async () => {
       throw new Error("the loop does not research");
     },
+    intake: async () => {
+      throw new Error("the loop does not run intake; it happens once, before sign-off");
+    },
     plan: async (input) => {
       seen.plan.push(input);
       const answer = options.plan?.[planIndex++];

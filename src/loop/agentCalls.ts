@@ -43,6 +43,7 @@ import { agentSpecSchema } from "../domain/task.js";
 import { extractJsonObject, renderSchema } from "../runtime/json.js";
 import {
   type Calls,
+  type IntakeResult,
   type JudgeResult,
   type PlanResult,
   type ResearchResult,
@@ -147,6 +148,13 @@ export function createAgentCalls(deps: AgentCallsDeps): Calls {
         systemPrompt: RESEARCH_PROMPT,
         prompt: describe("Research request", input),
         schema: researchSchema,
+      }),
+
+    intake: (input) =>
+      ask("intake", {
+        systemPrompt: INTAKE_PROMPT,
+        prompt: describe("What the scan found", input),
+        schema: intakeSchema,
       }),
 
     plan: (input) =>
@@ -258,6 +266,19 @@ const researchSchema: z.ZodType<ResearchResult> = z.object({
   outOfScope: z.array(z.string()).optional(),
 });
 
+// No cap here on purpose. §2b's limit of three is enforced in `loop/intake.ts`, where
+// a fourth question is dropped rather than rejected — a schema violation would cost a
+// reformat call and end with the same three questions.
+const intakeSchema: z.ZodType<IntakeResult> = z.object({
+  questions: z.array(
+    z.object({
+      id: z.string().min(1),
+      question: z.string().min(1),
+      options: z.array(z.string()).optional(),
+    }),
+  ),
+});
+
 const planSchema: z.ZodType<PlanResult> = z.object({
   tasks: z.array(plannedTaskSchema),
   criteria: z.array(criterionSchema).optional(),
@@ -278,6 +299,17 @@ outcome spec it will be judged against.
 Return findings with a real source each — a URL, a file path, or a memory path. A
 claim you cannot source is a guess, so put it in \`guesses\` rather than \`findings\`.
 
+Anything under \`known\` was established by a previous mission and is already in the
+ledger. Do not re-verify it and do not return it as a finding; spend the research
+effort on what it leaves open. Facts that needed re-checking are not in that list —
+they were handed back as guesses instead.
+
+Anything under \`priorCriteria\` is what this same job was judged against on a previous
+run. It is a starting skeleton to converge on, not a contract to copy: re-validate every
+statement against what you find in the environment now, drop what no longer applies, and
+add what this run needs. A criterion carried over unexamined is last month's answer to
+this month's question.
+
 Every criterion needs a \`check\` that will actually produce an answer: a command to
 run, or a rubric for a judge to grade artifacts against. A criterion nothing can
 evaluate means the mission can never legitimately report success, and it is rejected.
@@ -291,6 +323,25 @@ ${renderSchema(criterionSchema)}
 
 Note the \`check\` union: \`command\` needs a \`command\` string, \`judge\` needs a
 \`rubric\`, and \`none\` needs a \`reason\` justifying why nothing can check it.
+
+${SHAPE}`;
+
+const INTAKE_PROMPT = `You ask a human the few questions that would change how this
+mission is planned, having already looked at their environment.
+
+You get at most three, and fewer is better. Anything you do not ask becomes a labelled
+guess the human reviews at sign-off, which is a cheaper place to catch it than a
+question they have to stop and answer.
+
+Ask only what is *load-bearing* — where two readings of the brief lead to different
+work — and only what the findings show is genuinely ambiguous. Two test commands in
+one repo is a real question. "What does done look like?" is not: they answered that by
+writing the brief, and asking it back reads as not having looked.
+
+Ground every question in something the findings actually show, and name it. Offer
+\`options\` when the answer is a choice between things you found.
+
+Ask nothing at all if nothing is ambiguous. An empty list is a good answer.
 
 ${SHAPE}`;
 
@@ -312,10 +363,13 @@ applied on your say-so.
 ${SHAPE}`;
 
 const SYNTHESIZE_PROMPT = `You write the agent that will do one task: its role, its
-system prompt, its transport, and how its work gets checked.
+system prompt, its transport, the tools it holds, and how its work gets checked.
 
-Draw tools only from the envelope you are given. You may narrow it and never widen
-it — a request for anything outside it fails validation.
+\`tools\` must be names from the \`toolCatalogue\` in the input, and nothing else. That
+list is already the mission envelope resolved to concrete tools, so it is the ceiling
+— you may take fewer and you can never take more. A name outside it fails validation
+whether it is a capability the envelope withheld or a tool that does not exist. Grant
+least privilege: a task that only reads should not hold \`Write\` or \`Bash\`.
 
 \`transport.id\` must be one of the \`transports\` listed in the input, which are the
 ones that are actually built. Others exist in the design and would fail at dispatch,
@@ -323,8 +377,43 @@ so choosing one costs the task a retry and the mission a replan. When the only
 transport is \`cli\`, set \`transport.target\` to the CLI that suits the task —
 \`claude\` or \`codex\` — whatever kind of work it is.
 
+\`owns\` is required when \`worker\` is \`code\` and must be left out otherwise. It is
+the set of file globs this task will write, e.g.
+\`["src/routes/health.ts", "test/health.test.ts"]\`. Two workers are running in
+parallel worktrees, so this is what stops them editing the same file, and it is checked
+again after the worker returns — a file written outside the lease fails the task. Name
+the files as narrowly as you can. A broad lease like \`src/**\` is not the safe choice:
+it blocks every other task that touches the tree and serializes the mission behind this
+one.
+
+Anything under \`profiles\` is an agent a human kept from an earlier mission — prior
+art, not a roster. Adapt one where it fits this task, or ignore them all and write
+something new; nothing here is preferred for being saved, and a profile's tools,
+transport, and lease are checked against *this* mission's envelope like any other, so
+copying one across does not carry its capabilities with it.
+
 The system prompt is for the worker, which sees no mission context. Write what it
 needs to do this task well and nothing about the mission around it.
+
+\`verify\` is how this specific work gets checked, and each kind is evaluated against
+something different:
+
+- \`command\` — run in the task's working directory. It passes on exit 0.
+- \`judge\` — a separate model grades the rubric **against files on disk**. It is given
+  the paths of the artifacts this task wrote and nothing else: not the worker's final
+  message, not its summary, not its transcript. Grading a summary written by the thing
+  being graded is not verification, so that door is closed and no rubric can open it.
+- \`none\` — needs a written reason.
+
+So a rubric that says "the final message must…", "the output must…", or "the report
+must contain…" cannot be evaluated and the task fails however well it was done. If the
+deliverable is a document, a review, or a set of findings, then **the work has to leave
+a file behind**: say so in the system prompt, name the path, and write the rubric about
+that file's contents. If the task genuinely produces no file, use \`command\` or
+\`none\` with a reason — never \`judge\`.
+
+Keep the rubric short enough to apply. It is a checklist for a reader who has only the
+files, not a specification of the work.
 
 ${SHAPE}`;
 

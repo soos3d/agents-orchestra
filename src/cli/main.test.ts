@@ -8,9 +8,13 @@ import { after, beforeEach, describe, test } from "node:test";
 import { main, type Io } from "./main.js";
 import { createEventLog } from "../events/log.js";
 import { missionDir } from "../config/discover.js";
+import { emptyLedger } from "../domain/ledger.js";
 import {
   aCodeTask,
   aCriterion,
+  aMission,
+  aMissionState,
+  anEnvelope,
   anAgentSpec,
   aPlannedTask,
   aProgressLedger,
@@ -19,6 +23,9 @@ import {
 } from "../testing/fixtures.js";
 import { type EventInput } from "../events/schema.js";
 import { type Calls } from "../loop/calls.js";
+import { writeLore } from "../memory/lore.js";
+import { parseProfile, saveProfile } from "../memory/profiles.js";
+import { parseSavedMission, saveMission } from "../memory/savedMission.js";
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "orchestra-cli-"));
 let stateDir: string;
@@ -41,6 +48,18 @@ after(() => {
 });
 
 const orchestrator = { missionId: "m1", actor: "orchestrator" } as const;
+
+/** Whatever the one mission in this case's state directory actually wrote. Read back
+ *  off disk rather than from a store, because the wiring is what is under test. */
+function loggedEvents(): { type: string; [key: string]: unknown }[] {
+  const missions = fs.readdirSync(path.join(stateDir, "missions"));
+  assert.equal(missions.length, 1);
+  return fs
+    .readFileSync(path.join(stateDir, "missions", missions[0]!, "events.jsonl"), "utf8")
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .map((line) => JSON.parse(line) as { type: string; [key: string]: unknown });
+}
 
 function seedMission(inputs: EventInput[] = []): void {
   const log = createEventLog(missionDir(stateDir, "m1"), { now: fixedClock() });
@@ -93,6 +112,113 @@ describe("orchestra", () => {
 
     test("needs a mission id", async () => {
       assert.equal(await main(["forget"], capture()), 1);
+    });
+  });
+
+  describe("save", () => {
+    const signedOff: EventInput[] = [
+      {
+        ...orchestrator,
+        type: "outcome_spec_written",
+        criteria: [aCriterion()],
+        guesses: [],
+        outOfScope: [],
+        estimate: { taskCount: 1, tokens: 0, wallMs: 1000, expectedGates: 0 },
+      },
+      { ...orchestrator, type: "signoff_granted", unattended: false },
+    ];
+
+    test("writes a replayable file and prints where it went", async () => {
+      seedMission(signedOff);
+      const io = capture();
+
+      assert.equal(await main(["save", "m1", "--as", "monthly"], io), 0);
+
+      const file = path.join(stateDir, "saved", "monthly.md");
+      assert.equal(fs.existsSync(file), true);
+      assert.equal(parseSavedMission(fs.readFileSync(file, "utf8")).ok, true);
+      assert.match(io.lines.join("\n"), /monthly\.md/);
+    });
+
+    // §7: `--unattended --saved` rests on criteria a human approved.
+    test("refuses a mission that never reached sign-off, with the fix", async () => {
+      seedMission();
+      const io = capture();
+
+      assert.equal(await main(["save", "m1", "--as", "monthly"], io), 1);
+      assert.match(io.errors.join("\n"), /sign-off/);
+      assert.equal(fs.existsSync(path.join(stateDir, "saved")), false);
+    });
+
+    test("reports an unknown mission rather than saving an empty one", async () => {
+      const io = capture();
+
+      assert.equal(await main(["save", "ghost", "--as", "monthly"], io), 1);
+      assert.match(io.errors.join("\n"), /No mission 'ghost'/);
+    });
+
+    test("needs both a mission id and --as <name>", async () => {
+      assert.equal(await main(["save"], capture()), 1);
+      assert.equal(await main(["save", "m1"], capture()), 1);
+    });
+  });
+
+  // §7: promotion is explicit and human-initiated. There is deliberately no path that
+  // promotes a role on its own — §6 refuses automatic learning, so the only way a
+  // profile is written is a human typing this.
+  describe("promote", () => {
+    test("keeps the task's synthesized agent as a reusable profile", async () => {
+      seedMission([
+        {
+          ...orchestrator,
+          type: "task_planned",
+          task: aCodeTask({ agentSpec: anAgentSpec({ role: "invoice-reconciler" }) }),
+        },
+      ]);
+      const io = capture();
+
+      assert.equal(await main(["promote", "m1", "t1", "--as", "reconciler"], io), 0);
+
+      const file = path.join(stateDir, "profiles", "reconciler.md");
+      const parsed = parseProfile(fs.readFileSync(file, "utf8"));
+      assert.equal(parsed.ok, true);
+      assert.equal(parsed.ok && parsed.profile.spec.role, "invoice-reconciler");
+      assert.deepEqual(parsed.ok && parsed.profile.promotedFrom, {
+        missionId: "m1",
+        taskId: "t1",
+      });
+      assert.match(io.lines.join("\n"), /reconciler\.md/);
+    });
+
+    test("reports an unknown mission rather than writing an empty profile", async () => {
+      const io = capture();
+
+      assert.equal(await main(["promote", "ghost", "t1", "--as", "reconciler"], io), 1);
+      assert.match(io.errors.join("\n"), /No mission 'ghost'/);
+      assert.equal(fs.existsSync(path.join(stateDir, "profiles")), false);
+    });
+
+    test("an unknown task names the ones the mission actually has", async () => {
+      seedMission([{ ...orchestrator, type: "task_planned", task: aCodeTask() }]);
+      const io = capture();
+
+      assert.equal(await main(["promote", "m1", "t9", "--as", "reconciler"], io), 1);
+      assert.match(io.errors.join("\n"), /t9/);
+      assert.match(io.errors.join("\n"), /t1/);
+    });
+
+    test("refuses a name that is really a path", async () => {
+      seedMission([{ ...orchestrator, type: "task_planned", task: aCodeTask() }]);
+      const io = capture();
+
+      assert.equal(await main(["promote", "m1", "t1", "--as", "../escape"], io), 1);
+      assert.match(io.errors.join("\n"), /not a profile name/);
+    });
+
+    test("needs a mission id, a task id, and --as <name>", async () => {
+      assert.equal(await main(["promote"], capture()), 1);
+      assert.equal(await main(["promote", "m1"], capture()), 1);
+      assert.equal(await main(["promote", "m1", "t1"], capture()), 1);
     });
   });
 
@@ -201,6 +327,7 @@ describe("orchestra", () => {
 
   describe("run", () => {
     const createCalls = (): Calls => ({
+      intake: async () => ({ questions: [] }),
       research: async () => ({
         brief: "there is a router and no health route",
         findings: [
@@ -227,11 +354,12 @@ describe("orchestra", () => {
     });
 
     // §17: a flag that skips reading the plan must never become the habitual default.
-    test("refuses --unattended without --force", async () => {
+    test("refuses --unattended without --saved or --force", async () => {
       const io = capture();
 
       assert.equal(await main(["run", "a goal", "--unattended"], io), 1);
-      assert.match(io.errors.join("\n"), /needs --force/);
+      assert.match(io.errors.join("\n"), /--saved/);
+      assert.match(io.errors.join("\n"), /--force/);
     });
 
     test("rejects an unknown flag rather than ignoring it", async () => {
@@ -239,6 +367,198 @@ describe("orchestra", () => {
 
       assert.equal(await main(["run", "a goal", "--yolo"], io), 1);
       assert.match(io.errors.join("\n"), /Unknown flag '--yolo'/);
+    });
+
+    describe("--saved", () => {
+      /** A saved mission on disk, written the way `orchestra save` writes one. */
+      function seedSaved(name = "monthly"): void {
+        saveMission(
+          stateDir,
+          name,
+          aMissionState({
+            mission: aMission({
+              goal: "reconcile June invoices",
+              capabilityEnvelope: anEnvelope({ domains: ["xero.com"] }),
+              signedOffAt: "2026-08-09T09:00:00.000Z",
+              ledger: {
+                ...emptyLedger(),
+                factsGiven: [{ id: "h1", text: "Does June mean calendar? — calendar", addedRound: 0 }],
+                criteria: [
+                  aCriterion({ id: "c1", statement: "every invoice matched", met: true }),
+                ],
+              },
+            }),
+            inbox: [
+              {
+                id: "q1",
+                kind: "intake",
+                summary: "Does June mean calendar?",
+                openedAt: "2026-08-09T08:00:00.000Z",
+                resolvedAt: "2026-08-09T08:01:00.000Z",
+              },
+            ],
+          }),
+          "2026-08-09T10:00:00.000Z",
+        );
+      }
+
+      /** Calls that count what a replay actually asks for. */
+      function countingCalls() {
+        const research: string[] = [];
+        const intakeKnown: string[][] = [];
+        const calls: Calls = {
+          ...createCalls(),
+          research: async (input) => {
+            research.push(input.depth);
+            return {
+              brief: "fresh research",
+              findings: [],
+              confidence: "high",
+              criteria: [aCriterion({ id: "c9", statement: "researched afresh" })],
+              outOfScope: [],
+              guesses: [],
+            };
+          },
+          intake: async (input) => {
+            intakeKnown.push(input.known);
+            return { questions: [] };
+          },
+        };
+        return { calls, research, intakeKnown };
+      }
+
+      // §7: a replay re-runs scan and research every time, because the environment
+      // moved since March even if the job did not. The adversarial half is that the
+      // saved criteria must not be a shortcut past either call.
+      test("still runs the scan and the research call rather than reusing the outcome", async () => {
+        seedSaved();
+        const io = capture();
+        const { calls, research } = countingCalls();
+
+        const code = await main(["run", "--saved", "monthly", "--plan-only"], io, {
+          createCalls: () => calls,
+        });
+
+        assert.equal(code, 0);
+        assert.deepEqual(research, ["scan", "deep"]);
+        // The criteria on the log are this run's, not the skeleton's.
+        const spec = loggedEvents().find((event) => event.type === "outcome_spec_written") as
+          | { criteria: { statement: string }[] }
+          | undefined;
+        assert.deepEqual(spec?.criteria.map((c) => c.statement), ["researched afresh"]);
+      });
+
+      test("takes the goal and the envelope from the saved mission", async () => {
+        seedSaved();
+        const io = capture();
+        const { calls } = countingCalls();
+
+        await main(["run", "--saved", "monthly", "--plan-only"], io, { createCalls: () => calls });
+
+        const created = loggedEvents().find((event) => event.type === "mission_created") as
+          | { goal: string; envelope: { domains: string[] } }
+          | undefined;
+        assert.equal(created?.goal, "reconcile June invoices");
+        assert.deepEqual(created?.envelope.domains, ["xero.com"]);
+      });
+
+      test("an explicit goal overrides the saved one", async () => {
+        seedSaved();
+        const io = capture();
+        const { calls } = countingCalls();
+
+        await main(["run", "reconcile July invoices", "--saved", "monthly", "--plan-only"], io, {
+          createCalls: () => calls,
+        });
+
+        const created = loggedEvents().find((event) => event.type === "mission_created") as
+          | { goal: string }
+          | undefined;
+        assert.equal(created?.goal, "reconcile July invoices");
+      });
+
+      // Last time's answers are `factsGiven` — the tier a replan may never drop (§3)
+      // — which is also the list intake reads, so nobody is asked twice.
+      test("seeds last time's intake answers so the same question is not asked again", async () => {
+        seedSaved();
+        const io = capture();
+        const { calls, intakeKnown } = countingCalls();
+
+        await main(["run", "--saved", "monthly", "--plan-only"], io, { createCalls: () => calls });
+
+        assert.deepEqual(intakeKnown, [["Does June mean calendar? — calendar"]]);
+      });
+
+      test("a saved mission that does not exist says how to create one", async () => {
+        const io = capture();
+
+        const code = await main(["run", "--saved", "ghost", "--plan-only"], io, { createCalls });
+
+        assert.equal(code, 1);
+        assert.match(io.errors.join("\n"), /orchestra save <missionId> --as ghost/);
+      });
+
+      test("--saved needs a name", async () => {
+        const io = capture();
+
+        assert.equal(await main(["run", "a goal", "--saved"], io), 1);
+        assert.match(io.errors.join("\n"), /--saved takes a name/);
+      });
+
+      // §7 couples the two deliberately: the easy path to skipping sign-off is a
+      // mission whose criteria a human already approved.
+      test("permits --unattended without --force", async () => {
+        seedSaved();
+        const io = capture();
+        const { calls } = countingCalls();
+
+        const code = await main(["run", "--saved", "monthly", "--unattended", "--plan-only"], io, {
+          createCalls: () => calls,
+        });
+
+        assert.equal(code, 0);
+      });
+    });
+
+    // The other composition root. `resume` staffs an approved plan through
+    // `executeMission`; `run` staffs it inside `prepareMission`, and wiring one and
+    // not the other leaves the feature switched off on the path most missions take
+    // (defects 12b, 23, 24). The scripted synthesizer names a transport that does not
+    // exist, so the mission parks after recording its input rather than dispatching.
+    test("a promoted profile reaches the synthesize call on a fresh run", async () => {
+      saveProfile(stateDir, {
+        name: "invoice-reconciler",
+        spec: anAgentSpec({ role: "invoice-reconciler" }),
+        promotedFrom: { missionId: "m0", taskId: "t7" },
+        promotedAt: "2026-08-01T10:00:00.000Z",
+      });
+      const seen: { profiles?: unknown }[] = [];
+      const calls: Calls = {
+        ...createCalls(),
+        synthesize: async (input) => {
+          seen.push(input);
+          return anAgentSpec({ transport: { id: "acp" } });
+        },
+      };
+
+      const code = await main(
+        ["run", "add a /health endpoint", "--unattended", "--force", "--no-web"],
+        capture(),
+        { createCalls: () => calls },
+      );
+
+      assert.equal(code, 1);
+      assert.deepEqual(seen[0]?.profiles, [anAgentSpec({ role: "invoice-reconciler" })]);
+    });
+
+    test("--unattended --force still starts without a saved mission", async () => {
+      const io = capture();
+
+      const code = await main(["run", "a goal", "--unattended", "--force", "--plan-only"], io, {
+        createCalls,
+      });
+
+      assert.equal(code, 0);
     });
 
     describe("--plan-only", () => {
@@ -274,6 +594,62 @@ describe("orchestra", () => {
         const missions = fs.readdirSync(path.join(stateDir, "missions"));
         assert.equal(missions.length, 1);
         assert.ok(fs.existsSync(path.join(stateDir, "missions", missions[0]!, "events.jsonl")));
+      });
+
+      // An optional dependency is a place a feature can be finished and switched off
+      // at once (defects 12b, 23, 24), and `recall` is one. So this asserts the
+      // composition root that binds it, not the mechanism — which has its own tests.
+      test("consults the lore store and puts what it finds on the log", async () => {
+        const io = capture();
+        const lore = path.join(stateDir, "lore");
+        writeLore(
+          lore,
+          {
+            id: "l1",
+            claim: "the API client lives in src/net",
+            type: "observation",
+            confidence: "medium",
+            source: { missionId: "m0", evidence: "src/net/client.ts", kind: "research" },
+            observedAt: new Date().toISOString(),
+          },
+          "orchestrator",
+        );
+        writeLore(
+          lore,
+          {
+            id: "l2",
+            claim: "Stripe retries webhooks for 3 days",
+            type: "research",
+            confidence: "high",
+            source: { missionId: "m0", evidence: "https://stripe.com/docs", kind: "web" },
+            observedAt: "2020-01-01T00:00:00.000Z",
+          },
+          "orchestrator",
+        );
+
+        await main(["run", "add a /health endpoint", "--plan-only"], io, { createCalls });
+
+        const recalled = loggedEvents().find((event) => event.type === "memory_recalled") as
+          | { facts: unknown[]; guesses: unknown[] }
+          | undefined;
+        assert.ok(recalled, "the mission never consulted memory");
+        // §6: the fresh one is trusted, the stale one has to be re-verified.
+        assert.equal(recalled.facts.length, 1);
+        assert.equal(recalled.guesses.length, 1);
+      });
+
+      test("an empty lore store is not an error, and says nothing", async () => {
+        const io = capture();
+
+        const code = await main(["run", "add a /health endpoint", "--plan-only"], io, {
+          createCalls,
+        });
+
+        assert.equal(code, 0);
+        assert.equal(
+          loggedEvents().some((event) => event.type === "memory_recalled"),
+          false,
+        );
       });
 
       // A usable CI gate: `does this mission still plan sensibly?`

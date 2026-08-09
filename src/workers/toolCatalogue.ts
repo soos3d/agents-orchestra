@@ -1,0 +1,104 @@
+// The tool catalogue (§7): what a capability class actually resolves to.
+//
+// The envelope is written in *classes* because a human reads it on the compose screen
+// and has to review it in seconds — `fs.write` is reviewable, a list of forty tool
+// names is not (§4.0). Something has to turn a class into the concrete tools a worker
+// may hold, and until this file existed nothing did: synthesis passed the envelope's
+// own class list through as if it were the catalogue, so the model was invited to pick
+// tools from a list of categories and whatever it answered was checked against
+// nothing.
+//
+// Two directions, and both are needed. `resolveClasses` is what synthesis offers the
+// model; `classOf` maps its answer back so `violations()` can judge it. A tool with no
+// class is not merely unclassified — it is not ours, and it is refused.
+//
+// What this deliberately does *not* do yet is bind the worker. The `cli` transport
+// spawns a subscription CLI holding its own default toolset, so today the catalogue
+// governs what synthesis may grant rather than what the subprocess can reach.
+// Enforcement at the worker's own tool boundary is ACP's permission channel (Phase 7)
+// for code and the action classifier (§11) for the browser. The registry has to exist
+// before either, and a spec asking for `Bash` under a read-only envelope should fail
+// at validation now rather than at whichever of those lands first.
+//
+// It lives beside `AVAILABLE_TRANSPORTS` for the same reason that list does: this is
+// the file that would have to change to grant a new capability, so the two cannot
+// drift apart.
+
+export interface ToolClass {
+  readonly id: string;
+  readonly tools: readonly string[];
+  /** Shown to the model alongside the tools, so a class is more than a prefix. */
+  readonly summary: string;
+}
+
+export const TOOL_CATALOGUE: readonly ToolClass[] = [
+  {
+    id: "fs.read",
+    tools: ["Read", "Glob", "Grep"],
+    summary: "read files under the envelope's roots",
+  },
+  {
+    id: "fs.write",
+    tools: ["Write", "Edit"],
+    summary: "create and edit files under those roots",
+  },
+  {
+    id: "shell.run",
+    tools: ["Bash"],
+    summary: "run commands in the task's working directory",
+  },
+  {
+    id: "net.read",
+    tools: ["WebFetch", "WebSearch"],
+    summary: "fetch pages from allowlisted hosts",
+  },
+  // Declared with no tools on purpose. An envelope may name a class §11 describes and
+  // Phase 8 builds, and it should resolve to *nothing* rather than to an unknown-class
+  // error: the class is real, the tools are not. A mission that grants `browser.commit`
+  // today therefore grants no capability at all, which is the honest answer.
+  {
+    id: "browser.read",
+    tools: [],
+    summary: "navigate and read a real browser session (Phase 8)",
+  },
+  {
+    id: "browser.commit",
+    tools: [],
+    summary: "submit, send, pay — gated in code, never auto (Phase 8)",
+  },
+];
+
+const byClass = new Map(TOOL_CATALOGUE.map((entry) => [entry.id, entry]));
+const byTool = new Map(
+  TOOL_CATALOGUE.flatMap((entry) => entry.tools.map((tool) => [tool, entry.id] as const)),
+);
+
+/** Every concrete tool the given classes grant, deduplicated and in catalogue order.
+ *  A class nobody has authored contributes nothing rather than failing — the envelope
+ *  is the human's document, and one unrecognised line in it should narrow the grant,
+ *  never widen it. */
+export function resolveClasses(classes: readonly string[]): string[] {
+  const granted = new Set<string>();
+  for (const id of classes) {
+    for (const tool of byClass.get(id)?.tools ?? []) granted.add(tool);
+  }
+  return [...granted];
+}
+
+/** The class a tool belongs to, or `undefined` if we do not ship it. */
+export const classOf = (tool: string): string | undefined => byTool.get(tool);
+
+/** What a class grants, in one line, for the synthesis prompt. */
+export function describeClasses(classes: readonly string[]): string[] {
+  return classes.flatMap((id) => {
+    const entry = byClass.get(id);
+    if (!entry) return [];
+    const tools = entry.tools.length > 0 ? entry.tools.join(", ") : "nothing built yet";
+    return [`${entry.id} → ${tools} (${entry.summary})`];
+  });
+}
+
+/** What a terminal run grants when no compose screen has narrowed it (§13). Defined
+ *  here rather than in the CLI so the default envelope and the catalogue that has to
+ *  resolve it are one edit apart. */
+export const DEFAULT_TOOL_CLASSES: readonly string[] = ["fs.read", "fs.write", "shell.run"];

@@ -35,7 +35,16 @@ export const agentSpecSchema = z.object({
   systemPrompt: z.string().min(1),
   worker: workerKindSchema,
   transport: transportRefSchema,
+  // Concrete tool names drawn from the catalogue, not class ids. Synthesis resolves a
+  // class to tools and can only narrow (§4.0); validation maps each one back to its
+  // class and checks that against the envelope.
   tools: z.array(z.string()),
+  // The file lease this work declares (§8), and the reason it sits next to `tools`:
+  // both are capabilities, one over the toolset and one over the tree, and both are
+  // authored by the same call for the same task. Absent for every kind but `code`,
+  // where it is required — an empty lease is not "no restriction", it is a lease that
+  // matches nothing, which makes the post-hoc escape check fail every writing worker.
+  owns: z.array(z.string()).optional(),
   model: z.string().min(1),
   verify: verifySpecSchema,
 });

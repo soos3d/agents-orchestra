@@ -7,8 +7,13 @@
 // two cases a human would notice — a plan waiting to be run, and a mission that
 // stopped on a question nobody can answer yet — are told apart.
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, test } from "node:test";
-import { continuationFor, executeMission } from "./execute.js";
+import { readLore } from "../memory/lore.js";
+import { saveProfile } from "../memory/profiles.js";
+import { buildLoopDeps, continuationFor, executeMission } from "./execute.js";
 import {
   aCodeTask,
   aCriterion,
@@ -159,9 +164,21 @@ describe("continuationFor", () => {
       }),
     });
 
-    const result = continuationFor(state);
-    assert.equal(result.kind, "halted");
-    assert.match(result.message, /criteri/i);
+    // Already signed off *and* waiting for sign-off is only reachable one way: a
+    // replan asking to edit a frozen criterion (§3). It goes to the diff screen, not
+    // to the initial one.
+    assert.equal(continuationFor(state).kind, "criteriaChange");
+  });
+
+  // The same status, one field apart, and it must not route to the same place: a
+  // mission that has never been approved is at its first sign-off, and resume is how
+  // a human comes back to one left overnight.
+  test("an unsigned mission waiting for sign-off is presented, not treated as a diff", () => {
+    const state = aMissionState({
+      mission: aMission({ status: "awaiting_signoff", ledger: planned() }),
+    });
+
+    assert.equal(continuationFor(state).kind, "signoff");
   });
 });
 
@@ -209,7 +226,7 @@ const planOnlyMission = (): EventInput[] => [
 describe("executeMission", () => {
   const config = { cwd: "/repo", stateDir: "/state", worktreeRoot: "/wt", agents: [], orchestratorModel: "opus", maxConcurrency: 4 } satisfies DiscoveredConfig;
 
-  function harness(seed: EventInput[]) {
+  function harness(seed: EventInput[], against: DiscoveredConfig = config) {
     const store = testStore(seed);
     const lines: string[] = [];
     const dispatched: string[] = [];
@@ -217,6 +234,9 @@ describe("executeMission", () => {
     const calls: Calls = {
       research: async () => {
         throw new Error("resume does not research a mission that already has a plan");
+      },
+      intake: async () => {
+        throw new Error("intake ran before the plan existed; resume does not repeat it");
       },
       plan: async () => ({ tasks: [aPlannedTask()] }),
       synthesize: async () => anAgentSpec(),
@@ -252,7 +272,7 @@ describe("executeMission", () => {
         executeMission({
           store,
           calls: () => calls,
-          config,
+          config: against,
           io: { out: (line) => lines.push(line), err: (line) => lines.push(line) },
           buildLoop,
         }),
@@ -280,6 +300,130 @@ describe("executeMission", () => {
     await h.run();
 
     assert.ok(h.store.state().mission.signedOffAt);
+  });
+
+  // Promotion has no natural caller — the loop has ended and nothing reads what is
+  // written until a later mission recalls it — which is exactly the shape of a
+  // mechanism that gets built and switched off (defects 12b, 23, 24). So it is
+  // asserted here, at the composition root both `run` and `resume` end in, rather
+  // than only against `recordLearnings`.
+  describe("the write-back to memory", () => {
+    const learned = (): EventInput[] => [
+      ...planOnlyMission(),
+      {
+        ...orchestrator,
+        type: "ledger_revised",
+        reason: "research",
+        ledger: {
+          ...emptyLedger(),
+          criteria: [aCriterion()],
+          plan: [aPlannedTask()],
+          factsVerified: [
+            {
+              id: "f1",
+              text: "routes live in src/routes",
+              addedRound: 0,
+              source: { kind: "research", ref: "src/routes/index.ts" },
+              observedAt: "2026-07-25T10:00:00.000Z",
+            },
+          ],
+        },
+      },
+    ];
+
+    test("a completed mission leaves its facts in the lore store, with an event naming each file", async () => {
+      const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "orchestra-exec-"));
+      try {
+        const h = harness(learned(), { ...config, stateDir });
+
+        const { code } = await h.run();
+
+        assert.equal(code, 0);
+        const written = h.store.inputs.filter((event) => event.type === "memory_written");
+        assert.equal(written.length, 1);
+        const { fresh } = readLore(path.join(stateDir, "lore"), new Date());
+        assert.deepEqual(fresh.map((entry) => entry.claim), ["routes live in src/routes"]);
+        assert.equal(fresh[0]?.source.missionId, "m1");
+      } finally {
+        fs.rmSync(stateDir, { recursive: true, force: true });
+      }
+    });
+
+    // Resume continues a mission; it does not re-open the one blocking call that
+    // already happened. A second recall here would double every memory fact in the
+    // ledger on every restart.
+    test("continuing a mission never re-consults memory", async () => {
+      const h = harness(learned());
+
+      await h.run();
+
+      assert.equal(h.store.inputs.some((event) => event.type === "memory_recalled"), false);
+    });
+  });
+
+  // The composition-root lesson, a fourth time (defects 12b, 23, 24): `profiles` is an
+  // optional dep, which is exactly the shape of a feature that gets finished and
+  // switched off. The mechanism is asserted in synthesize.test.ts; what is asserted
+  // here is that something actually loads them off disk on the path a real mission
+  // takes — through the real `buildLoopDeps`, with only dispatch stubbed.
+  test("a promoted profile on disk reaches the synthesize call", async () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "orchestra-profiles-exec-"));
+    try {
+      saveProfile(stateDir, {
+        name: "invoice-reconciler",
+        spec: anAgentSpec({ role: "invoice-reconciler" }),
+        promotedFrom: { missionId: "m0", taskId: "t7" },
+        promotedAt: "2026-08-01T10:00:00.000Z",
+      });
+
+      const store = testStore(planOnlyMission());
+      const seen: { profiles?: unknown }[] = [];
+      const calls: Calls = {
+        research: async () => {
+          throw new Error("resume does not research a mission that already has a plan");
+        },
+        intake: async () => {
+          throw new Error("intake ran before the plan existed");
+        },
+        plan: async () => ({ tasks: [aPlannedTask()] }),
+        synthesize: async (input) => {
+          seen.push(input);
+          return anAgentSpec();
+        },
+        progress: async () => aProgressLedger({ isRequestSatisfied: true, unmetCriteria: [] }),
+        judge: async () => {
+          throw new Error("the criterion carries a command check");
+        },
+      };
+
+      await executeMission({
+        store,
+        calls: () => calls,
+        config: { ...config, stateDir },
+        io: { out: () => {}, err: () => {} },
+        // The real wiring, with only the worker replaced: a stubbed `buildLoop` would
+        // assert nothing about what the entry point builds.
+        buildLoop: async (loopStore, loopCalls, loopConfig) => ({
+          ...(await buildLoopDeps(loopStore, loopCalls, loopConfig)),
+          checkCriterion: async () => ({
+            met: true,
+            evidence: { artifactIds: [], checkOutput: "ok", reasoning: "the check passed", byTask: [] },
+          }),
+          dispatch: async (task: Task) => {
+            const base = { missionId: "m1", taskId: task.id, actor: "orchestrator" as const };
+            loopStore.emit({ ...base, type: "task_status", from: task.status, to: "running", reason: "dispatched" });
+            loopStore.emit({ ...base, actor: "worker", type: "worker_report", report: aReport() });
+            loopStore.emit({ ...base, type: "task_status", from: "running", to: "done", reason: "verified" });
+            return { status: "done" };
+          },
+        }),
+      });
+
+      assert.equal(seen.length > 0, true);
+      assert.deepEqual(seen[0]!.profiles, [anAgentSpec({ role: "invoice-reconciler" })]);
+    } finally {
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
   });
 
   test("an already-complete mission is reported, not re-run", async () => {

@@ -1,8 +1,16 @@
-// The five decision points (§3). Every model call the orchestrator makes is one of
-// these; a model call that is not on this list does not exist.
+// The decision points (§3). Every model call the orchestrator makes is one of these;
+// a model call that is not on this list does not exist.
 //
 // This interface is the seam the loop is written against, which is what lets the
 // whole loop run in tests against scripted answers with no model and no spend.
+//
+// §3 names five and `intake` is the sixth, which needs saying because the rule above
+// is worth keeping honest. §3 carved intake out as "a real conversation" running in
+// streaming-input mode, on the reading that it asks follow-ups off an answer. §2b
+// caps it at three questions asked once, and once is not a conversation. So it lands
+// here as an ordinary one-shot call instead — which keeps it above this seam, where
+// the cap and the answers are assertable with no model. A streaming intake session
+// would sit below it, in the one file six defects hid in.
 import { type AgentSpec } from "../domain/task.js";
 import { type Envelope } from "../domain/envelope.js";
 import { type Evidence, type VerifySpec } from "../domain/artifacts.js";
@@ -20,6 +28,27 @@ export interface ResearchInput {
   question: string;
   sources: ("memory" | "codebase" | "web" | "prior-art" | "apps")[];
   depth: "scan" | "deep";
+  /**
+   * What semantic memory already established, so research is not paid for twice
+   * (§5, §6).
+   *
+   * Memory-sourced facts only. A fact this mission's own scan produced is not
+   * "already known" in the sense that matters here — telling the research call it
+   * knows what it just found is how a mission talks itself out of doing the work. A
+   * stale memory is not here either: it entered the ledger as a guess precisely
+   * because it must be re-verified rather than trusted.
+   */
+  known?: string[];
+  /**
+   * A saved mission's criteria skeleton (§7): what this job was judged against last
+   * time, as a starting point to converge on.
+   *
+   * Statements only, and that is the point of the type. A replay re-runs scan and
+   * research every time because the environment moved since March even if the job did
+   * not, so handing the research call `met` or a piece of evidence would be handing it
+   * last month's answer to this month's question.
+   */
+  priorCriteria?: { statement: string }[];
 }
 
 export interface ResearchResult {
@@ -38,6 +67,31 @@ export interface ResearchResult {
   criteria?: readonly unknown[];
   guesses?: Guess[];
   outOfScope?: string[];
+}
+
+export interface IntakeInput {
+  goal: string;
+  /**
+   * What the scan turned up, and the reason intake runs after it rather than before
+   * (§2b). Asked blind, the three questions come back generic — "what does done look
+   * like?", which the human already answered by writing the brief. Asked over
+   * findings, they can name the two test commands the repo actually has.
+   */
+  findings: Finding[];
+  /** Already-stated facts, so the same thing is not asked twice across a resume. */
+  known: string[];
+  envelope: Envelope;
+}
+
+export interface IntakeQuestion {
+  id: string;
+  question: string;
+  /** Offered where the answer is a choice; free text otherwise. */
+  options?: string[];
+}
+
+export interface IntakeResult {
+  questions: IntakeQuestion[];
 }
 
 export interface PlanInput {
@@ -73,6 +127,17 @@ export interface SynthesizeInput {
    * `agent-sdk`, and the task dies at dispatch instead of at validation.
    */
   transports: string[];
+  /**
+   * Agents a human kept from earlier missions (§6, §7) — prior art, never a roster.
+   *
+   * The whole point of synthesizing per task is that a fixed list caps the system at
+   * the tasks its author anticipated, so these are offered to be adapted or ignored
+   * rather than selected from. What comes back is validated exactly as an unprompted
+   * spec is: the envelope, the transport registry, and the lease rule all still apply,
+   * and a saved agent whose capabilities this mission's envelope does not grant is
+   * refused like any other. Absent when nothing has been promoted.
+   */
+  profiles?: AgentSpec[];
   /** Present only on the one retry, quoting what was wrong with the last spec. */
   rejected?: string;
 }
@@ -90,6 +155,15 @@ export interface ProgressInput {
    * this round" into a blocking task the replan can act on.
    */
   frontier: { taskId: string; blockedBy: string[] }[];
+  /**
+   * What a human said since the last round, undelivered (§10).
+   *
+   * Present here and not only in the ledger because a note is meant to change the
+   * *next decision*, and the progress call is where the next decision is made. It
+   * also lands in `factsGiven`, which is what makes it survive a replan — the two
+   * are not redundant: one steers this round, the other outlives it.
+   */
+  notes?: string[];
 }
 
 export interface JudgeInput {
@@ -107,6 +181,9 @@ export interface JudgeResult {
 
 export interface Calls {
   research(input: ResearchInput): Promise<ResearchResult>;
+  /** Returns questions; it never asks them. Who does the asking, and the cap on how
+   *  many get through, are both above this seam (`loop/intake.ts`). */
+  intake(input: IntakeInput): Promise<IntakeResult>;
   plan(input: PlanInput): Promise<PlanResult>;
   synthesize(input: SynthesizeInput): Promise<AgentSpec>;
   progress(input: ProgressInput): Promise<ProgressLedger>;

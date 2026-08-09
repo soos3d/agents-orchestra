@@ -12,17 +12,19 @@
 import { budgetExceeded, type Budget } from "../domain/budget.js";
 import { type Criterion } from "../domain/ledger.js";
 import { LIMITS, type Limits, type MissionStatus } from "../domain/mission.js";
-import { type Task, type WorkerKind } from "../domain/task.js";
+import { type AgentSpec, type Task, type WorkerKind } from "../domain/task.js";
 import { type MissionState } from "../events/fold.js";
 import { type EventInput } from "../events/schema.js";
 import { promotable, readyTasks, standstill } from "../scheduler/ready.js";
 import { validatePlan } from "../scheduler/validate.js";
 import { type Calls } from "./calls.js";
 import { type DispatchOutcome } from "./dispatch.js";
+import { type ExtendRequest } from "./human.js";
+import { noteAsFact, pendingNotes } from "./notes.js";
 import { buildPlanInput, buildProgressInput } from "./prompts.js";
 import { isCancellation, retryPolicy } from "./retry.js";
 import { reviseLedger } from "./revise.js";
-import { synthesizeTasks } from "./synthesize.js";
+import { SynthesisError, synthesizeTasks } from "./synthesize.js";
 import { type CriterionChecker } from "./verify.js";
 
 /** The log, and the state folded from it. Injected so the loop runs against a canned
@@ -32,13 +34,9 @@ export interface MissionStore {
   state(): MissionState;
 }
 
-export interface ExtendRequest {
-  missionId: string;
-  spentWallMs: number;
-  budget: Budget;
-  unmetCriteria: string[];
-  extensionsUsed: number;
-}
+// Defined next to the port that answers it, and re-exported here because the loop is
+// what raises it. One definition, so the screen and the caller cannot drift.
+export type { ExtendRequest } from "./human.js";
 
 export interface LoopDeps {
   store: MissionStore;
@@ -49,6 +47,10 @@ export interface LoopDeps {
   checkCriterion: CriterionChecker;
   /** Where a criterion's command check runs — the repo, after the work merged. */
   cwd: string;
+  /** Agents a human promoted from earlier missions (§7), handed to synthesis as prior
+   *  art. Loaded at the entry point rather than here, so `run` and `resume` get the
+   *  same library — and validated on the way back like any other spec. */
+  profiles?: readonly AgentSpec[];
   /** Absent means nobody can be asked, which is what `--unattended` amounts to here. */
   requestExtension?(request: ExtendRequest): Promise<Budget | undefined>;
   limits?: Partial<Limits>;
@@ -87,6 +89,20 @@ export async function runLoop(deps: LoopDeps): Promise<LoopResult> {
     const state = deps.store.state();
     const { mission } = state;
 
+    // Panic is not pause (§10). Pause drains; this stops dispatching immediately and
+    // leaves the mission parked, because graceful drain is the wrong answer when a
+    // worker is somewhere it should not be. Worktrees and branches are untouched —
+    // destroying work is a separate decision a human makes afterwards with git in
+    // hand.
+    if (state.panicked) {
+      return finish(
+        "blocked",
+        "Panicked. Nothing further was dispatched; worktrees and branches are intact. " +
+          "Check what the running workers did before resuming.",
+        mission.round,
+      );
+    }
+
     if (deps.signal?.aborted) {
       return finish("blocked", "shutdown requested", mission.round);
     }
@@ -119,6 +135,11 @@ export async function runLoop(deps: LoopDeps): Promise<LoopResult> {
     const withChecks = deps.store.state();
     const ledger = await deps.calls.progress(buildProgressInput(withChecks));
     emit({ ...base, type: "progress_ledger", round, ledger });
+
+    // Marked delivered only after the call that consumed them, so a crash between
+    // the two re-delivers rather than dropping — a note nobody acted on and nobody
+    // can see again is the worst of the three outcomes.
+    deliverNotes(deps, withChecks, round);
 
     // `met` is read from the criterion record and never inferred: a criterion whose
     // check has not run cannot be counted toward satisfaction (§4). This is the line
@@ -268,6 +289,38 @@ async function checkCriteria(deps: LoopDeps, state: MissionState, round: number)
   }
 }
 
+/**
+ * Records that the round's notes were used, and puts them where a replan cannot
+ * forget them.
+ *
+ * Two writes rather than one, because they answer different questions. The
+ * `note_delivered` event is what makes `queued → delivered` visible on the dashboard,
+ * so the lag a human notices is legible rather than mysterious (§10). The ledger
+ * append is what makes the note outlive the round: `factsGiven` is append-only across
+ * replans (§3), so a correction survives the reset that would otherwise walk straight
+ * back into it.
+ */
+function deliverNotes(deps: LoopDeps, state: MissionState, round: number): void {
+  const notes = pendingNotes(state.notes, "global");
+  if (notes.length === 0) return;
+
+  const base = { missionId: state.mission.id, actor: "orchestrator" as const };
+  const ledger = state.mission.ledger;
+  const given = [...ledger.factsGiven];
+
+  for (const note of notes) {
+    given.push(noteAsFact(note, given, round));
+    deps.store.emit({ ...base, type: "note_delivered", scope: note.scope, path: "stream" });
+  }
+
+  deps.store.emit({
+    ...base,
+    type: "ledger_revised",
+    ledger: { ...ledger, factsGiven: given },
+    reason: "note",
+  });
+}
+
 const allCriteriaMet = (criteria: readonly Criterion[]): boolean =>
   criteria.length > 0 && criteria.every((criterion) => criterion.met === true);
 
@@ -343,7 +396,18 @@ async function replan(
   }
 
   deps.store.emit({ ...base, type: "ledger_revised", ledger: revision.ledger, reason: "replan" });
-  await synthesizeTasks(deps, plan.tasks, round);
+
+  // A plan the registry or the envelope will not staff (§7, §8). It ends the mission
+  // rather than looping, because the replan that produced it was the response to a
+  // stall and a second one would propose the same thing against the same ceiling —
+  // `finish` emits the park, and the reason names what a human would have to change.
+  try {
+    await synthesizeTasks(deps, plan.tasks, round);
+  } catch (error) {
+    if (!(error instanceof SynthesisError)) throw error;
+    return { status: "blocked", reason: error.message };
+  }
+
   return undefined;
 }
 

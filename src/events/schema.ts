@@ -14,6 +14,7 @@ import {
   criterionDiffSchema,
   criterionSchema,
   deadEndSchema,
+  factSchema,
   findingSchema,
   guessSchema,
   progressLedgerSchema,
@@ -99,7 +100,9 @@ const loop = [
   withBase({
     type: z.literal("ledger_revised"),
     ledger: taskLedgerSchema,
-    reason: z.enum(["replan", "note", "research", "spec"]),
+    // Adding a member is backward-compatible: an old log never carries it, and the
+    // meaning of the existing ones is unchanged, so this is not a `v` bump (§9.1).
+    reason: z.enum(["replan", "note", "research", "spec", "intake", "saved"]),
   }),
   withBase({
     type: z.literal("progress_ledger"),
@@ -113,6 +116,20 @@ const loop = [
     reason: z.string(),
   }),
   withBase({ type: z.literal("dead_end_added"), deadEnd: deadEndSchema }),
+  // Semantic memory entering the mission (§6). The recalled entries are carried whole
+  // rather than as lore ids, because a lore file is a plain markdown file a human may
+  // edit or delete between now and the replay — and §9.1 rule 2 says an event may not
+  // depend on one. `consulted` is how many entries the store held, so a mission that
+  // recalled nothing is distinguishable from one that never looked.
+  withBase({
+    type: z.literal("memory_recalled"),
+    facts: z.array(factSchema),
+    guesses: z.array(guessSchema),
+    consulted: z.number().int().nonnegative(),
+  }),
+  // The write-back's audit trail. Memory is files a human can read and delete (§6),
+  // so the log names the ones a mission wrote rather than leaving them anonymous.
+  withBase({ type: z.literal("memory_written"), path: z.string(), loreType: z.string() }),
 ] as const;
 
 const tasks = [

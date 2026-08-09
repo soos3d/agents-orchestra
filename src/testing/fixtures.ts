@@ -15,14 +15,17 @@ import { type AgentSpec, type Task } from "../domain/task.js";
 import { type MissionState } from "../events/fold.js";
 import {
   type Calls,
+  type IntakeQuestion,
+  type IntakeResult,
   type JudgeResult,
   type PlanResult,
   type ResearchResult,
 } from "../loop/calls.js";
 import { eventSchema, type Event, type EventInput } from "../events/schema.js";
+import { DEFAULT_TOOL_CLASSES } from "../workers/toolCatalogue.js";
 
 export const anEnvelope = (patch: Partial<Envelope> = {}): Envelope => ({
-  toolClasses: ["fs.read", "fs.write", "shell.run"],
+  toolClasses: [...DEFAULT_TOOL_CLASSES],
   domains: [],
   fsRoots: ["/repo"],
   network: "none",
@@ -41,7 +44,10 @@ export const anAgentSpec = (patch: Partial<AgentSpec> = {}): AgentSpec => ({
   systemPrompt: "Add the endpoint described in the goal. Do not touch anything else.",
   worker: "code",
   transport: { id: "cli", target: "claude" },
-  tools: ["fs.read", "fs.write"],
+  // Concrete tool names, not class ids: this is what synthesis returns and what
+  // validation maps back through the catalogue (§7).
+  tools: ["Read", "Write", "Edit"],
+  owns: ["src/routes/health.ts"],
   model: "sonnet",
   verify: { kind: "command", command: "npm test" },
   ...patch,
@@ -131,6 +137,8 @@ export const aMissionState = (patch: Partial<MissionState> = {}): MissionState =
   notes: [],
   workers: {},
   panicked: false,
+  brief: "",
+  outOfScope: [],
   lastSeq: 1,
   ...patch,
 });
@@ -169,11 +177,18 @@ export function stamp(inputs: readonly EventInput[], clock = fixedClock()): Even
 
 export interface Script {
   research?: ResearchResult[];
+  intake?: IntakeResult[];
   plan?: PlanResult[];
   synthesize?: AgentSpec[];
   progress?: ProgressLedger[];
   judge?: JudgeResult[];
 }
+
+export const anIntakeQuestion = (patch: Partial<IntakeQuestion> = {}): IntakeQuestion => ({
+  id: "q1",
+  question: "This repo has both `npm test` and `make check` — which one counts as green?",
+  ...patch,
+});
 
 export const aPlannedTask = (patch: Partial<PlannedTask> = {}): PlannedTask => ({
   id: "t1",
@@ -199,6 +214,7 @@ export interface ScriptedCalls extends Calls {
 export function scriptedCalls(script: Script): ScriptedCalls {
   const counts: Record<keyof Calls, number> = {
     research: 0,
+    intake: 0,
     plan: 0,
     synthesize: 0,
     progress: 0,
@@ -217,6 +233,10 @@ export function scriptedCalls(script: Script): ScriptedCalls {
   return {
     counts,
     research: async () => next("research", script.research),
+    // Defaults to asking nothing, so the many tests written before intake existed keep
+    // driving the loop without scripting a question they do not care about.
+    intake: async () =>
+      script.intake === undefined ? { questions: [] } : next("intake", script.intake),
     plan: async () => next("plan", script.plan),
     synthesize: async () => next("synthesize", script.synthesize),
     progress: async () => next("progress", script.progress),
