@@ -69,6 +69,30 @@ describe("parseClientMessage", () => {
   test("refuses revise with empty feedback", () => {
     assert.equal(parseClientMessage('{"kind":"revise","feedback":""}').ok, false);
   });
+
+  test("accepts the serve-mode messages and refuses the empty shapes", () => {
+    assert.equal(parseClientMessage('{"kind":"watch","missionId":"m1"}').ok, true);
+    assert.equal(parseClientMessage('{"kind":"compose","goal":"reconcile invoices"}').ok, true);
+    assert.equal(parseClientMessage('{"kind":"forget","missionId":"m1"}').ok, true);
+    // A whitespace goal is a click on an empty box, and a compose message may not
+    // smuggle an unattended flag — sign-off skipping stays a typed CLI decision.
+    assert.equal(parseClientMessage('{"kind":"compose","goal":"  "}').ok, false);
+    assert.equal(parseClientMessage('{"kind":"compose","goal":"x","budgetMinutes":-5}').ok, false);
+    const composed = parseClientMessage('{"kind":"compose","goal":"x","unattended":true}');
+    assert.ok(composed.ok && !("unattended" in composed.message));
+  });
+
+  test("accepts pause and unpause, scoped or not", () => {
+    assert.equal(parseClientMessage('{"kind":"pause"}').ok, true);
+    assert.equal(parseClientMessage('{"kind":"unpause","missionId":"m1"}').ok, true);
+  });
+
+  test("accepts an answer and refuses an empty one", () => {
+    assert.equal(parseClientMessage('{"kind":"answer","questionId":"q1","answer":"staging"}').ok, true);
+    // An empty answer is the same wrong-button click as an empty revision.
+    assert.equal(parseClientMessage('{"kind":"answer","questionId":"q1","answer":""}').ok, false);
+    assert.equal(parseClientMessage('{"kind":"answer","answer":"staging"}').ok, false);
+  });
 });
 
 describe("the web human", () => {
@@ -260,5 +284,74 @@ describe("the server", () => {
     const response = await fetch(server.url, { method: "POST" });
 
     assert.equal(response.status, 405);
+  });
+
+  // ── serve mode: the registry replaces the single feed, and a client watches ──
+
+  function fakeRegistry(logs: Record<string, Event[]>) {
+    return {
+      missions: () =>
+        Object.entries(logs).map(([id, events]) => ({
+          id,
+          goal: `goal of ${id}`,
+          status: "executing" as const,
+          updatedAt: events[events.length - 1]?.at ?? "",
+        })),
+      eventsFor: (missionId: string) => logs[missionId] ?? [],
+    };
+  }
+
+  async function serveRegistry(logs: Record<string, Event[]>, onMessage: () => Handled = () => ({ ok: true })) {
+    const server = await startWebServer({ registry: fakeRegistry(logs), onMessage });
+    running.push(server);
+    return server;
+  }
+
+  test("a registry server opens with the listing and streams nothing unasked", async () => {
+    const server = await serveRegistry({ m1: someEvents(2) });
+    const client = await open(server.url);
+
+    const frame = await client.next();
+    assert.equal(frame.kind, "missions");
+    assert.equal((frame.missions as unknown[]).length, 1);
+
+    // Watching is what starts the stream; the whole log replays from seq 0.
+    client.socket.send('{"kind":"watch","missionId":"m1"}');
+    const events = await client.next();
+    assert.equal(events.kind, "events");
+    assert.equal((events.events as Event[]).length, 2);
+    client.close();
+  });
+
+  test("watching a mission that does not exist is rejected, not a dead stream", async () => {
+    const server = await serveRegistry({ m1: someEvents(1) });
+    const client = await open(server.url);
+    await client.next();
+
+    client.socket.send('{"kind":"watch","missionId":"ghost"}');
+    const frame = await client.next();
+
+    assert.equal(frame.kind, "rejected");
+    assert.match(String(frame.problem), /no mission 'ghost'/);
+    client.close();
+  });
+
+  test("a per-run server refuses watch — it has one mission and no registry", async () => {
+    const server = await serve(someEvents(1));
+    const client = await open(server.url);
+    await client.next();
+
+    client.socket.send('{"kind":"watch","missionId":"m1"}');
+    const frame = await client.next();
+
+    assert.equal(frame.kind, "rejected");
+    client.close();
+  });
+
+  test("a server with neither feed is a bug, loudly", async () => {
+    await assert.rejects(
+      () => startWebServer({ onMessage: () => ({ ok: true }) }),
+      /events feed or a registry/,
+    );
   });
 });

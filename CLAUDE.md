@@ -9,12 +9,22 @@ spec, plans tasks, synthesizes a purpose-built agent per task, runs them in para
 worktrees, verifies, and re-plans each round. One npm package, one `orchestra` bin, no services
 and no database — setup simplicity is a hard constraint, not a cleanup item.
 
-**Phases 1–5 exist.** `orchestra run "<goal>"` scans, asks up to three intake questions, researches,
+**Phases 1–6 exist.** `orchestra run "<goal>"` scans, asks up to three intake questions, researches,
 writes an outcome spec, plans, **waits for a human to sign off**, then synthesizes, dispatches,
 verifies, merges, and replans; `--plan-only` stops after the estimate. An attended run also serves a
-dashboard on loopback (`--no-web` turns it off). Other commands: `doctor`, `resume <missionId>`,
-`forget <missionId>`, `save <missionId> --as <name>`, `promote <missionId> <taskId> --as <name>`,
-`help`.
+dashboard on loopback (`--no-web` turns it off), and `orchestra serve` is the server that outlives
+missions: list, watch, compose, answer, pause, forget — one composed mission at a time, and the
+per-run server is untouched (`runMission` takes an optional `RunSurface` and never closes a server
+it did not open). Other commands: `doctor`, `resume <missionId>`, `forget <missionId>`,
+`save <missionId> --as <name>`, `promote <missionId> <taskId> --as <name>`, `help`.
+
+**Phase 6 also added `src/channel/`** — the carrier-independent trust core (§17): `trust.ts` (
+single-use nonce, bound sender identity, replay-approves-once as a property of the store),
+`cards.ts` (a `credential` gate has no card; `GateCard` has no field an image could ride in), and
+the `Carrier` interface. The serve process mirrors a live mission's open questions through an
+optional `channel` dep; no concrete carrier ships until the §0 spike's live-Gateway half is
+verified. `doctor` refuses a non-loopback `ORCHESTRA_GATEWAY_URL` — the spike showed the client
+would allow remote `wss://`, so that refusal is load-bearing.
 
 **Phase 5 added `src/memory/`** — the semantic and procedural tiers (§6, §7), all markdown under
 `<stateDir>`: `lore/` (one fact per file; provenance required at write, `principle` human-only,
@@ -39,9 +49,14 @@ blocks on a person. The terminal (`cli/terminal.ts`), the dashboard (`web/webHum
 `unattendedHuman` all implement it, and `anyOf` lets a decision arrive from whichever surface answers
 first. `prepareMission` cannot tell them apart, which is the point.
 
-Still open in Phase 3: `ask_human` does not park a task mid-round, panic has no browser session to
-close until Phase 8, and there is no compose screen — a mission is started with `orchestra run` and
-the dashboard attaches to one that exists.
+`ask_human` now parks exactly its `blocks` tasks — in the *fold*, deliberately, because the answer
+may arrive when no loop is running and resume can only lift what the fold recorded. A worker
+reporting `blocked` raises the question; the inbox answers it; `question_answered` returns the task
+to `waiting`, where the scheduler owns the promotion. Pause works the same way: a folded flag the
+loop parks on, lifted by `orchestra resume`. Still open after Phase 6: kill-task, serve-side resume
+of a parked mission, the retention sweep, artifact content serving, envelope editing on compose, and
+the concrete OpenClaw carrier (see the Phase 6 as-built notes in ROADMAP.md); panic still has no
+browser session to close until Phase 8.
 
 The design docs are authoritative and code comments cite them by section number (`§9.1`,
 `§2a rule 5`, "defect 13"). Read the cited section before changing the behavior it describes.
@@ -113,6 +128,11 @@ folded state — which is what makes the whole loop assertable against a canned 
 - **The web layer is below the fixture harness, exactly like `agentCalls.ts`.** Nothing above it
   substitutes for a socket. Keep what the server *decides* — `eventsSince`, `parseClientMessage`,
   `renderSignoff` — in pure functions with tests, and leave only plumbing in `web/server.ts`.
+- **The page is client-side JavaScript carried in TypeScript template literals** (`web/page/*` —
+  style, projection, screens, wire, composed by `shell.html.ts`). A backtick or `${` inside a
+  fragment silently truncates or interpolates the page; `shell.test.ts` trips on it, and it has
+  already caught one comment. No `send()` argument may derive from the page's own fold — the one
+  exception is the id of the element that was clicked.
 - **End of input is not approval.** `Prompter.ask` returns `undefined` for a closed pipe and `""` for
   a human pressing Enter, and conflating them hands sign-off to a shell redirect. The same
   distinction is why the terminal port *rejects* on intake when nothing was answered: these ports

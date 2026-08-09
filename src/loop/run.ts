@@ -107,6 +107,17 @@ export async function runLoop(deps: LoopDeps): Promise<LoopResult> {
       return finish("blocked", "shutdown requested", mission.round);
     }
 
+    // Pause is not panic (§10): whatever was in flight this round has already been
+    // awaited, so parking here *is* the graceful drain. `orchestra resume` lifts it.
+    if (state.paused) {
+      return finish(
+        "blocked",
+        `Paused. In-flight workers finished; 'orchestra resume ${missionId}' lifts the ` +
+          `pause and carries on.`,
+        mission.round,
+      );
+    }
+
     if (mission.round >= limits.maxRounds) {
       return finish(
         "abandoned",
@@ -210,12 +221,29 @@ async function applyPolicy(
   outcome: DispatchOutcome,
   round: number,
 ): Promise<void> {
+  const base = { missionId: task.missionId, taskId: task.id, actor: "orchestrator" as const };
+
+  // A worker that reports `blocked` is stuck on something only a person can answer
+  // (§4.1), and the dispatch has already parked the task. Without an inbox item the
+  // park is permanent — the mission that found this ran a correct recon task, parked
+  // on its report, and sat there with an empty inbox (Phase 4's open milestone). The
+  // question is what the answer resolves; the fold does the parking and the lifting.
+  if (outcome.status === "blocked") {
+    deps.store.emit({
+      ...base,
+      type: "question_asked",
+      questionId: `ask-${task.id}-r${round}`,
+      question: `Task ${task.id} is blocked: ${outcome.message}`,
+      blocks: [task.id],
+    });
+    return;
+  }
+
   if (outcome.status !== "failed" && outcome.status !== "conflicted") return;
 
   // The dispatch has already recorded the task's own attempt count.
   const attempts = deps.store.state().tasks.find((t) => t.id === task.id)?.attempts ?? 1;
   const action = retryPolicy(outcome.failure, attempts);
-  const base = { missionId: task.missionId, taskId: task.id, actor: "orchestrator" as const };
 
   if (action.kind === "retry") {
     await (deps.sleep ?? wait)(action.backoffMs);

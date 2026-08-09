@@ -119,6 +119,45 @@ function checkIgnored(config: DiscoveredConfig): Check {
       };
 }
 
+/** Hosts that keep the gate on this machine. Everything else is refused — §17's
+ *  rule is bind to loopback and refuse a non-loopback Gateway, not authenticate it. */
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+
+export function checkChannel(gatewayUrl?: string): Check {
+  if (!gatewayUrl) {
+    // The default, and a passing one: no mirror is a configuration, not a gap (§2).
+    return { name: "channel", level: "ok", detail: "no mirror configured — inbox on the local dashboard" };
+  }
+
+  let host: string;
+  try {
+    host = new URL(gatewayUrl).hostname;
+  } catch {
+    return {
+      name: "channel",
+      level: "fail",
+      detail: `ORCHESTRA_GATEWAY_URL '${gatewayUrl}' is not a URL`,
+      fix: "set it to the Gateway's loopback address, e.g. ws://127.0.0.1:18789, or unset it",
+    };
+  }
+
+  if (!LOOPBACK_HOSTS.has(host)) {
+    return {
+      name: "channel",
+      level: "fail",
+      detail: `${gatewayUrl} is not loopback — a remote Gateway is refused (§17)`,
+      fix: "run the Gateway on this machine and use ws://127.0.0.1:<port>, or unset ORCHESTRA_GATEWAY_URL",
+    };
+  }
+
+  return {
+    name: "channel",
+    level: "warn",
+    detail: `${gatewayUrl} configured; the OpenClaw carrier is pending its spike — no mirror yet`,
+    fix: "nothing to type — the local dashboard carries the inbox until the carrier lands",
+  };
+}
+
 export function doctor(
   config: DiscoveredConfig,
   nodeVersion: string = process.version,
@@ -130,6 +169,7 @@ export function doctor(
     checkAgents(config),
     checkStateDir(config),
     checkIgnored(config),
+    checkChannel(config.gatewayUrl),
   ];
   return { checks, ready: checks.every((check) => check.level !== "fail") };
 }

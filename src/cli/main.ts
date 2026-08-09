@@ -20,6 +20,7 @@ import { saveProfile } from "../memory/profiles.js";
 import { saveMission } from "../memory/savedMission.js";
 import { executeMission } from "./execute.js";
 import { parseRunArgs, runMission, type RunDeps } from "./runCommand.js";
+import { parseServeArgs, serve } from "./serveCommand.js";
 import { createStdinPrompter, createTerminalHuman } from "./terminal.js";
 
 export interface Io {
@@ -44,6 +45,8 @@ const USAGE = `orchestra — a looping orchestrator for any kind of task
                                    keep a task's synthesized agent as a profile later
                                    missions are offered as prior art
   orchestra run "<goal>"           start a mission
+  orchestra serve [--port <n>]     a dashboard that outlives missions: list, watch,
+                                   answer, and compose them from the page
 
   run flags
     --plan-only        research, spec, plan, estimate — then stop. Nothing dispatched.
@@ -94,6 +97,15 @@ async function resume(
   });
 
   log.appendAll(recorded);
+
+  // Typing `resume` is the act that lifts a pause: the flag exists so the *loop*
+  // does not carry on, and a human explicitly asking it to carry on is the answer
+  // the flag was waiting for. Without this, a paused mission resumes straight back
+  // into the park it was just resumed from.
+  if (fold(log.read()).paused) {
+    log.append({ type: "pause_lifted", missionId, actor: "human", by: "resume" });
+  }
+
   const resumed = fold(log.read());
   writeProjections(dir, resumed);
 
@@ -306,6 +318,22 @@ export async function main(
       }
       assertHygiene(config, io);
       return finish(await runMission(parsed.options, config, io, { createCalls, human }));
+    }
+
+    case "serve": {
+      const parsed = parseServeArgs(rest);
+      if (!parsed.ok) {
+        io.err(parsed.message);
+        return 1;
+      }
+      assertHygiene(config, io);
+      // Serve runs until Ctrl-C. First SIGINT stops composing and closes the port;
+      // a live mission's own drain (§9.6) is downstream of the same signal.
+      const stop = new AbortController();
+      process.once("SIGINT", () => stop.abort());
+      return finish(
+        await serve(parsed.options, config, io, { createCalls, signal: stop.signal }),
+      );
     }
 
     case undefined:

@@ -19,6 +19,9 @@ export interface DiscoveredConfig {
   agents: string[];
   orchestratorModel: string;
   maxConcurrency: number;
+  /** An OpenClaw Gateway to mirror the inbox to, if the user runs one (§2). Never
+   *  required; refused unless loopback (§17). */
+  gatewayUrl?: string;
 }
 
 interface Candidate {
@@ -102,6 +105,9 @@ export async function discoverConfig(cwd = process.cwd()): Promise<DiscoveredCon
     // model; `ORCHESTRATOR_MODEL` is the override when it does.
     orchestratorModel: process.env.ORCHESTRATOR_MODEL || "opus",
     maxConcurrency: num(process.env.MAX_CONCURRENCY, 4),
+    // The phone mirror's gateway, when one is configured at all (§2). Carried as
+    // config so `doctor` can refuse a non-loopback URL before anything trusts it.
+    ...(process.env.ORCHESTRA_GATEWAY_URL ? { gatewayUrl: process.env.ORCHESTRA_GATEWAY_URL } : {}),
   };
 }
 

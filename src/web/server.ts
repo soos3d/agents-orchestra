@@ -10,23 +10,30 @@
 // approves a payment is reachable from somewhere else, and the answer that survived
 // review was to make it unreachable rather than to authenticate it.
 //
-// The server is deliberately thin. Everything it decides — which events a client has
-// not seen, what a frame means, what the page says — lives in a pure function next
-// door, because this file is below the fixture harness in the same way `agentCalls.ts`
-// is, and that is where six defects hid behind a green suite.
+// Two lifecycles share this file (Phase 6): a per-run server owns one mission and
+// streams it unasked, and `orchestra serve` outlives missions, so a client first
+// hears the registry's listing and *watches* one. The difference is confined to
+// which feed a socket's cursor points at — everything the server decides still
+// lives in a pure function next door, because this file is below the fixture
+// harness in the same way `agentCalls.ts` is, and that is where six defects hid
+// behind a green suite.
 import http from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import { type Event } from "../events/schema.js";
 import { shellHtml } from "./shell.html.js";
 import { parseClientMessage, type ClientMessage } from "./protocol.js";
+import { type MissionRegistry } from "./registry.js";
 
 /** Never configurable. See the header. */
 export const HOST = "127.0.0.1";
 
 export interface WebServerDeps {
-  /** Reads the log. Injected rather than reading the file here, so the server has no
-   *  opinion about where a mission lives and tests need no disk. */
-  events(): readonly Event[];
+  /** Reads the one mission's log — the per-run mode. Injected rather than reading
+   *  the file here, so the server has no opinion about where a mission lives and
+   *  tests need no disk. Exactly one of this and `registry` is required. */
+  events?(): readonly Event[];
+  /** Many missions, watched by id — the serve mode. */
+  registry?: MissionRegistry;
   onMessage(message: ClientMessage): { ok: true } | { ok: false; problem: string };
   /** 0 asks the OS for a free one, which is what keeps two missions from colliding. */
   port?: number;
@@ -48,6 +55,10 @@ export function eventsSince(events: readonly Event[], seq: number): Event[] {
 }
 
 export async function startWebServer(deps: WebServerDeps): Promise<RunningServer> {
+  if (!deps.events && !deps.registry) {
+    throw new Error("startWebServer needs an events feed or a registry — it got neither.");
+  }
+
   const warn = deps.onWarn ?? (() => {});
   const html = shellHtml();
 
@@ -73,13 +84,23 @@ export async function startWebServer(deps: WebServerDeps): Promise<RunningServer
     response.end(html);
   });
 
-  const sockets = new Map<WebSocket, { seq: number }>();
+  // In per-run mode a cursor streams from connect; in serve mode it streams nothing
+  // until the client watches a mission.
+  const sockets = new Map<WebSocket, { seq: number; missionId?: string }>();
   const wss = new WebSocketServer({ server });
+
+  const feedFor = (cursor: { missionId?: string }): readonly Event[] =>
+    deps.registry
+      ? cursor.missionId
+        ? deps.registry.eventsFor(cursor.missionId)
+        : []
+      : (deps.events?.() ?? []);
 
   wss.on("connection", (socket) => {
     // Replay on connect, then live tail — the same call, which is what stops a
     // reconnecting tab from rendering a mission that skipped a round.
     sockets.set(socket, { seq: 0 });
+    if (deps.registry) sendMissions(socket);
     pushTo(socket);
 
     socket.on("message", (raw) => {
@@ -87,6 +108,22 @@ export async function startWebServer(deps: WebServerDeps): Promise<RunningServer
       if (!parsed.ok) {
         warn(`Ignored a message from the dashboard: ${parsed.problem}`);
         socket.send(JSON.stringify({ kind: "rejected", problem: parsed.problem }));
+        return;
+      }
+
+      // `watch` is the server's own: it moves a socket's cursor, which nothing
+      // outside this file knows exists.
+      if (parsed.message.kind === "watch") {
+        if (!deps.registry) {
+          socket.send(JSON.stringify({ kind: "rejected", problem: "this server has one mission; there is nothing to watch." }));
+          return;
+        }
+        if (deps.registry.eventsFor(parsed.message.missionId).length === 0) {
+          socket.send(JSON.stringify({ kind: "rejected", problem: `no mission '${parsed.message.missionId}'.` }));
+          return;
+        }
+        sockets.set(socket, { seq: 0, missionId: parsed.message.missionId });
+        pushTo(socket);
         return;
       }
 
@@ -100,11 +137,16 @@ export async function startWebServer(deps: WebServerDeps): Promise<RunningServer
     socket.on("error", () => sockets.delete(socket));
   });
 
+  function sendMissions(socket: WebSocket): void {
+    if (!deps.registry || socket.readyState !== socket.OPEN) return;
+    socket.send(JSON.stringify({ kind: "missions", missions: deps.registry.missions() }));
+  }
+
   function pushTo(socket: WebSocket): void {
     const cursor = sockets.get(socket);
     if (!cursor || socket.readyState !== socket.OPEN) return;
 
-    const fresh = eventsSince(deps.events(), cursor.seq);
+    const fresh = eventsSince(feedFor(cursor), cursor.seq);
     if (fresh.length === 0) return;
 
     socket.send(JSON.stringify({ kind: "events", events: fresh }));
@@ -123,7 +165,10 @@ export async function startWebServer(deps: WebServerDeps): Promise<RunningServer
     url: `http://${HOST}:${port}`,
     port,
     publish: () => {
-      for (const socket of sockets.keys()) pushTo(socket);
+      for (const socket of sockets.keys()) {
+        sendMissions(socket);
+        pushTo(socket);
+      }
     },
     close: () =>
       new Promise<void>((resolve) => {

@@ -58,7 +58,14 @@ export interface MissionState {
   inbox: InboxItem[];
   notes: Note[];
   workers: Record<string, WorkerHandle>;
+  /** Which question parked which task (§10). The association lives in state because
+   *  the answer may arrive when no loop is running, and resume has to know what to
+   *  lift. Keyed by task id; a task is parked by at most one question. */
+  blockedBy: Record<string, string>;
   panicked: boolean;
+  /** §10 pause: the loop drains and parks while this holds. Folded state, so a
+   *  pause survives the restart it usually precedes. */
+  paused: boolean;
   /**
    * The research brief and what the spec ruled out, both shown at sign-off (§13).
    *
@@ -353,15 +360,47 @@ const handlers: Handlers = {
       i === index ? { ...note, deliveredAt: event.at } : note,
     );
   },
-  question_asked: (state, event) =>
+  // §10: the question blocks the *task*, never the loop. Parking happens here rather
+  // than in the emitter because the answer may arrive with no loop running, and the
+  // resume that follows can only lift what the fold recorded. A `running` or
+  // `verifying` task is mid-flight and is left alone (the worker finishes; its
+  // outcome moves it); a terminal task is never resurrected; a task a worker already
+  // parked as `blocked` is adopted, so the answer has something to lift. An id
+  // naming no task is ignored — the question still renders in the inbox, and a
+  // question is allowed to block nothing.
+  question_asked: (state, event) => {
     openInbox(state, {
       id: event.questionId,
       kind: "question",
       taskId: event.taskId,
       summary: event.question,
       openedAt: event.at,
-    }),
-  question_answered: (state, event) => resolveInbox(state, event.questionId, event.at),
+    });
+    for (const id of event.blocks) {
+      const task = state.tasks.find((t) => t.id === id);
+      if (!task) continue;
+      if (task.status === "waiting" || task.status === "todo") {
+        patchTask(state, id, { status: "blocked", updatedAt: event.at });
+        state.blockedBy = { ...state.blockedBy, [id]: event.questionId };
+      } else if (task.status === "blocked") {
+        state.blockedBy = { ...state.blockedBy, [id]: event.questionId };
+      }
+    }
+  },
+  // Back to `waiting`, not `todo`: the scheduler owns promotion, and a parked task
+  // whose dependencies regressed must not skip the check (§4).
+  question_answered: (state, event) => {
+    resolveInbox(state, event.questionId, event.at);
+    for (const [taskId, questionId] of Object.entries(state.blockedBy)) {
+      if (questionId !== event.questionId) continue;
+      const { [taskId]: _lifted, ...rest } = state.blockedBy;
+      state.blockedBy = rest;
+      const task = state.tasks.find((t) => t.id === taskId);
+      if (task?.status === "blocked") {
+        patchTask(state, taskId, { status: "waiting", updatedAt: event.at });
+      }
+    }
+  },
   gate_requested: (state, event) =>
     openInbox(state, {
       id: event.gateId,
@@ -407,6 +446,12 @@ const handlers: Handlers = {
   panic: (state) => {
     state.panicked = true;
   },
+  pause_requested: (state) => {
+    state.paused = true;
+  },
+  pause_lifted: (state) => {
+    state.paused = false;
+  },
 };
 
 function seed(event: Extract<Event, { type: "mission_created" }>): MissionState {
@@ -436,7 +481,9 @@ function seed(event: Extract<Event, { type: "mission_created" }>): MissionState 
     inbox: [],
     notes: [],
     workers: {},
+    blockedBy: {},
     panicked: false,
+    paused: false,
     brief: "",
     outOfScope: [],
     lastSeq: event.seq,

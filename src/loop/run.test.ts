@@ -311,6 +311,104 @@ describe("runLoop", () => {
     });
   });
 
+  // §10: ask_human parks one task while the rest of the mission keeps running. The
+  // Phase 3 leftover — the events and the waiting/blocked split existed, and nothing
+  // moved the tasks or raised a question mid-round.
+  describe("ask_human", () => {
+    test("a blocked worker raises a question that parks its task while the rest runs", async () => {
+      const h = harness({
+        seed: seedMission({
+          tasks: [
+            aCodeTask({ id: "t1", owns: ["src/a.ts"], branch: "a" }),
+            aCodeTask({ id: "t2", owns: ["src/b.ts"], branch: "b" }),
+          ],
+        }),
+        outcomes: { t1: { status: "blocked", message: "Which of the two staging accounts?" } },
+        progress: [aProgressLedger()],
+        met: true,
+      });
+
+      const result = await runLoop(h.deps);
+
+      // Both dispatched in the same round: the question never blocks the loop.
+      assert.deepEqual([...h.dispatched].sort(), ["t1", "t2"]);
+      assert.equal(result.status, "blocked");
+
+      const asked = h.store.inputs.find((e) => e.type === "question_asked");
+      assert.ok(asked && "blocks" in asked, "no question_asked reached the log");
+      assert.deepEqual(asked.blocks, ["t1"]);
+      assert.match(asked.question, /staging accounts/);
+
+      const state = h.store.state();
+      assert.equal(state.tasks.find((t) => t.id === "t1")?.status, "blocked");
+      assert.equal(state.tasks.find((t) => t.id === "t2")?.status, "done");
+      assert.equal(state.blockedBy["t1"], asked.questionId);
+    });
+
+    test("an answer arriving while parked lets the resumed loop redispatch the task", async () => {
+      const h = harness({
+        seed: [
+          ...seedMission(),
+          {
+            ...orchestrator,
+            taskId: "t1",
+            type: "question_asked",
+            questionId: "q1",
+            question: "Which account?",
+            blocks: ["t1"],
+          },
+          { ...orchestrator, actor: "human", type: "question_answered", questionId: "q1", answer: "staging" },
+        ],
+        progress: [aProgressLedger({ isRequestSatisfied: true, unmetCriteria: [] })],
+        met: true,
+      });
+
+      const result = await runLoop(h.deps);
+
+      assert.deepEqual(h.dispatched, ["t1"]);
+      assert.equal(result.status, "complete");
+    });
+  });
+
+  // Pause is not panic (§10): it drains and parks, reversibly, and the loop is the
+  // thing that has to honour it — a paused flag nothing reads is a pause button
+  // wired to nothing.
+  describe("pause", () => {
+    test("a paused mission parks before dispatching anything", async () => {
+      const h = harness({
+        seed: [
+          ...seedMission(),
+          { ...orchestrator, actor: "human", type: "pause_requested", by: "dashboard" },
+        ],
+        progress: [],
+      });
+
+      const result = await runLoop(h.deps);
+
+      assert.equal(result.status, "blocked");
+      assert.match(result.reason, /[Pp]aused/);
+      assert.match(result.reason, /orchestra resume/);
+      assert.deepEqual(h.dispatched, []);
+    });
+
+    test("a lifted pause runs normally", async () => {
+      const h = harness({
+        seed: [
+          ...seedMission(),
+          { ...orchestrator, actor: "human", type: "pause_requested", by: "dashboard" },
+          { ...orchestrator, actor: "human", type: "pause_lifted", by: "resume" },
+        ],
+        progress: [aProgressLedger({ isRequestSatisfied: true, unmetCriteria: [] })],
+        met: true,
+      });
+
+      const result = await runLoop(h.deps);
+
+      assert.equal(result.status, "complete");
+      assert.deepEqual(h.dispatched, ["t1"]);
+    });
+  });
+
   describe("the criteria freeze", () => {
     // Adversarial: the planner cannot meet the criterion, so it returns a relaxed
     // one. Every other check in the system would then agree the mission succeeded.

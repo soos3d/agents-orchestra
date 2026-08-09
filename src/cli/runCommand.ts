@@ -153,6 +153,22 @@ export function defaultEnvelope(config: DiscoveredConfig, budget: Budget): Envel
   };
 }
 
+/**
+ * A server the mission publishes through but does not own — how `orchestra serve`
+ * lends its one port to the missions it composes (§13). `register` is what routes
+ * dashboard messages to this mission while it runs; `release` unroutes it. A
+ * mission given a surface starts no server of its own and never closes the one it
+ * was lent.
+ */
+export interface RunSurface {
+  server: Pick<RunningServer, "publish" | "url">;
+  register(
+    missionId: string,
+    session: { human: WebHuman; store: MissionStore; onPanic: () => void },
+  ): void;
+  release(missionId: string): void;
+}
+
 export interface RunDeps {
   /** `onSpend` is where the measured portion of a mission's cost enters the log.
    *  The loop's own calls are the part actually billed, so they are recorded under
@@ -161,6 +177,8 @@ export interface RunDeps {
   /** Injected so a run is testable without a tty. Absent under `--unattended`, and
    *  absent means nobody is there. */
   human?: HumanPort;
+  /** Present when `orchestra serve` composed this mission. */
+  surface?: RunSurface;
   now?: () => Date;
 }
 
@@ -193,8 +211,11 @@ export async function runMission(
 
   // Every emit pushes to whatever tabs are open. Wrapped rather than built into the
   // store because the store's job is the log, and a store that knew about sockets
-  // would be a store that could not be tested without one.
-  let server: RunningServer | undefined;
+  // would be a store that could not be tested without one. `publish` rather than the
+  // server itself, because under a surface the server is borrowed: this mission may
+  // push through it and must not close it.
+  let publish: (() => void) | undefined;
+  let ownedServer: RunningServer | undefined;
 
   // Panic reaches the workers through this, and the loop through the `panicked` flag
   // the event sets. Two mechanisms because they stop different things: the signal
@@ -205,7 +226,7 @@ export async function runMission(
     state: store.state,
     emit: (input) => {
       store.emit(input);
-      server?.publish();
+      publish?.();
     },
   };
 
@@ -261,15 +282,28 @@ export async function runMission(
   // in time is a port for nothing. It is the CI mode, and CI has no browser.
   const web = attended && options.web && !options.planOnly ? createWebHuman() : undefined;
 
-  if (web) {
-    server = await startWebServer({
+  if (web && deps.surface) {
+    // Composed from `orchestra serve`: publish through the lent server, and let the
+    // serve process route dashboard messages here for as long as the mission runs.
+    publish = deps.surface.server.publish;
+    deps.surface.register(missionId, { human: web, store: wired, onPanic: () => panic.abort() });
+    io.out(`dashboard: ${deps.surface.server.url}`);
+  } else if (web) {
+    ownedServer = await startWebServer({
       events: () => store.events(),
       onMessage: (message) =>
         handleFromDashboard(message, web, wired, missionId, io, () => panic.abort()),
       onWarn: (message) => io.err(message),
     });
-    io.out(`dashboard: ${server.url}`);
+    publish = ownedServer.publish;
+    io.out(`dashboard: ${ownedServer.url}`);
   }
+
+  // Deliberately after `mission_created`, not before: a dashboard registered against
+  // an empty log could route an answer into `fold` before the log opens, and an
+  // empty log is corruption by rule. The push here is what carries the events
+  // emitted before the wiring existed.
+  publish?.();
 
   // Either surface may answer; §10's one-inbox rule, one level down.
   const surfaces = [...(deps.human ? [deps.human] : []), ...(web ? [web] : [])];
@@ -327,7 +361,11 @@ export async function runMission(
     });
     return code;
   } finally {
-    await server?.close();
+    // Own server closed, borrowed one released — never the other way around: a
+    // mission that closed the serve process's port would take every other mission's
+    // dashboard down with its own exit.
+    deps.surface?.release(missionId);
+    await ownedServer?.close();
   }
 }
 
@@ -339,7 +377,7 @@ export async function runMission(
  * to write it down and let the loop pick it up. Sign-off and intake are the two that
  * something is actually waiting on, and those go to the port.
  */
-function handleFromDashboard(
+export function handleFromDashboard(
   message: ClientMessage,
   human: WebHuman,
   store: MissionStore,
@@ -348,6 +386,45 @@ function handleFromDashboard(
   onPanic: () => void,
 ): { ok: true } | { ok: false; problem: string } {
   const base = { missionId, actor: "human" as const };
+
+  if (message.kind === "answer") {
+    // Resolved against the log, not a port: the question parked its tasks in the
+    // fold (§10), so the mission may be sitting `blocked` with no loop running when
+    // this arrives. The event is what lifts the park, on resume if necessary.
+    const open = store
+      .state()
+      .inbox.find(
+        (item) => item.id === message.questionId && item.kind === "question" && !item.resolvedAt,
+      );
+    if (!open) return { ok: false, problem: "no open question with that id." };
+
+    store.emit({
+      ...base,
+      type: "question_answered",
+      questionId: message.questionId,
+      answer: message.answer,
+      ...(open.taskId ? { taskId: open.taskId } : {}),
+    });
+    // The answer is also a note, so it reaches `factsGiven` and survives replans —
+    // §10's rule that an answer enters the ledger, via the machinery that already
+    // does exactly that.
+    store.emit({
+      ...base,
+      type: "note_received",
+      scope: "global",
+      text: `In answer to "${open.summary}": ${message.answer}`,
+    });
+    return { ok: true };
+  }
+
+  if (message.kind === "pause" || message.kind === "unpause") {
+    store.emit({
+      ...base,
+      type: message.kind === "pause" ? "pause_requested" : "pause_lifted",
+      by: "dashboard",
+    });
+    return { ok: true };
+  }
 
   if (message.kind === "note") {
     store.emit({

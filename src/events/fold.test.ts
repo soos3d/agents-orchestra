@@ -427,4 +427,104 @@ describe("fold", () => {
       assert.equal(extended.mission.budget.wallMs, anEnvelope().maxSpend.wallMs + 1_800_000);
     });
   });
+
+  // §10: `ask_human` blocks the *task*, never the loop — and the blocking has to be
+  // a property of the fold, because the answer may arrive when no loop is running
+  // (a parked mission, answered from the dashboard, resumed later). A transition
+  // only the live process applies is a transition resume loses.
+  describe("ask_human parking", () => {
+    const twoTasks = (): EventInput[] => [
+      missionCreated(),
+      { ...orchestrator, type: "task_planned", task: aCodeTask() },
+      { ...orchestrator, type: "task_planned", task: aCodeTask({ id: "t2", owns: ["src/other.ts"] }) },
+    ];
+    const asked = (blocks: string[]): EventInput => ({
+      ...orchestrator,
+      type: "question_asked",
+      questionId: "q1",
+      question: "Which account?",
+      blocks,
+    });
+    const answered: EventInput = {
+      ...orchestrator,
+      actor: "human",
+      type: "question_answered",
+      questionId: "q1",
+      answer: "the staging one",
+    };
+
+    test("a question parks exactly the tasks it blocks", () => {
+      const state = foldOf([...twoTasks(), asked(["t1"])]);
+
+      assert.equal(state.tasks.find((t) => t.id === "t1")?.status, "blocked");
+      assert.equal(state.tasks.find((t) => t.id === "t2")?.status, "todo");
+    });
+
+    test("the answer returns parked tasks to waiting, where the scheduler resumes them", () => {
+      const state = foldOf([...twoTasks(), asked(["t1"]), answered]);
+
+      // `waiting` rather than `todo`: the scheduler owns the promotion, and a task
+      // whose dependencies regressed while it was parked must not skip the check.
+      assert.equal(state.tasks.find((t) => t.id === "t1")?.status, "waiting");
+      assert.ok(state.inbox[0].resolvedAt);
+    });
+
+    test("a question does not resurrect a done task or interrupt a running one", () => {
+      const state = foldOf([
+        ...twoTasks(),
+        { ...orchestrator, taskId: "t1", type: "task_status", from: "todo", to: "running", reason: "dispatched" },
+        { ...orchestrator, taskId: "t1", type: "task_status", from: "running", to: "done", reason: "verified" },
+        { ...orchestrator, taskId: "t2", type: "task_status", from: "todo", to: "running", reason: "dispatched" },
+        asked(["t1", "t2"]),
+      ]);
+
+      assert.equal(state.tasks.find((t) => t.id === "t1")?.status, "done");
+      assert.equal(state.tasks.find((t) => t.id === "t2")?.status, "running");
+    });
+
+    test("a question adopts a task a worker already parked, so the answer can lift it", () => {
+      // The dispatch path moves a task to `blocked` when its worker reports blocked;
+      // the follow-up question has to associate with it or nothing ever resumes it.
+      const state = foldOf([
+        ...twoTasks(),
+        { ...orchestrator, taskId: "t1", type: "task_status", from: "running", to: "blocked", reason: "worker blocked" },
+        asked(["t1"]),
+        answered,
+      ]);
+
+      assert.equal(state.tasks.find((t) => t.id === "t1")?.status, "waiting");
+    });
+
+    test("a second answer to the same question is a no-op", () => {
+      const state = foldOf([
+        ...twoTasks(),
+        asked(["t1"]),
+        answered,
+        { ...orchestrator, taskId: "t1", type: "task_status", from: "waiting", to: "todo", reason: "deps landed" },
+        answered,
+      ]);
+
+      assert.equal(state.tasks.find((t) => t.id === "t1")?.status, "todo");
+    });
+
+    test("a pause holds until lifted, and survives a refold the way a restart would see it", () => {
+      const human = { ...orchestrator, actor: "human" } as const;
+      const pausedState = foldOf([missionCreated(), { ...human, type: "pause_requested", by: "dashboard" }]);
+      assert.equal(pausedState.paused, true);
+
+      const lifted = foldOf([
+        missionCreated(),
+        { ...human, type: "pause_requested", by: "dashboard" },
+        { ...human, type: "pause_lifted", by: "resume" },
+      ]);
+      assert.equal(lifted.paused, false);
+    });
+
+    test("a question blocking nothing parks nothing and still opens an inbox item", () => {
+      const state = foldOf([...twoTasks(), asked([])]);
+
+      assert.ok(state.tasks.every((t) => t.status === "todo"));
+      assert.equal(state.inbox.length, 1);
+    });
+  });
 });

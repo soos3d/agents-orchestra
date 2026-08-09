@@ -265,6 +265,11 @@ const runtime = [
     orphans: z.array(z.object({ taskId: z.string(), action: z.string() })),
   }),
   withBase({ type: z.literal("panic"), reason: z.string(), by: z.string() }),
+  // Pause is not panic (§10): it drains rather than kills, and it is reversible.
+  // Two events rather than a toggle payload, so a replay cannot misread which one
+  // it is looking at.
+  withBase({ type: z.literal("pause_requested"), by: z.string() }),
+  withBase({ type: z.literal("pause_lifted"), by: z.string() }),
 ] as const;
 
 export const eventSchema = z.discriminatedUnion("type", [

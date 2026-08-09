@@ -12,13 +12,17 @@ Design lives in [`specs.md`](./specs.md). What gets built and in what order live
 
 ## Status
 
-**Phases 1–4 have landed.** A mission runs end to end: scan, intake, research, outcome spec, plan,
-sign-off, synthesis, dispatch into parallel worktrees, verification, merge, replan. An attended run
-serves a dashboard on loopback.
+**Phases 1–6 have landed.** A mission runs end to end: scan, intake, research, outcome spec, plan,
+sign-off, synthesis, dispatch into parallel worktrees, verification, merge, replan. Memory recalls
+lore before the scan and writes back on completion; saved missions replay with `--saved`. An
+attended run serves a dashboard on loopback, and `orchestra serve` outlives missions — compose one
+from the page, watch any of them, answer a parked one's question, pause, forget. `ask_human` parks
+exactly the tasks it blocks while the rest keep running, and the carrier-independent trust core for
+the future phone mirror (single-use nonces, one bound sender, replay approves once) ships tested.
 
-What is not built: the compose screen (a mission is started with `orchestra run` and the dashboard
-attaches to one that already exists), `ask_human` parking a task mid-round, memory (Phase 5), ACP
-(Phase 7), and computer use (Phase 8).
+What is not built: ACP (Phase 7), computer use and gates (Phase 8), and the concrete phone carrier —
+plus the smaller leftovers named in ROADMAP's Phase 6 notes (kill-task, serve-side resume, the
+retention sweep).
 
 ## Install
 
