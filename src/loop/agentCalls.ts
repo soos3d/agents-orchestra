@@ -409,8 +409,10 @@ So a rubric that says "the final message must…", "the output must…", or "the
 must contain…" cannot be evaluated and the task fails however well it was done. If the
 deliverable is a document, a review, or a set of findings, then **the work has to leave
 a file behind**: say so in the system prompt, name the path, and write the rubric about
-that file's contents. If the task genuinely produces no file, use \`command\` or
-\`none\` with a reason — never \`judge\`.
+that file's contents. And the agent has to be *able* to leave it — a judge-verified
+spec must grant a writing tool (\`Write\`), least privilege notwithstanding; one that
+cannot write the artifact its own rubric grades fails validation. If the task genuinely
+produces no file, use \`command\` or \`none\` with a reason — never \`judge\`.
 
 Keep the rubric short enough to apply. It is a checklist for a reader who has only the
 files, not a specification of the work.

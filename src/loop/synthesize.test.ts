@@ -21,6 +21,7 @@ import { describe, test } from "node:test";
 import { fold } from "../events/fold.js";
 import { type EventInput } from "../events/schema.js";
 import {
+  aCodeTask,
   anAgentSpec,
   anEnvelope,
   aPlannedTask,
@@ -30,6 +31,7 @@ import {
 import { type Calls } from "./calls.js";
 import { type MissionStore } from "./run.js";
 import {
+  ArtifactToolError,
   EnvelopeViolationError,
   SynthesisError,
   synthesizeTasks,
@@ -365,6 +367,130 @@ describe("the lease a code agent declares", () => {
 describe("what the callers catch", () => {
   // All three park the mission instead of killing the process, so all three have to be
   // recognisable by one `instanceof` at the two call sites (`grantSignoff`, `replan`).
+  // Defect 27: the judge grades files on disk, so a judge-verified agent must hold a
+  // tool that can write one. Found on a correctly-answered recon task whose
+  // least-privilege Read/Glob/Grep toolset left the judge an empty artifact list.
+  describe("the judged-artifact rule", () => {
+    const judged = (tools: string[]) =>
+      anAgentSpec({
+        worker: "research",
+        tools,
+        owns: undefined,
+        verify: { kind: "judge", rubric: "the report file names all three exports" },
+      });
+
+    test("re-asks a judge-verified spec that cannot write its artifact, then accepts Write", async () => {
+      const store = testStore([missionCreated()]);
+      const { calls, seen } = scriptedSynthesize([
+        judged(["Read", "Glob", "Grep"]),
+        judged(["Read", "Glob", "Grep", "Write"]),
+      ]);
+
+      const added = await synthesizeTasks(deps(store, calls), [aPlannedTask({ worker: "research" })], 0);
+
+      assert.equal(added, 1);
+      assert.match(seen[1]!.rejected ?? "", /judge grades files on disk/);
+    });
+
+    test("fails the task when the second spec still cannot write", async () => {
+      const store = testStore([missionCreated()]);
+      const { calls } = scriptedSynthesize([judged(["Read"]), judged(["Read"])]);
+
+      await assert.rejects(
+        synthesizeTasks(deps(store, calls), [aPlannedTask({ worker: "research" })], 0),
+        ArtifactToolError,
+      );
+    });
+
+    test("a command-verified spec owes no writing tool", async () => {
+      const store = testStore([missionCreated()]);
+      const spec = anAgentSpec({
+        worker: "research",
+        tools: ["Read"],
+        owns: undefined,
+        verify: { kind: "command", command: "npm test" },
+      });
+      const { calls } = scriptedSynthesize([spec]);
+
+      assert.equal(await synthesizeTasks(deps(store, calls), [aPlannedTask({ worker: "research" })], 0), 1);
+    });
+  });
+
+  // Defect 26: a replan that reuses a task id must reach the task record, or the
+  // scheduler keeps reading the old edges and the dependents of a failed task wait
+  // forever. The loop-level repro lives in run.test.ts; these pin the emitter rules.
+  describe("redefining an existing task", () => {
+    const board = (): EventInput[] => [
+      missionCreated(),
+      { missionId: "m1", actor: "orchestrator", type: "task_planned", task: aCodeTask({ id: "recon", satisfies: [] }) },
+      {
+        missionId: "m1",
+        actor: "orchestrator",
+        type: "task_planned",
+        task: aCodeTask({ id: "write", owns: ["src/x.ts"], branch: "write", dependsOn: ["recon"], status: "waiting" }),
+      },
+      { missionId: "m1", actor: "orchestrator", taskId: "recon", type: "task_status", from: "todo", to: "running", reason: "dispatched" },
+      { missionId: "m1", actor: "orchestrator", taskId: "recon", type: "task_status", from: "running", to: "failed", reason: "left no artifact" },
+    ];
+
+    test("an edges-only change keeps the agent and costs no model call", async () => {
+      const store = testStore(board());
+      const { calls, seen } = scriptedSynthesize([]);
+
+      const added = await synthesizeTasks(
+        deps(store, calls),
+        [aPlannedTask({ id: "write", goal: aCodeTask().goal, dependsOn: [] })],
+        2,
+      );
+
+      assert.equal(added, 1);
+      assert.equal(seen.length, 0);
+      const task = store.state().tasks.find((t) => t.id === "write")!;
+      assert.deepEqual(task.dependsOn, []);
+      assert.equal(task.status, "todo");
+    });
+
+    test("a changed goal is re-staffed, and history rides along", async () => {
+      const store = testStore(board());
+      const { calls, seen } = scriptedSynthesize([anAgentSpec()]);
+
+      await synthesizeTasks(
+        deps(store, calls),
+        [aPlannedTask({ id: "recon", goal: "produce the report file this time" })],
+        2,
+      );
+
+      assert.equal(seen.length, 1);
+      const task = store.state().tasks.find((t) => t.id === "recon")!;
+      assert.equal(task.goal, "produce the report file this time");
+      assert.equal(task.status, "todo");
+      // A failed first attempt is still an attempt; the §9.4 cap keeps reading it.
+      assert.equal(task.attempts, 1);
+    });
+
+    test("an unchanged definition is left alone, and running or done work always is", async () => {
+      const store = testStore([
+        ...board(),
+        { missionId: "m1", actor: "orchestrator", taskId: "write", type: "task_status", from: "waiting", to: "running", reason: "dispatched" },
+      ]);
+      const { calls } = scriptedSynthesize([]);
+
+      const added = await synthesizeTasks(
+        deps(store, calls),
+        [
+          // recon redefined the same way it already reads: no event owed.
+          aPlannedTask({ id: "recon", goal: aCodeTask().goal, satisfies: [] }),
+          // write is running: even a changed definition may not touch it.
+          aPlannedTask({ id: "write", goal: "something else entirely" }),
+        ],
+        2,
+      );
+
+      assert.equal(added, 0);
+      assert.equal(store.inputs.some((e) => e.type === "task_replanned"), false);
+    });
+  });
+
   test("every synthesis failure is a SynthesisError", async () => {
     const store = testStore([missionCreated()]);
 

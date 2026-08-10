@@ -134,6 +134,11 @@ const loop = [
 
 const tasks = [
   withBase({ type: z.literal("task_planned"), task: taskSchema }),
+  // A replan redefined a task that already exists (defect 26). The revised plan lives
+  // in the ledger, but the scheduler reads *task records* — a changed `dependsOn`
+  // that never reaches them leaves the dependents of a failed task waiting forever.
+  // Carries the whole updated Task, like task_planned, per replay rule 2.
+  withBase({ type: z.literal("task_replanned"), task: taskSchema }),
   withBase({
     type: z.literal("task_status"),
     from: taskStatusSchema,

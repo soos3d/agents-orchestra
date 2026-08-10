@@ -370,6 +370,37 @@ describe("runLoop", () => {
     });
   });
 
+  // Defect 26, reproduced at the loop level: the first real serve-driven mission
+  // failed its recon task, and every replan correctly dropped it from the surviving
+  // task's dependencies — in the ledger. The task records never heard, the scheduler
+  // reads task records, and seven rounds dispatched nothing. The fixture that would
+  // have caught it always replanned with fresh ids, which is exactly what a real
+  // planner does not do.
+  test("a replan that reuses a task id with new dependencies actually reschedules it", async () => {
+    const h = harness({
+      seed: seedMission({
+        tasks: [
+          aCodeTask({ id: "recon", owns: ["notes.md"], branch: "recon", satisfies: [] }),
+          aCodeTask({ id: "write", owns: ["src/x.ts"], branch: "write", dependsOn: ["recon"], status: "waiting" }),
+        ],
+      }),
+      outcomes: { recon: { status: "failed", failure: "verification", message: "left no artifact" } },
+      progress: [
+        aProgressLedger({ isInLoop: true, isProgressBeingMade: false }),
+        aProgressLedger({ isRequestSatisfied: true, unmetCriteria: [] }),
+      ],
+      // The replan reuses the surviving task's id and cuts the failed dependency.
+      plan: [{ tasks: [aPlannedTask({ id: "write", goal: aCodeTask().goal })] }],
+      met: true,
+    });
+
+    const result = await runLoop(h.deps);
+
+    assert.deepEqual(h.dispatched, ["recon", "write"]);
+    assert.equal(result.status, "complete");
+    assert.ok(h.store.inputs.some((e) => e.type === "task_replanned"));
+  });
+
   // Pause is not panic (§10): it drains and parks, reversibly, and the loop is the
   // thing that has to honour it — a paused flag nothing reads is a pause button
   // wired to nothing.

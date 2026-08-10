@@ -507,6 +507,26 @@ describe("fold", () => {
       assert.equal(state.tasks.find((t) => t.id === "t1")?.status, "todo");
     });
 
+    // Defect 26's fold half: the redefined task replaces the record whole, and a
+    // question that parked the old definition does not keep parking the new one.
+    test("a redefined task drops its question association along with its old edges", () => {
+      const state = foldOf([
+        missionCreated(),
+        { ...orchestrator, type: "task_planned", task: aCodeTask() },
+        { ...orchestrator, type: "question_asked", questionId: "q1", question: "?", blocks: ["t1"] },
+        {
+          ...orchestrator,
+          taskId: "t1",
+          type: "task_replanned",
+          task: aCodeTask({ goal: "re-scoped", status: "todo" }),
+        },
+      ]);
+
+      assert.equal(state.tasks[0]?.goal, "re-scoped");
+      assert.equal(state.tasks[0]?.status, "todo");
+      assert.deepEqual(state.blockedBy, {});
+    });
+
     test("a pause holds until lifted, and survives a refold the way a restart would see it", () => {
       const human = { ...orchestrator, actor: "human" } as const;
       const pausedState = foldOf([missionCreated(), { ...human, type: "pause_requested", by: "dashboard" }]);

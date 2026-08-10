@@ -271,6 +271,16 @@ const handlers: Handlers = {
     }
     state.tasks = [...state.tasks, { ...event.task }];
   },
+  // Defect 26: the event carries the redefined task whole (replay rule 2), and this
+  // replaces the record — status included, which is how a failed task re-scoped by a
+  // replan becomes runnable again. The emitter guarantees it never redefines work
+  // that is running or done. A question that parked the old definition is moot for
+  // the new one, so the association is dropped with it.
+  task_replanned: (state, event) => {
+    patchTask(state, event.task.id, { ...event.task, updatedAt: event.at });
+    const { [event.task.id]: _redefined, ...rest } = state.blockedBy;
+    state.blockedBy = rest;
+  },
   task_status: (state, event) => {
     const taskId = requireTaskId(event);
     // The transition into `running` *is* the dispatch — there is no separate event

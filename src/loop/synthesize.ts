@@ -105,6 +105,30 @@ export class EnvelopeViolationError extends SynthesisError {
 }
 
 /**
+ * A judge-verified agent whose toolset cannot produce the artifact its own rubric
+ * grades (defect 27).
+ *
+ * The judge reads files on disk and nothing else (§3), so a `judge` check obliges the
+ * work to leave a file behind — defect 25 taught the rubric that, and the first real
+ * serve-driven mission showed the other half: synthesis granted least-privilege
+ * `Read/Glob/Grep`, the worker was denied the write, the judge got an empty artifact
+ * list, and a correctly-done task failed. The two halves of one contract are checked
+ * in one place: a rubric about files and a toolset that can make one.
+ */
+export class ArtifactToolError extends SynthesisError {
+  constructor(taskId: string) {
+    super(
+      taskId,
+      `Task '${taskId}' is judge-verified, and twice its agent held no tool that can ` +
+        `write the artifact the judge will read. Grant a writing tool (class fs.write), ` +
+        `verify by command instead, or — if the envelope withholds fs.write — plan the ` +
+        `task so its output is checkable without a file.`,
+    );
+    this.name = "ArtifactToolError";
+  }
+}
+
+/**
  * A code agent that would not say which files it is going to write.
  *
  * Refused rather than defaulted, because the default is worse than it looks. `owns`
@@ -127,23 +151,78 @@ export class UndeclaredLeaseError extends SynthesisError {
   }
 }
 
-/** Synthesizes an agent for every planned task not already on the board, and emits
- *  `task_planned` for each. Tasks that already exist are left alone: a replan revises
- *  the plan, and re-synthesizing running work would duplicate it. */
+/** A task in one of these states is history or in flight, and a replan may not
+ *  redefine it: running work would be duplicated, and `done` work is evidence. */
+const REDEFINABLE = new Set(["waiting", "todo", "blocked", "failed", "cancelled", "conflicted"]);
+
+/**
+ * Synthesizes an agent for every planned task not already on the board, and emits
+ * `task_planned` for each.
+ *
+ * A planned task whose id already exists is not skipped outright — that was defect
+ * 26, and it cost a real mission its whole back half: the replan correctly dropped a
+ * failed recon task from `write-summary`'s dependencies, the revision lived only in
+ * the ledger, and the scheduler — which reads task records — left the dependents
+ * waiting on the failed task through seven empty rounds. So a reused id whose
+ * definition changed is *redefined*, via `task_replanned`: edges-only changes keep
+ * the already-synthesized agent, a changed goal or worker is re-staffed, and work
+ * that is running or done is never touched.
+ */
 export async function synthesizeTasks(
   deps: SynthesizeDeps,
   planned: readonly PlannedTask[],
   round: number,
 ): Promise<number> {
   const state = deps.store.state();
-  const known = new Set(state.tasks.map((task) => task.id));
+  const byId = new Map(state.tasks.map((task) => [task.id, task]));
   const at = (deps.now ?? (() => new Date().toISOString()))();
   let added = 0;
 
   const transports = deps.transports ?? AVAILABLE_TRANSPORTS;
 
   for (const entry of planned) {
-    if (known.has(entry.id)) continue;
+    const existing = byId.get(entry.id);
+
+    if (existing) {
+      if (!REDEFINABLE.has(existing.status)) continue;
+
+      const edgesChanged =
+        JSON.stringify([existing.dependsOn, existing.satisfies, existing.motivatedBy]) !==
+        JSON.stringify([entry.dependsOn, entry.satisfies, entry.motivatedBy]);
+      const coreChanged = existing.goal !== entry.goal || existing.worker !== entry.worker;
+      if (!edgesChanged && !coreChanged) continue;
+
+      // Re-staffing is a model call, so an edges-only change keeps the agent it has:
+      // the same work with different prerequisites needs no new role.
+      const agentSpec = coreChanged
+        ? await staff(deps, entry, state.mission.capabilityEnvelope, transports)
+        : existing.agentSpec;
+
+      deps.store.emit({
+        missionId: state.mission.id,
+        actor: "orchestrator",
+        type: "task_replanned",
+        taskId: entry.id,
+        task: {
+          ...existing,
+          goal: entry.goal,
+          worker: entry.worker,
+          satisfies: entry.satisfies,
+          motivatedBy: entry.motivatedBy,
+          dependsOn: entry.dependsOn,
+          agentSpec,
+          verify: agentSpec.verify,
+          status: entry.dependsOn.length > 0 ? "waiting" : "todo",
+          budget: { wallMs: entry.estimatedWallMs },
+          updatedAt: at,
+          // Artifacts and attempts ride along from `existing` via the spread: the
+          // history is the task's, not the definition's.
+          ...(coreChanged ? shapeFor(entry.worker, entry.id, round, agentSpec) : {}),
+        },
+      } as EventInput);
+      added++;
+      continue;
+    }
 
     const agentSpec = await staff(deps, entry, state.mission.capabilityEnvelope, transports);
 
@@ -182,7 +261,7 @@ export async function synthesizeTasks(
 /** What was wrong with a spec: the sentence the model gets on its retry, the string
  *  the event and the error record, and which of the three failures it was. */
 interface SpecProblem {
-  kind: "transport" | "capability" | "lease";
+  kind: "transport" | "capability" | "lease" | "artifact";
   requested: string;
   retry: string;
 }
@@ -245,6 +324,25 @@ function inspect(
 
   const capability = inspectTools(spec.tools, envelope, catalogue);
   if (capability) return capability;
+
+  // Defect 27: the judge reads files on disk (§3), so a judge-verified agent must be
+  // able to leave one behind. A rubric about files and a toolset that cannot make one
+  // is a task that fails however well the work is done — and it was found exactly that
+  // way, on a correctly-answered recon task.
+  if (spec.verify.kind === "judge") {
+    const writers = new Set(resolveClasses(["fs.write"]));
+    if (!spec.tools.some((tool) => writers.has(tool))) {
+      return {
+        kind: "artifact",
+        requested: "a tool that can write the judged artifact",
+        retry:
+          `This spec verifies by judge, and the judge grades files on disk — but none ` +
+          `of the granted tools can write one. Grant a writing tool ` +
+          `(${[...writers].join(", ") || "none available under this envelope"}), or ` +
+          `verify by 'command', or 'none' with a reason, if the work truly leaves no file.`,
+      };
+    }
+  }
 
   if (task.worker === "code" && (spec.owns ?? []).length === 0) {
     return {
@@ -330,6 +428,9 @@ function raise(
     return new UnavailableTransportError(task.id, problem.requested, transports);
   }
   if (problem.kind === "lease") return new UndeclaredLeaseError(task.id);
+  // A planning problem like the lease: the plan can re-scope the task or change how
+  // it is verified, and no human decision is being requested.
+  if (problem.kind === "artifact") return new ArtifactToolError(task.id);
 
   const base = {
     missionId: deps.store.state().mission.id,
