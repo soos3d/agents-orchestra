@@ -33,6 +33,7 @@
 // absent and this transport's spend lands in §9.5's unmeasured column beside the CLI's.
 import fs from "node:fs";
 import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { type Task } from "../../domain/task.js";
 import { type WorkerRun, type WorkerTransport } from "../../loop/dispatch.js";
 import { spawnDuplex, type DuplexExit, type DuplexProcess } from "../../runtime/duplex.js";
@@ -244,15 +245,28 @@ function createClient(input: SessionInput): Client {
   };
 }
 
-/** stdout is the protocol channel and nothing buffers it but this: `rest` is the partial
- *  frame straddling a chunk boundary, which is the whole reason `parseFrames` returns one. */
+/**
+ * stdout is the protocol channel and nothing buffers it but this: `rest` is the partial
+ * frame straddling a chunk boundary, which is the whole reason `parseFrames` returns one.
+ *
+ * Two boundaries, not one, and only the first is obvious. A frame can straddle a chunk —
+ * `rest` carries it. A *character* can straddle one too: `data.toString()` on a chunk
+ * ending mid-UTF-8-sequence turns those bytes into U+FFFD and the next chunk's leading
+ * bytes into another, so an em-dash or a curly quote landing on a 64 KiB boundary is
+ * silently rewritten in whatever it was part of. A worker report is prose in a JSON
+ * string, an agent writes both of those characters constantly, and the corruption
+ * survives `JSON.parse` — it does not fail, it just comes back subtly wrong. `StringDecoder`
+ * holds the incomplete sequence back until its remaining bytes arrive, which is the whole
+ * of the fix.
+ */
 function readFrames(ctx: FrameContext): void {
   let rest = "";
+  const decoder = new StringDecoder("utf8");
 
   ctx.proc.stdout.on("data", (data: Buffer) => {
     let step;
     try {
-      step = parseFrames(rest + data.toString());
+      step = parseFrames(rest + decoder.write(data));
     } catch (error) {
       // A non-JSON line on the protocol channel is not something the next chunk fixes.
       ctx.fail(error as Error);

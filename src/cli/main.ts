@@ -15,6 +15,7 @@ import { liveWorktrees, reconcileOrphans } from "../runtime/resume.js";
 import { isCodeTask, type Task } from "../domain/task.js";
 import { createAgentCalls } from "../loop/agentCalls.js";
 import { type HumanPort } from "../loop/human.js";
+import { resilientCalls, type ResilientCallsDeps } from "../loop/resilience.js";
 import { createFileStore } from "../loop/store.js";
 import { saveProfile } from "../memory/profiles.js";
 import { saveMission } from "../memory/savedMission.js";
@@ -232,6 +233,9 @@ export interface MainDeps {
   createCalls?: RunDeps["createCalls"];
   /** Injected so the CLI is testable without a tty. */
   human?: HumanPort;
+  /** §9.4's retry around the decision points, overridable so a test asserting the
+   *  wiring does not sit through a real backoff. The defaults are what a run uses. */
+  resilience?: ResilientCallsDeps;
 }
 
 export async function main(
@@ -244,10 +248,20 @@ export async function main(
 
   // Resolved once so `run` and `resume` reach the model the same way, and so a test
   // can substitute both with one injection.
-  const createCalls: RunDeps["createCalls"] =
-    deps.createCalls ??
-    ((discovered, onSpend) =>
-      createAgentCalls({ config: discovered, onSpend: (_call, spend) => onSpend(spend) }));
+  //
+  // Wrapped in `resilientCalls` here and not inside `createAgentCalls`, because the
+  // retry and the typed park are about the *loop's* tolerance for a call that will not
+  // answer rather than about how a call is made (§9.4, defect 36) — and keeping them
+  // above the seam is what lets a test script a throwing decision point and assert the
+  // mission parks. An injected `createCalls` is wrapped too: a test that substitutes
+  // the model should still exercise the wiring a real run has.
+  const createCalls: RunDeps["createCalls"] = (discovered, onSpend) =>
+    resilientCalls(
+      deps.createCalls
+        ? deps.createCalls(discovered, onSpend)
+        : createAgentCalls({ config: discovered, onSpend: (_call, spend) => onSpend(spend) }),
+      { onWarn: (message) => io.err(message), ...deps.resilience },
+    );
 
   // Built for both `run` and `resume`, because a resumed mission may be sitting at
   // its own sign-off. The prompter opens stdin only if something actually asks, so

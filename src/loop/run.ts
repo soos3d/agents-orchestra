@@ -22,6 +22,7 @@ import { type DispatchOutcome } from "./dispatch.js";
 import { type ExtendRequest } from "./human.js";
 import { noteAsFact, pendingNotes } from "./notes.js";
 import { buildPlanInput, buildProgressInput } from "./prompts.js";
+import { DecisionPointError } from "./resilience.js";
 import { isCancellation, retryPolicy } from "./retry.js";
 import { reviseLedger } from "./revise.js";
 import { SynthesisError, synthesizeTasks } from "./synthesize.js";
@@ -140,58 +141,112 @@ export async function runLoop(deps: LoopDeps): Promise<LoopResult> {
     const round = mission.round + 1;
     emit({ ...base, type: "round_started", round });
 
-    await runRound(deps, state, round);
-
-    const afterWork = deps.store.state();
-    const stopped = standstill(afterWork, { concurrency: deps.concurrency });
-    if (stopped.kind === "cycle") throw new Error(stopped.message);
-
-    await checkCriteria(deps, afterWork, round);
-
-    const withChecks = deps.store.state();
-    const ledger = await deps.calls.progress(buildProgressInput(withChecks));
-    emit({ ...base, type: "progress_ledger", round, ledger });
-
-    // Marked delivered only after the call that consumed them, so a crash between
-    // the two re-delivers rather than dropping — a note nobody acted on and nobody
-    // can see again is the worst of the three outcomes.
-    deliverNotes(deps, withChecks, round);
-
-    // `met` is read from the criterion record and never inferred: a criterion whose
-    // check has not run cannot be counted toward satisfaction (§4). This is the line
-    // that stops the mission completing on a model's opinion.
-    if (ledger.isRequestSatisfied && allCriteriaMet(withChecks.mission.ledger.criteria)) {
-      return finish("complete", "every criterion is met, with evidence", round);
+    // A decision point that will not answer parks the mission rather than killing the
+    // process (§9.4, defect 36). Everything this round produced — commits, worktrees,
+    // the ledger, the log — is already on disk, and `orchestra resume` continues from
+    // exactly here; an exception unwinding to `main` threw all of that away over a
+    // throttled call. Only `DecisionPointError` is caught: a programming mistake in
+    // the reducer must still raise, because a bug that silently parks is a bug nobody
+    // finds.
+    const outcome = await runRoundOrPark(deps, limits, state, round);
+    if (outcome.kind === "parked") {
+      return finish("blocked", outcome.reason, round);
     }
-
-    const stalls = ledger.isProgressBeingMade ? 0 : withChecks.mission.stalls + 1;
-    if (stalls !== withChecks.mission.stalls) {
-      emit({ ...base, type: "stall_detected", stalls });
-    }
-
-    // Two different failures needing two different responses: not progressing means
-    // the work is hard, so keep going. In a loop means the work is *repeating*, so
-    // nothing more will come of continuing — replan now, without waiting for the
-    // stall counter to run out.
-    if (ledger.isInLoop || stalls > limits.maxStalls) {
-      const outcome = await replan(
-        deps,
-        limits,
-        ledger.isInLoop ? "the mission is repeating itself" : `${stalls} rounds without progress`,
-        round,
-      );
-      if (outcome) return finish(outcome.status, outcome.reason, round);
-      continue;
-    }
-
-    if (stopped.kind === "blocked") {
-      return finish(
-        "blocked",
-        `Waiting on a human for ${stopped.taskIds.join(", ")}. Nothing else can run.`,
-        round,
-      );
+    if (outcome.kind === "finished") {
+      return finish(outcome.status, outcome.reason, round);
     }
   }
+}
+
+type RoundOutcome =
+  | { kind: "continue" }
+  | { kind: "parked"; reason: string }
+  | { kind: "finished"; status: LoopResult["status"]; reason: string };
+
+async function runRoundOrPark(
+  deps: LoopDeps,
+  limits: Limits,
+  state: MissionState,
+  round: number,
+): Promise<RoundOutcome> {
+  try {
+    return await advanceRound(deps, limits, state, round);
+  } catch (error) {
+    if (!(error instanceof DecisionPointError)) throw error;
+    return {
+      kind: "parked",
+      reason:
+        `${error.message} The mission is parked with its work intact — ` +
+        `'orchestra resume ${state.mission.id}' picks up at round ${round}.`,
+    };
+  }
+}
+
+/** One iteration of the inner loop: dispatch the ready set, check what the round
+ *  landed, and read the progress ledger. Split out from `runLoop` so the decision
+ *  points it makes have one place to be caught (§9.4). */
+async function advanceRound(
+  deps: LoopDeps,
+  limits: Limits,
+  state: MissionState,
+  round: number,
+): Promise<RoundOutcome> {
+  const emit = (event: EventInput) => deps.store.emit(event);
+  const base = { missionId: state.mission.id, actor: "orchestrator" as const };
+
+  await runRound(deps, state, round);
+
+  const afterWork = deps.store.state();
+  const stopped = standstill(afterWork, { concurrency: deps.concurrency });
+  if (stopped.kind === "cycle") throw new Error(stopped.message);
+
+  await checkCriteria(deps, afterWork, round);
+
+  const withChecks = deps.store.state();
+  const ledger = await deps.calls.progress(buildProgressInput(withChecks));
+  emit({ ...base, type: "progress_ledger", round, ledger });
+
+  // Marked delivered only after the call that consumed them, so a crash between
+  // the two re-delivers rather than dropping — a note nobody acted on and nobody
+  // can see again is the worst of the three outcomes.
+  deliverNotes(deps, withChecks, round);
+
+  // `met` is read from the criterion record and never inferred: a criterion whose
+  // check has not run cannot be counted toward satisfaction (§4). This is the line
+  // that stops the mission completing on a model's opinion.
+  if (ledger.isRequestSatisfied && allCriteriaMet(withChecks.mission.ledger.criteria)) {
+    return { kind: "finished", status: "complete", reason: "every criterion is met, with evidence" };
+  }
+
+  const stalls = ledger.isProgressBeingMade ? 0 : withChecks.mission.stalls + 1;
+  if (stalls !== withChecks.mission.stalls) {
+    emit({ ...base, type: "stall_detected", stalls });
+  }
+
+  // Two different failures needing two different responses: not progressing means
+  // the work is hard, so keep going. In a loop means the work is *repeating*, so
+  // nothing more will come of continuing — replan now, without waiting for the
+  // stall counter to run out.
+  if (ledger.isInLoop || stalls > limits.maxStalls) {
+    const outcome = await replan(
+      deps,
+      limits,
+      ledger.isInLoop ? "the mission is repeating itself" : `${stalls} rounds without progress`,
+      round,
+    );
+    if (outcome) return { kind: "finished", ...outcome };
+    return { kind: "continue" };
+  }
+
+  if (stopped.kind === "blocked") {
+    return {
+      kind: "finished",
+      status: "blocked",
+      reason: `Waiting on a human for ${stopped.taskIds.join(", ")}. Nothing else can run.`,
+    };
+  }
+
+  return { kind: "continue" };
 }
 
 /** Promote what the dependencies unblocked, dispatch the ready set, and apply the

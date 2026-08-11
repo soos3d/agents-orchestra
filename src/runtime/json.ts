@@ -22,10 +22,46 @@ import { z } from "zod";
 export const renderSchema = (schema: z.ZodType<unknown>): string =>
   JSON.stringify(z.toJSONSchema(schema, { io: "input", unrepresentable: "any" }), null, 2);
 
+/**
+ * The JSON object in something a model said, or `undefined` if there is none.
+ *
+ * Candidate-and-check rather than one guess, and the reason is a defect the guess
+ * shipped with. A single non-greedy fence match ends at the *first* closing ``` in the
+ * message — which, when a worker's `summary` describes code and contains a fenced block
+ * of its own, is a fence inside the JSON string. The extracted text is then a JSON
+ * document cut in half, and the caller reports "Unterminated string in JSON" about a
+ * report the worker wrote correctly. Real missions failed that way and it read as the
+ * transport truncating a long message.
+ *
+ * So every plausible candidate is tried — each fenced block, then the raw brace span —
+ * and the first that actually parses wins. Falling back to the *last* candidate when
+ * none parse keeps the error message about the largest thing that looked like JSON,
+ * rather than about the first fragment.
+ */
 export function extractJsonObject(raw: string): string | undefined {
-  const fenced = /```(?:json)?\s*\n([\s\S]*?)\n?```/.exec(raw);
-  const candidate = (fenced?.[1] ?? raw).trim();
-  const start = candidate.indexOf("{");
-  const end = candidate.lastIndexOf("}");
-  return start === -1 || end <= start ? undefined : candidate.slice(start, end + 1);
+  const candidates = [
+    ...[...raw.matchAll(/```(?:json)?\s*\n([\s\S]*?)\n?```/g)].map((match) => match[1] ?? ""),
+    raw,
+  ]
+    .map(braceSpan)
+    .filter((candidate): candidate is string => candidate !== undefined);
+
+  return candidates.find(parses) ?? candidates.at(-1);
+}
+
+/** From the first `{` to the last `}`, which is what strips the prose around an answer. */
+function braceSpan(text: string): string | undefined {
+  const trimmed = text.trim();
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  return start === -1 || end <= start ? undefined : trimmed.slice(start, end + 1);
+}
+
+function parses(candidate: string): boolean {
+  try {
+    JSON.parse(candidate);
+    return true;
+  } catch {
+    return false;
+  }
 }

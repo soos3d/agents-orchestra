@@ -369,6 +369,37 @@ describe("orchestra", () => {
       assert.match(io.errors.join("\n"), /Unknown flag '--yolo'/);
     });
 
+    // Defect 36 at the composition root, which is the half that was actually missing:
+    // `resilientCalls` retries and parks, and a mission only gets either if the entry
+    // point wraps the calls it built. The mechanism being tested elsewhere is exactly
+    // the shape defects 12b, 23 and 24 had — finished, and switched off by a wiring
+    // nobody asserted.
+    test("a decision point that keeps failing is retried, then parks the mission", async () => {
+      const io = capture();
+      let attempts = 0;
+
+      const code = await main(["run", "a goal", "--plan-only", "--no-web"], io, {
+        resilience: { sleep: async () => {} },
+        createCalls: () => ({
+          ...createCalls(),
+          research: async () => {
+            attempts++;
+            throw new Error("429 rate_limit_error");
+          },
+        }),
+      });
+
+      assert.equal(code, 1);
+      assert.equal(attempts, 2, "the entry point wrapped the calls, so §9.4's retry ran");
+      // Parked, not crashed: the message names the call and the way back in.
+      assert.match(io.errors.join("\n"), /'research' decision point failed/);
+      assert.match(io.errors.join("\n"), /orchestra resume/);
+      assert.ok(
+        loggedEvents().some((event) => event.type === "mission_status" && event.to === "blocked"),
+        "the park is on the log, so the state on disk means something to resume",
+      );
+    });
+
     describe("--saved", () => {
       /** A saved mission on disk, written the way `orchestra save` writes one. */
       function seedSaved(name = "monthly"): void {

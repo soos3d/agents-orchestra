@@ -25,6 +25,7 @@ import {
 } from "../testing/fixtures.js";
 import { type Calls, type PlanInput, type PlanResult } from "./calls.js";
 import { type DispatchOutcome } from "./dispatch.js";
+import { DecisionPointError } from "./resilience.js";
 import { runLoop, type ExtendRequest, type LoopDeps, type MissionStore } from "./run.js";
 
 /** The log, in memory. `state()` refolds every time, exactly as the real store does,
@@ -120,6 +121,8 @@ function harness(options: {
   outcomes?: Record<string, DispatchOutcome>;
   limits?: LoopDeps["limits"];
   requestExtension?: LoopDeps["requestExtension"];
+  /** Scripted decision-point failure, so defect 36 is assertable with no model. */
+  progressThrows?: Error;
 }): Harness {
   const store = testStore(options.seed ?? seedMission());
   const fake = fakeDispatch(options.outcomes);
@@ -146,6 +149,7 @@ function harness(options: {
       return anAgentSpec();
     },
     progress: async () => {
+      if (options.progressThrows) throw options.progressThrows;
       const answer = options.progress?.[progressIndex++];
       if (!answer) throw new Error(`no scripted progress ledger for round ${progressIndex}`);
       return answer;
@@ -184,6 +188,36 @@ const typesIn = (state: MissionState, store: { inputs: EventInput[] }) =>
   store.inputs.map((event) => event.type);
 
 describe("runLoop", () => {
+  // Defect 36. The mission this was found on had a signed-off contract, a plan, and
+  // work on disk; one throttled `progress` call unwound through `main` and ended the
+  // process. §9.4 parks a mission that cannot continue and asks — it never crashes on
+  // one, and the difference is whether `orchestra resume` has anything to resume.
+  test("parks blocked when a decision point will not answer, rather than throwing", async () => {
+    const h = harness({
+      progressThrows: new DecisionPointError("progress", 2, new Error("429 rate_limit_error")),
+    });
+
+    const result = await runLoop(h.deps);
+
+    assert.equal(result.status, "blocked");
+    assert.match(result.reason, /rate_limit_error/);
+    assert.match(result.reason, /orchestra resume/);
+    // The park is on the log, so a resumed mission reads a status rather than a run
+    // that stopped mid-sentence.
+    assert.ok(typesIn(h.store.state(), h.store).includes("mission_status"));
+    // And the round's work still happened — the park is after the dispatch, not
+    // instead of it.
+    assert.deepEqual(h.dispatched, ["t1"]);
+  });
+
+  // The other half of the same rule: only a `DecisionPointError` parks. A programming
+  // mistake that parked silently would be a bug nobody ever finds.
+  test("a non-decision-point error still raises", async () => {
+    const h = harness({ progressThrows: new TypeError("x is not a function") });
+
+    await assert.rejects(() => runLoop(h.deps), TypeError);
+  });
+
   test("completes when every criterion is met with evidence", async () => {
     const h = harness({
       progress: [aProgressLedger({ isRequestSatisfied: true, unmetCriteria: [] })],

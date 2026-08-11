@@ -14,7 +14,8 @@ import { type Criterion, type PlannedTask } from "../domain/ledger.js";
 import { type Estimate } from "../domain/mission.js";
 import { type Calls } from "../loop/calls.js";
 import { anyOf, type HumanPort } from "../loop/human.js";
-import { prepareMission } from "../loop/prepare.js";
+import { prepareMission, type PrepareResult } from "../loop/prepare.js";
+import { DecisionPointError } from "../loop/resilience.js";
 import { createFileStore } from "../loop/store.js";
 import { type MissionStore } from "../loop/run.js";
 import { loreDir, missionDir, type DiscoveredConfig } from "../config/discover.js";
@@ -314,7 +315,7 @@ export async function runMission(
   // closed in one place rather than at each exit — a missed one leaves the process
   // holding a port after the mission has finished.
   try {
-    const prepared = await prepareMission({
+    const prepared = await prepareOrPark(wired, missionId, () => prepareMission({
       store: wired,
       calls,
       planOnly: options.planOnly,
@@ -337,7 +338,7 @@ export async function runMission(
       // transport that cannot spawn, discovered one dispatch at a time.
       transports: availableTransports(config),
       onWarn: (message) => io.err(message),
-    });
+    }));
 
     if (!prepared.ok) {
       io.err(prepared.reason);
@@ -372,6 +373,50 @@ export async function runMission(
     // dashboard down with its own exit.
     deps.surface?.release(missionId);
     await ownedServer?.close();
+  }
+}
+
+/**
+ * The pre-sign-off half of defect 36: a decision point that will not answer parks the
+ * mission rather than throwing a stack trace out of `main`.
+ *
+ * `runLoop` owns the same rule for the executing half, and this is the other side of
+ * it — research, intake, plan, and the sign-off staffing all happen before the loop
+ * exists, and a throttled call there used to kill the process on a mission whose log
+ * was perfectly intact. Parking records the failure as a status change, which is what
+ * makes the state on disk mean something to `resume` rather than looking like a run
+ * that simply stopped mid-sentence.
+ *
+ * Whether resume can *continue* it depends on how far the mission got —
+ * `continuationFor` decides that from the fold, and a mission with no plan is honestly
+ * told to start again. Either way the answer comes from state rather than from a
+ * crash.
+ */
+async function prepareOrPark(
+  store: MissionStore,
+  missionId: string,
+  prepare: () => Promise<PrepareResult>,
+): Promise<PrepareResult> {
+  try {
+    return await prepare();
+  } catch (error) {
+    if (!(error instanceof DecisionPointError)) throw error;
+
+    store.emit({
+      type: "mission_status",
+      missionId,
+      actor: "orchestrator",
+      from: store.state().mission.status,
+      to: "blocked",
+      reason: error.message,
+    });
+
+    return {
+      ok: false,
+      reason:
+        `${error.message} Nothing was dispatched. Check 'orchestra doctor' and that you ` +
+        `are still logged in, then 'orchestra resume ${missionId}'.`,
+    };
   }
 }
 

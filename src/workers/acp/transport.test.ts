@@ -93,6 +93,45 @@ describe("the acp transport", () => {
     assert.equal(run.measuredTokens, undefined);
   });
 
+  // Real missions came back with "Unterminated string in JSON" worker reports, and a
+  // long final message crossing stdio chunk boundaries was the suspect. These two are
+  // what that investigation turned into: reassembly is lossless across frame boundaries
+  // — and was *not* lossless across character ones.
+  describe("a long final message", () => {
+    test("reassembles byte for byte across many stdio chunks", async () => {
+      // Well past a pipe's 64 KiB read, so the frame is split several times over.
+      const summary = "x".repeat(400_000);
+      const report = JSON.stringify({ outcome: "completed", summary });
+
+      const run: WorkerRun = await transportFor({ scenario: "happy", finalText: report })({
+        task: anAcpTask({ wallMs: 30_000 }),
+        cwd: tmpDir(),
+      });
+
+      assert.equal(run.raw.length, report.length);
+      assert.equal(run.raw, report);
+    });
+
+    // A frame straddling a chunk is the boundary everyone thinks of. A *character*
+    // straddling one is the boundary that actually bit: `Buffer.toString()` on a chunk
+    // ending mid-sequence yields U+FFFD on both sides of the cut, and the damage
+    // survives `JSON.parse` — the report comes back parseable and subtly wrong. Every
+    // character here is three bytes and 65536 is not a multiple of three, so a read
+    // boundary has to land inside one.
+    test("survives a multi-byte character split across a chunk boundary", async () => {
+      const summary = "—".repeat(100_000);
+      const report = JSON.stringify({ outcome: "completed", summary });
+
+      const run: WorkerRun = await transportFor({ scenario: "happy", finalText: report })({
+        task: anAcpTask({ wallMs: 30_000 }),
+        cwd: tmpDir(),
+      });
+
+      assert.ok(!run.raw.includes("�"), "no character was cut in half by a chunk boundary");
+      assert.equal(JSON.parse(run.raw).summary, summary);
+    });
+  });
+
   test("refuses a target this build has no launch command for", async () => {
     const transport = createAcpTransport({
       requestPermission: async () => true,

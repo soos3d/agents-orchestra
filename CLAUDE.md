@@ -204,6 +204,15 @@ folded state — which is what makes the whole loop assertable against a canned 
 - **An empty `owns` is not "no restriction", it is a lease that matches nothing.** `readyTasks` skips
   the overlap check when a code task declares none, and `detectEscape` then counts every changed file
   as an escape — so a code spec without a lease is refused at synthesis (defect 23).
+- **Every scanner over model output has to know what it is inside of.** `needsShell` read the `=>`
+  inside a quoted string as a redirect (defect 34); `extractJsonObject` took the first fence match
+  and stopped at a fence *inside* a JSON string (defect 38); the ACP reader split a UTF-8 sequence
+  across a chunk boundary (defect 37). Three files, one mistake: a regex or a byte offset applied to
+  text that has structure. All three failed on correct work, and two of them failed *quietly*.
+- **A decision point is the one part of the loop that reaches outside the process**, so it fails the
+  way networks fail. `loop/resilience.ts` is where §9.4 applies to it: retry once, then
+  `DecisionPointError`, which the loop parks on. Nothing else may be caught there — a `TypeError`
+  that parked silently would be a bug nobody finds.
 - **An optional field on a `Deps` interface is a place a feature can be finished and switched off at
   once.** `requestExtension`, `owns`, and `reformat` were each built to spec, unit-tested, and
   reachable only through a parameter no entry point passed; all three surfaced on a real mission
