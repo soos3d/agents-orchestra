@@ -7,9 +7,11 @@
 // fails the build when an event type is added without deciding what it does to
 // state. That compile error is the real enforcement of the rule above.
 import { addBudget, addSpend, zeroSpend, type Spend } from "../domain/budget.js";
+import { applyCriteriaDiff } from "../domain/criteriaDiff.js";
 import {
   emptyLedger,
   type Criterion,
+  type CriterionDiff,
   type ProgressLedger,
   type TaskLedger,
 } from "../domain/ledger.js";
@@ -77,6 +79,17 @@ export interface MissionState {
    */
   brief: string;
   outOfScope: string[];
+  /**
+   * What a replan has asked to change about the frozen criteria, until a human
+   * answers (§3).
+   *
+   * Folded rather than passed along, for the reason `brief` is: the mission returns to
+   * `awaiting_signoff` and may sit there across a restart, so the screen that renders
+   * the diff has to build from the log alone. The `criteria_change_requested` event
+   * carries `from` as well as `to` precisely so this needs no ledger that has moved on
+   * since (§4.0).
+   */
+  pendingCriteriaChange?: { diff: CriterionDiff[]; reasoning: string; requestedAt: string };
   lastSeq: number;
 }
 
@@ -206,15 +219,46 @@ const handlers: Handlers = {
     state.mission = { ...state.mission, signedOffAt: event.at, unattended: event.unattended };
   },
   signoff_revised: noop,
-  criteria_change_requested: (state, event) =>
+  criteria_change_requested: (state, event) => {
+    state.pendingCriteriaChange = {
+      diff: [...event.diff],
+      reasoning: event.reasoning,
+      requestedAt: event.at,
+    };
     openInbox(state, {
       id: `criteria-${event.seq}`,
       kind: "criteria_change",
       summary: event.reasoning,
       openedAt: event.at,
-    }),
-  criteria_change_resolved: (state, event) =>
-    resolveLatest(state, "criteria_change", event.at, event.approved),
+    });
+  },
+  // The one event in the system that may move a frozen criterion (§3). Everything
+  // else is refused: `revise.ts` refuses the write and `assertLedgerRules` refuses
+  // the log. So the approved diff is applied *here*, rather than through a
+  // `ledger_revised` the rule above would reject — and after it, the amended set is
+  // what the freeze protects.
+  criteria_change_resolved: (state, event) => {
+    const pending = state.pendingCriteriaChange;
+    if (!pending) {
+      throw new LogCorruptionError(
+        `seq ${event.seq}: criteria_change_resolved with no criteria change was pending. ` +
+          `A resolution names no diff of its own, so there is nothing it could apply.`,
+      );
+    }
+
+    if (event.approved) {
+      state.mission = {
+        ...state.mission,
+        ledger: {
+          ...state.mission.ledger,
+          criteria: applyCriteriaDiff(state.mission.ledger.criteria, pending.diff),
+        },
+      };
+    }
+
+    state.pendingCriteriaChange = undefined;
+    resolveLatest(state, "criteria_change", event.at, event.approved);
+  },
 
   // ── the loop ───────────────────────────────────────────────────────
   round_started: (state, event) => {
@@ -354,6 +398,7 @@ const handlers: Handlers = {
   } as Partial<Task>),
   merge_started: noop,
   merge_completed: noop,
+  merge_empty: noop,
   merge_conflicted: noop, // the task moves to `conflicted` via task_status
 
   // ── the human channel ──────────────────────────────────────────────

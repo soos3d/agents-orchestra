@@ -102,6 +102,29 @@ describe("createMergeQueue", () => {
     await removeWorktree(repo.path, worktree.path);
   });
 
+  // Defect 31: a branch whose tip is still the base has nothing to merge, and git
+  // says "Already up to date" and exits 0. Reporting that as `merged` is how a
+  // mission's log claims work landed while `main` never changed.
+  test("a branch with no commits is an empty merge, not a success", async () => {
+    const base = await repo.head();
+    const worktree = await createWorktree(repo.path, repo.worktreeRoot, "feat/no-commits", base);
+    fs.writeFileSync(path.join(worktree.path, "uncommitted.txt"), "never committed\n");
+
+    const outcome = await createMergeQueue(repo.path).merge({
+      branch: "feat/no-commits",
+      into: "main",
+      expectedBaseSha: base,
+    });
+
+    assert.equal(outcome.status, "empty");
+    assert.match(
+      outcome.status === "empty" ? outcome.message : "",
+      /no commits.*never committed/s,
+    );
+    assert.equal(await resolveSha(repo.path, "main"), base);
+    await removeWorktree(repo.path, worktree.path);
+  });
+
   describe("conflicts", () => {
     test("reports the conflicting files and leaves the target untouched", async () => {
       const base = await repo.head();

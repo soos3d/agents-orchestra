@@ -4,17 +4,27 @@
 // requestLease, parseWorkerReport, detectEscape, createMergeQueue, run — and nothing
 // joined them up. This is the join, and the order matters more than any single step:
 //
-//   lease → worktree pinned to a base sha → worker → report → escape check →
+//   lease → worktree pinned to a base sha → worker → report → commit → escape check →
 //   verification → merge → worktree removal → spend
 //
 // Two of those check the worker rather than the work. The escape check runs *before*
 // verification because a worker that wrote outside its lease has already invalidated
 // the diff being verified, and the merge runs last because no branch reaches the
 // integration branch without passing (§16, "merge only after green").
+//
+// The commit is defect 30, and it sits where it does for two reasons. It is ahead of
+// the escape check so an escaping worker's files are on the branch when the task is
+// failed — the comment below promising that "the branch keeps the commits" was not
+// true of anything until this existed — and §8 still sees them, because the escape
+// check diffs the worktree against its base rather than reading the index. And it is
+// ahead of verification so a merge of a green worktree is a merge of green commits;
+// verifying committed state is also the only way the thing verified and the thing
+// merged are the same thing.
 import { type Artifact } from "../domain/artifacts.js";
 import { type Spend } from "../domain/budget.js";
 import { isCodeTask, type Task, type TaskStatus } from "../domain/task.js";
 import { type Event, type EventInput } from "../events/schema.js";
+import { commitWorktree } from "../git/commit.js";
 import { changedFiles, resolveSha } from "../git/repo.js";
 import { createWorktree, removeWorktree } from "../git/worktree.js";
 import { type MergeQueue } from "../git/mergeQueue.js";
@@ -153,6 +163,29 @@ function createSession(task: Task, deps: DispatchDeps): Session {
     return undefined;
   };
 
+  /**
+   * Commit what the worker wrote (defect 30).
+   *
+   * By the runtime rather than by an instruction in the worker's prompt, because a
+   * prompt-level rule that the merge silently depends on is not a rule. A worker that
+   * committed its own work leaves nothing staged and this is a no-op; a worker that
+   * committed nothing gets one commit naming the task.
+   *
+   * `empty` is not failed here — the branch may still hold the worker's own commits,
+   * and whether anything is actually there to merge is the merge's question (defect
+   * 31), asked once and in one place.
+   */
+  const commit = async (): Promise<DispatchOutcome | undefined> => {
+    if (!isCodeTask(task) || !worktree) return undefined;
+
+    const outcome = await commitWorktree(worktree, `${task.id}: ${task.goal}`);
+    if (outcome.status !== "failed") return undefined;
+
+    // The worktree stays: its contents are the only copy of the work, and a commit
+    // that git refused is a machine problem a human fixes rather than a replan.
+    return fail("transport", outcome.message);
+  };
+
   /** The second lease check (§8): a declaration is a promise, not a guarantee. */
   const checkLease = async (): Promise<DispatchOutcome | undefined> => {
     if (!isCodeTask(task) || !worktree || !baseSha) return undefined;
@@ -200,6 +233,15 @@ function createSession(task: Task, deps: DispatchDeps): Session {
       return undefined;
     }
 
+    // An empty merge is a failure, not a success (defect 31). Nothing landed, so the
+    // task did not do its job however green its verification was — and the worktree
+    // is deliberately *not* removed, because whatever the worker left there is now
+    // the only record of what it did.
+    if (outcome.status === "empty") {
+      emit({ type: "merge_empty", branch: outcome.branch, reason: outcome.message });
+      return fail("empty_merge", outcome.message);
+    }
+
     // `base_moved` is resolved exactly the way a conflict is — rebase, re-verify,
     // re-queue — so it reports as one, with the difference in the message rather than
     // in a second event type.
@@ -240,6 +282,7 @@ function createSession(task: Task, deps: DispatchDeps): Session {
     }
 
     return (
+      (await commit()) ??
       (await checkLease()) ??
       (await verify(cwd, report.artifacts)) ??
       (report.outcome === "failed"

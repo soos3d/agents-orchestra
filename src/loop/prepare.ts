@@ -59,6 +59,10 @@ export interface PrepareDeps {
    *  to synthesis as prior art. Bound at the composition root like `recall`, and for
    *  the same reason — prepare never touches disk. */
   profiles?: readonly AgentSpec[];
+  /** The transports synthesis may pick on this machine (§7), narrowed from what the
+   *  build ships by what was probed on PATH. Bound at the composition root like
+   *  `recall` and `profiles`, and for the same reason: prepare probes nothing. */
+  transports?: readonly string[];
   /** Absent means nobody is there, which is what `--unattended` amounts to. */
   human?: HumanPort;
   onWarn?(message: string): void;
@@ -219,6 +223,9 @@ export interface PresentDeps {
   /** Prior art for synthesis (§7) — sign-off is where the approved plan is staffed,
    *  so this path needs them as much as the replan inside the loop does. */
   profiles?: readonly AgentSpec[];
+  /** And the machine's transports for the same reason: sign-off staffs the approved
+   *  plan, so an offer wired only into the loop is wired into the wrong half. */
+  transports?: readonly string[];
   unattended?: boolean;
   now?: () => string;
 }
@@ -334,6 +341,7 @@ export interface SignoffDeps {
   store: MissionStore;
   calls: Pick<Calls, "synthesize">;
   profiles?: readonly AgentSpec[];
+  transports?: readonly string[];
   unattended?: boolean;
   now?: () => string;
 }
@@ -397,14 +405,19 @@ async function planWithOneRetry(
 ): Promise<Awaited<ReturnType<Calls["plan"]>> | { message: string }> {
   const asked = feedback === undefined ? undefined : `The human sent the last plan back: ${feedback}`;
 
+  // The criteria are in the ledger before planning starts — they are an input to it —
+  // so a plan that satisfies none of them is refusable here, before sign-off shows a
+  // human a plan that could never complete the mission (defect 32).
+  const criteria = () => deps.store.state().mission.ledger.criteria;
+
   const first = await deps.calls.plan(buildPlanInput(deps.store.state(), asked));
-  const check = validatePlan(first.tasks);
+  const check = validatePlan(first.tasks, criteria());
   if (check.ok) return first;
 
   const second = await deps.calls.plan(
     buildPlanInput(deps.store.state(), `The last plan was rejected: ${check.message}`),
   );
-  const recheck = validatePlan(second.tasks);
+  const recheck = validatePlan(second.tasks, criteria());
   return recheck.ok
     ? second
     : { message: `The planner could not produce a runnable plan: ${recheck.message}` };

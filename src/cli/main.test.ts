@@ -414,7 +414,10 @@ describe("orchestra", () => {
               brief: "fresh research",
               findings: [],
               confidence: "high",
-              criteria: [aCriterion({ id: "c9", statement: "researched afresh" })],
+              // `c1` because the scripted plan's tasks satisfy `c1`, and a plan that
+              // leaves a criterion to no task is refused (defect 32). The statement is
+              // what this test is about; the id has to be one the plan covers.
+              criteria: [aCriterion({ id: "c1", statement: "researched afresh" })],
               outOfScope: [],
               guesses: [],
             };
@@ -537,7 +540,10 @@ describe("orchestra", () => {
         ...createCalls(),
         synthesize: async (input) => {
           seen.push(input);
-          return anAgentSpec({ transport: { id: "acp" } });
+          // A transport no build ships (Phase 8), so the mission parks after
+          // recording the input whatever this machine has on PATH — `acp` is offered
+          // for real now wherever a coding CLI was probed.
+          return anAgentSpec({ transport: { id: "chrome-mcp" } });
         },
       };
 

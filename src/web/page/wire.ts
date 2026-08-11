@@ -12,6 +12,16 @@ export const pageWire = `
   let socket;
   const send = (message) => socket && socket.readyState === 1 && socket.send(JSON.stringify(message));
 
+  // Answers a live worker's permission request. The watched mission's id rides along
+  // for the same reason an answer's does: a serve dashboard may be looking at a
+  // mission other than the one this tab started.
+  function sendResolve(requestId, approved) {
+    if (!requestId) return;
+    const message = { kind: "resolve", requestId: requestId, approved: approved };
+    if (view.watching) message.missionId = view.watching;
+    send(message);
+  }
+
   function wire() {
     const approve = $("approve");
     if (approve) {
@@ -46,6 +56,16 @@ export const pageWire = `
         if (view.watching) message.missionId = view.watching;
         send(message);
       };
+    }
+
+    // Two loops rather than one reading the button's class, so the decision sent is a
+    // literal in the handler that was bound: the only thing derived from the page here
+    // is the id of the element that was clicked.
+    for (const btn of document.querySelectorAll(".allow-perm")) {
+      btn.onclick = () => sendResolve(btn.dataset.rid, true);
+    }
+    for (const btn of document.querySelectorAll(".deny-perm")) {
+      btn.onclick = () => sendResolve(btn.dataset.rid, false);
     }
 
     for (const card of document.querySelectorAll(".task")) {

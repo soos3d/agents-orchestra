@@ -10,7 +10,12 @@
 // decision without a cost (§2b), and it reports measured and unmeasured separately
 // (§9.5) rather than one confident total: a single token number that silently omits
 // every CLI worker reads as a cheap mission when most of the spend is invisible.
-import { type Criterion, type Guess, type PlannedTask } from "../domain/ledger.js";
+import {
+  type Criterion,
+  type CriterionDiff,
+  type Guess,
+  type PlannedTask,
+} from "../domain/ledger.js";
 import { type Estimate } from "../domain/mission.js";
 import { type SignoffPresentation } from "../loop/human.js";
 
@@ -68,11 +73,46 @@ export function renderEstimate(estimate: Estimate, plan: readonly PlannedTask[])
   ];
 }
 
+/**
+ * The mid-mission return (§3): what a replan wants to change about the contract, and
+ * why.
+ *
+ * Rendered from the diff alone rather than from the ledger, which is what
+ * `CriterionDiff.amend` carrying `from` as well as `to` is for (§4.0) — a mission may
+ * sit here across a restart, and the ledger a later replan revised is not what the
+ * human is being asked about. The reasoning leads, because approving a contract change
+ * without it is exactly the reflex sign-off exists to interrupt.
+ */
+export function renderCriteriaChange(
+  change: { diff: readonly CriterionDiff[]; reasoning: string },
+): string[] {
+  return [
+    "PROPOSED CHANGE  ⚠ this edits what the mission is judged against",
+    `  ${change.reasoning}`,
+    ...change.diff.flatMap((op) =>
+      op.op === "add"
+        ? [`  add ${op.criterion.id}`, `      + ${op.criterion.statement}`]
+        : op.op === "remove"
+          ? [`  remove ${op.criterionId}`, `      because ${op.reason}`]
+          : [
+              `  amend ${op.criterionId}`,
+              `      − ${op.from.statement}`,
+              `      + ${op.to.statement}`,
+              `      because ${op.reason}`,
+            ],
+    ),
+    "",
+  ];
+}
+
 export function renderSignoff(presentation: SignoffPresentation): string[] {
   const envelope = presentation.envelope;
   const domains = envelope.domains.length > 0 ? envelope.domains.join(", ") : "no network";
 
   return [
+    // First, and above the criteria it edits: the change is the decision being asked
+    // for, and the spec below it is the context for that decision.
+    ...(presentation.proposedChange ? renderCriteriaChange(presentation.proposedChange) : []),
     ...renderCriteria(presentation.criteria),
     ...renderGuesses(presentation.guesses),
     ...(presentation.outOfScope.length > 0

@@ -256,6 +256,61 @@ describe("runLoop", () => {
     assert.deepEqual(h.calls.judged, ["c1"]);
   });
 
+  // Defect 32, and the reason a real mission produced no `criterion_checked` at all:
+  // the satisfying set was every task the mission had ever planned, so one task the
+  // replan had abandoned gated its criteria forever. The fixtures never caught it
+  // because a fixture's task list never contains work the current plan has dropped.
+  describe("criterion checks after a replan", () => {
+    test("a criterion the current plan re-staffs is checked when the new task lands", async () => {
+      const h = harness({
+        seed: seedMission({ tasks: [aCodeTask({ id: "abandoned", satisfies: ["c1"] })] }),
+        outcomes: {
+          abandoned: { status: "failed", failure: "verification", message: "exit 1" },
+        },
+        progress: [
+          aProgressLedger({ isProgressBeingMade: false, isInLoop: true }),
+          aProgressLedger({ isRequestSatisfied: true, unmetCriteria: [] }),
+        ],
+        plan: [{ tasks: [aPlannedTask({ id: "fresh", satisfies: ["c1"] })] }],
+        met: true,
+      });
+
+      const result = await runLoop(h.deps);
+
+      assert.deepEqual(h.dispatched, ["abandoned", "fresh"]);
+      assert.deepEqual(h.calls.judged, ["c1"]);
+      assert.equal(result.status, "complete");
+    });
+
+    // The other half: a task the plan still carries has to keep gating, or the check
+    // fires against half the work and a mission completes early.
+    test("a task the plan still carries keeps the criterion outstanding", async () => {
+      const h = harness({
+        seed: seedMission({
+          tasks: [
+            aCodeTask({ id: "t1", owns: ["src/a.ts"], branch: "a", satisfies: ["c1"] }),
+            aCodeTask({
+              id: "t2",
+              owns: ["src/b.ts"],
+              branch: "b",
+              satisfies: ["c1"],
+              dependsOn: ["t1"],
+              status: "waiting",
+            }),
+          ],
+        }),
+        progress: [aProgressLedger({}), aProgressLedger({})],
+        limits: { maxRounds: 1 },
+        met: true,
+      });
+
+      await runLoop(h.deps);
+
+      assert.deepEqual(h.dispatched, ["t1"]);
+      assert.deepEqual(h.calls.judged, []);
+    });
+  });
+
   describe("stalls and loops", () => {
     // Not progressing means the work is hard. Repeating means nothing more will come
     // of continuing, so it replans immediately rather than burning the stall budget.
@@ -551,6 +606,43 @@ describe("runLoop", () => {
       const deadEnds = h.calls.plan[0]?.ledger.deadEnds ?? [];
       assert.equal(deadEnds.length, 1);
       assert.match(deadEnds[0]?.evidence ?? "", /two tests failed/);
+    });
+
+    // Defect 32's other half, and the shape the real mission replanned itself into: a
+    // criterion no task claims can never be checked (§4), so the mission would run to
+    // its cap with that criterion permanently outstanding.
+    test("refuses a replan that leaves a criterion to no task, naming it", async () => {
+      const orphaning: PlanResult = { tasks: [aPlannedTask({ id: "t2", satisfies: ["c1"] })] };
+      const h = harness({
+        seed: seedMission({ criteria: [aCriterion({ id: "c1" }), aCriterion({ id: "c2" })] }),
+        progress: [aProgressLedger({ isInLoop: true })],
+        plan: [orphaning, orphaning],
+        met: false,
+      });
+
+      const result = await runLoop(h.deps);
+
+      assert.equal(h.calls.plan.length, 2);
+      assert.match(h.calls.plan[1]?.reason ?? "", /No task in the plan satisfies 'c2'/);
+      assert.equal(result.status, "abandoned");
+      assert.equal(h.calls.synthesize, 0);
+    });
+
+    test("a covered plan is not refused for a criterion already met", async () => {
+      const h = harness({
+        seed: seedMission({ criteria: [aCriterion({ id: "c1" }), aCriterion({ id: "c2" })] }),
+        progress: [
+          aProgressLedger({ isInLoop: true }),
+          aProgressLedger({ isRequestSatisfied: true, unmetCriteria: [] }),
+        ],
+        plan: [{ tasks: [aPlannedTask({ id: "t2", satisfies: ["c1", "c2"] })] }],
+        met: true,
+      });
+
+      const result = await runLoop(h.deps);
+
+      assert.equal(h.calls.plan.length, 1);
+      assert.equal(result.status, "complete");
     });
 
     test("a new task with dependencies is planned as waiting, not todo", async () => {

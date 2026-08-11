@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+Note: you have a handoff file in .claude/handoff.md. it should update you on the previous session.
+
 ## What this is
 
 A single-process looping orchestrator: given a mission goal it researches, writes an outcome
@@ -9,7 +11,7 @@ spec, plans tasks, synthesizes a purpose-built agent per task, runs them in para
 worktrees, verifies, and re-plans each round. One npm package, one `orchestra` bin, no services
 and no database — setup simplicity is a hard constraint, not a cleanup item.
 
-**Phases 1–6 exist.** `orchestra run "<goal>"` scans, asks up to three intake questions, researches,
+**Phases 1–7 exist.** `orchestra run "<goal>"` scans, asks up to three intake questions, researches,
 writes an outcome spec, plans, **waits for a human to sign off**, then synthesizes, dispatches,
 verifies, merges, and replans; `--plan-only` stops after the estimate. An attended run also serves a
 dashboard on loopback (`--no-web` turns it off), and `orchestra serve` is the server that outlives
@@ -17,6 +19,19 @@ missions: list, watch, compose, answer, pause, forget — one composed mission a
 per-run server is untouched (`runMission` takes an optional `RunSurface` and never closes a server
 it did not open). Other commands: `doctor`, `resume <missionId>`, `forget <missionId>`,
 `save <missionId> --as <name>`, `promote <missionId> <taskId> --as <name>`, `help`.
+
+**Phase 7 added `src/workers/acp/`** — ACP as a worker transport (§12): `protocol.ts` (the JSON-RPC
+frames as zod schemas), `registry.ts` (the pinned adapter launch per target — exact versions, and
+`CLAUDECODE` stripped from the child), `transport.ts` (one live session per task), `permissions.ts`
+(what the grant already covers, decided in code) and `permissionPort.ts` (what it does not, asked
+of a human). Underneath it, `runtime/duplex.ts` is the framed stdio child; above it,
+`workers/router.ts` owns the transport id so `cli` no longer answers for ids it is not, and
+`workers/availability.ts` narrows the built list to what *this machine* can start. The
+`requestPermission` seam is what closes defect 14: ACP has a channel to say no on, so nothing needs
+`--dangerously-skip-permissions` — the `cli` fallback still passes it, and that is the reason to
+migrate off it. **Five real missions have run over ACP** (2026-08-10): tasks completed first-attempt
+over `acp/claude`, with real commits, merges, and criterion checks — and the runs surfaced defects
+28–35, all fixed. No mission has yet gone brief→`complete` uninterrupted; that is the standing check.
 
 **Phase 6 also added `src/channel/`** — the carrier-independent trust core (§17): `trust.ts` (
 single-use nonce, bound sender identity, replay-approves-once as a property of the store),
@@ -92,6 +107,17 @@ Workers are subprocesses of external CLIs (`claude`, `codex`) spawned through `r
 cwd'd into a per-task worktree. Model and timeout arrive as arguments from a per-task synthesized
 `AgentSpec` — never from a config singleton.
 
+**Or over ACP** (§12), which is the other shape: `runtime/duplex.ts` spawns a framed stdio child and
+`workers/acp/transport.ts` drives one live JSON-RPC session, answering the agent mid-turn.
+`permissions.ts` decides in code what the grant already covers; anything else goes through
+`permissionPort.ts` to a human, into the one inbox (§10) — that seam is the whole of defect 14, and
+`allow_always` is never selected (one ask, one grant). The port has no clock of its own: the
+session's `wallMs` timeout bounds the wait, because a second timer would race the first and leave a
+promise unsettled. `workers/router.ts` maps `TransportRef.id` to a runtime, and
+`workers/availability.ts` computes what to *offer* synthesis from what `doctor` probed — the built
+set and the runnable set are different lists, and offering the wrong one is defect 21 (an ACP
+adapter is a shim over `claude` or `codex`, so it needs one on PATH).
+
 **Adding an event type is a two-file change**: `events/schema.ts` (the discriminated union) then
 `events/fold.ts` (the handler table is a mapped type `{ [K in EventType]: Handler<K> }`, so
 forgetting the second file is a compile error by design). See the `/add-event` skill.
@@ -158,7 +184,17 @@ folded state — which is what makes the whole loop assertable against a canned 
   criterion unpassable, and neither was visible to the suite.
 - `AVAILABLE_TRANSPORTS` in `workers/transport.ts` is the registry, and it is shorter than §7's
   table. Synthesis is told what it may pick and a spec outside it fails at validation (§7) — not at
-  dispatch, where it costs a typed retry and a replan to learn the same thing.
+  dispatch, where it costs a typed retry and a replan to learn the same thing. **What the build
+  ships is not what a machine can run**, so every composition root passes
+  `availableTransports(config)` rather than the constant; a `transports` list left off a `Deps`
+  falls back to the whole registry, which is the optional-dependency footgun again.
+- **The ACP transcripts in `src/testing/acp-transcripts/` are executable fixtures**, not notes:
+  `workers/acp/protocol.test.ts` parses the real captured frames, so a schema that drifts from what
+  an adapter sends fails the suite. Adapter versions are pinned exact in `acp/registry.ts` — bump
+  one and re-capture, since `npx -y` resolves at dispatch time in the task's worktree. Two facts
+  from the capture that no documentation would have given: `CLAUDECODE` must be *stripped* (a
+  present-and-`undefined` env key), and no frame carries token usage, so ACP spend is unmeasured
+  (§9.5).
 - **`workers/toolCatalogue.ts` is the other half of that**, and it translates rather than filters:
   the envelope is written in *classes* because a human reviews it, and a spec comes back in *tool
   names*. `resolveClasses` is what synthesis offers the model, `classOf` is what maps the answer back

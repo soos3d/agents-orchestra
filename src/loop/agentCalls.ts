@@ -324,6 +324,12 @@ ${renderSchema(criterionSchema)}
 Note the \`check\` union: \`command\` needs a \`command\` string, \`judge\` needs a
 \`rubric\`, and \`none\` needs a \`reason\` justifying why nothing can check it.
 
+A \`command\` check runs as one program with arguments, not through a shell: no
+pipes, no \`&&\`, no \`$()\`, no redirects, no glob expansion. A check that needs any
+of those is refused when it fires and the criterion can never be met, however good
+the work was. \`node --test test/foo.test.js\` is a check; a grep chained to a test
+run is two checks — write two criteria, or fold the logic into a judge rubric.
+
 ${SHAPE}`;
 
 const INTAKE_PROMPT = `You ask a human the few questions that would change how this
@@ -360,6 +366,12 @@ You may return \`criteria\` to *request* a change to the outcome spec, with your
 reasoning in the task goals. After sign-off the request goes to a human — it is never
 applied on your say-so.
 
+A criterion's \`command\` check runs as one program with arguments, not through a
+shell: no pipes, no \`&&\`, no \`$()\`, no redirects, no \`if\`/\`test\` chains. A check
+that needs any of those is refused when it fires and the criterion can never be met.
+One program per check — split a chained check into several criteria, name a script a
+task has actually left behind, or use a judge rubric over artifacts.
+
 ${SHAPE}`;
 
 const SYNTHESIZE_PROMPT = `You write the agent that will do one task: its role, its
@@ -373,9 +385,12 @@ least privilege: a task that only reads should not hold \`Write\` or \`Bash\`.
 
 \`transport.id\` must be one of the \`transports\` listed in the input, which are the
 ones that are actually built. Others exist in the design and would fail at dispatch,
-so choosing one costs the task a retry and the mission a replan. When the only
-transport is \`cli\`, set \`transport.target\` to the CLI that suits the task —
-\`claude\` or \`codex\` — whatever kind of work it is.
+so choosing one costs the task a retry and the mission a replan. Both \`cli\` and
+\`acp\` run a coding CLI in the task's worktree and need \`transport.target\` set to
+the one that suits the task — \`claude\` or \`codex\` — whatever kind of work it is.
+Prefer \`acp\` where both are listed: it runs the same CLI over a session with a
+permission channel, so a tool outside the grant is asked about instead of blanket-
+approved, and the toolset you grant here is actually enforced mid-run.
 
 \`owns\` is required when \`worker\` is \`code\` and must be left out otherwise. It is
 the set of file globs this task will write, e.g.
@@ -391,6 +406,13 @@ art, not a roster. Adapt one where it fits this task, or ignore them all and wri
 something new; nothing here is preferred for being saved, and a profile's tools,
 transport, and lease are checked against *this* mission's envelope like any other, so
 copying one across does not carry its capabilities with it.
+
+A \`command\` check runs as a program with arguments, not through a shell: no pipes,
+no redirects, no \`&&\`, no \`$()\`, no glob expansion, and no shell operators inside a
+\`node -e\` one-liner's outer command line. A command that needs any of those is
+refused at verification time and the task fails having done its work. Keep it to one
+program and its arguments — \`node --test test/range.test.js\`, not a pipeline; if the
+check needs logic, have the worker leave a script behind and name that.
 
 The system prompt is for the worker, which sees no mission context. Write what it
 needs to do this task well and nothing about the mission around it.

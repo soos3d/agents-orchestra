@@ -9,6 +9,7 @@
 // judge call gets a criterion shaped from the task. It still reads artifacts and
 // never the worker's report: grading a summary written by the thing being graded is
 // not verification.
+import path from "node:path";
 import { type Artifact, type Evidence, type VerifySpec } from "../domain/artifacts.js";
 import { type Criterion } from "../domain/ledger.js";
 import { type Task } from "../domain/task.js";
@@ -50,7 +51,7 @@ export function createVerifier(deps: VerifierDeps): Verifier {
       const result = await deps.calls.judge({
         criterion: { id: context.task.id, statement: context.task.goal, check: spec },
         check: spec,
-        artifactPaths: artifactPaths(context.artifacts),
+        artifactPaths: artifactPaths(context.artifacts, context.cwd),
       });
       return { passed: result.met, output: result.evidence.reasoning };
     }
@@ -92,9 +93,18 @@ async function runCommand(
   };
 }
 
-/** Only artifacts that are a file on disk. A judge cannot open a diff summary. */
-export function artifactPaths(artifacts: readonly Artifact[]): string[] {
-  return artifacts.flatMap((artifact) => ("path" in artifact ? [artifact.path] : []));
+/** Only artifacts that resolve to a file on disk. A `diff` artifact carries no path
+ *  of its own, but the files it names exist in the tree the check runs against —
+ *  dropping them handed the judge an empty list on every code task, and a judge with
+ *  no paths "inspects the repository" and reads main, where unmerged work does not
+ *  exist yet (defect 33). Resolved against `cwd`: the worktree for a task check, the
+ *  repo for a criterion check, which is the §4 timing made concrete. */
+export function artifactPaths(artifacts: readonly Artifact[], cwd: string): string[] {
+  return artifacts.flatMap((artifact) => {
+    if ("path" in artifact) return [artifact.path];
+    if (artifact.kind === "diff") return artifact.files.map((f) => path.resolve(cwd, f));
+    return [];
+  });
 }
 
 export interface CriterionContext {
@@ -127,7 +137,7 @@ export function createCriterionChecker(deps: VerifierDeps): CriterionChecker {
       const result = await deps.calls.judge({
         criterion,
         check: criterion.check,
-        artifactPaths: artifactPaths(artifacts),
+        artifactPaths: artifactPaths(artifacts, context.cwd),
       });
       return {
         met: result.met,

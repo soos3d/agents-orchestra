@@ -194,6 +194,11 @@ const git = [
     branch: z.string(),
     files: z.array(z.string()),
   }),
+  // Defect 31: a branch with no commits merges cleanly and changes nothing, so
+  // without its own event the log's only record of a task whose work never landed is
+  // a `merge_completed` whose result sha equals the base — which is what a green log
+  // over destroyed work looks like.
+  withBase({ type: z.literal("merge_empty"), branch: z.string(), reason: z.string() }),
 ] as const;
 
 const humanChannel = [
@@ -241,6 +246,11 @@ const humanChannel = [
     type: z.literal("permission_resolved"),
     requestId: z.string(),
     approved: z.boolean(),
+    // Why, when the answer was not a person's: an unattended mission denies rather
+    // than waiting on nobody, and a replan that cannot see the reason re-proposes the
+    // task that needed the tool. Optional, because a human clicking "allow" has said
+    // everything there is to say.
+    reason: z.string().optional(),
   }),
   withBase({
     type: z.literal("envelope_violation"),

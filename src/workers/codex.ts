@@ -1,15 +1,45 @@
 // Codex as a `cli` transport: one headless `codex exec` session in a worktree.
 //
-// `--full-auto` is deprecated (defect 13) and `--sandbox workspace-write` replaces
-// it; `--json` and `--output-schema` are both better than scraping
-// `--output-last-message`. Both are Phase 7, alongside the move to ACP — the change
-// here is only that the model and timeout arrive as arguments rather than from a
-// config singleton.
+// **Defect 13 is closed here, and it was closed against the installed binary rather
+// than against §12.** `codex exec --full-auto` on codex-cli 0.146.1 (2026-08-10) prints
+// "warning: `--full-auto` is deprecated; use `--sandbox workspace-write` instead" and
+// carries on — which is the worst shape a drift can take, since it neither fails nor
+// stays true. `--sandbox workspace-write` is what the CLI itself names, so that is what
+// is passed; `--dangerously-bypass-approvals-and-sandbox` exists next to it in the help
+// and is deliberately not reached for.
+//
+// Two things §12 also lists are verified present and deliberately *not* adopted here:
+// `--json` (JSONL events) and `--output-schema <FILE>`. This transport is the fallback
+// path now that ACP ships (`workers/acp/`), and a structured-output rework of it would
+// be work spent on the road out. `--output-last-message` still exists and still works,
+// so the scrape stays until the fallback either goes or earns the investment.
+//
+// The argv is a pure function because that is the only part of this file a test can
+// see. Everything a subprocess *receives* belongs in one, for the reason five defects
+// hid in `agentCalls.ts`: a green suite says nothing about arguments nothing asserts.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { run } from "../runtime/sh.js";
 import { DEFAULT_WORKER_TIMEOUT_MS, type CliWorkerOptions } from "./claudeCode.js";
+
+/** The exact command line, so the flags are assertable without spawning anything. */
+export function codexArgs(task: string, model: string, outFile: string): string[] {
+  return [
+    "exec",
+    task,
+    "--model",
+    model,
+    // The replacement `codex` names for the deprecated `--full-auto`. The worker writes
+    // inside its own worktree, which is the workspace this bounds.
+    "--sandbox",
+    "workspace-write",
+    // A worktree is a repo, but a research or general task runs in a plain directory.
+    "--skip-git-repo-check",
+    "--output-last-message",
+    outFile,
+  ];
+}
 
 export async function runCodex(
   task: string,
@@ -20,16 +50,7 @@ export async function runCodex(
 
   const result = await run(
     "codex",
-    [
-      "exec",
-      task,
-      "--model",
-      options.model,
-      "--full-auto",
-      "--skip-git-repo-check",
-      "--output-last-message",
-      outFile,
-    ],
+    codexArgs(task, options.model, outFile),
     {
       cwd: worktree,
       timeoutMs: options.timeoutMs ?? DEFAULT_WORKER_TIMEOUT_MS,

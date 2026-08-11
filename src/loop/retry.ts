@@ -16,6 +16,8 @@ export type FailureKind =
   | "worker_failed"
   | "lease_escape"
   | "merge_conflict"
+  /** The branch had no commits, so nothing landed however green the check was. */
+  | "empty_merge"
   | "envelope_violation"
   | "task_budget"
   | "gate_denied";
@@ -70,6 +72,14 @@ export function retryPolicy(failure: FailureKind, attempts: number): RetryAction
       return {
         kind: "fix",
         reason: "The branch conflicts with the integration branch and has to be resolved on it.",
+      };
+
+    case "empty_merge":
+      return {
+        kind: "fix",
+        reason:
+          "The worker's branch had no commits, so nothing landed. A fix task has to " +
+          "produce the work again — re-running the same agent would merge nothing twice.",
       };
 
     case "lease_escape":

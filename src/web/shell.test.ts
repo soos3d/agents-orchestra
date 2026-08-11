@@ -34,6 +34,33 @@ test("the composed page carries every id the script binds", () => {
   }
 });
 
+// A worker is awaiting this one, so a card with no buttons is a mission that hangs
+// until the ACP session times out (§12). Asserted against the composed page, because
+// the projection, the card, and the handler live in three fragments and any one of
+// them going missing costs the same thing.
+test("a permission request can be answered from the inbox", () => {
+  const html = shellHtml();
+  for (const piece of ["permission_requested", "allow-perm", "deny-perm", "function sendResolve("]) {
+    assert.ok(html.includes(piece), `the page no longer carries ${piece}`);
+  }
+});
+
+// The mid-mission return (§3, §13). The page renders `awaiting_signoff` as the plan
+// screen, and a reopened mission is the *same* status one field apart — so without
+// this the human would be shown the original plan and an approve button that, clicked,
+// approves a criteria change they were never shown. Defect 29's web half.
+test("a reopened mission renders the diff rather than the original plan", () => {
+  const html = shellHtml();
+  for (const piece of [
+    "criteria_change_requested",
+    "criteria_change_resolved",
+    "function renderCriteriaChange(",
+    "view.pendingChange",
+  ]) {
+    assert.ok(html.includes(piece), `the page no longer carries ${piece}`);
+  }
+});
+
 test("the composed page is one document with one script", () => {
   const html = shellHtml();
   assert.ok(html.startsWith("<!doctype html>"));

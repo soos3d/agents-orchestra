@@ -122,6 +122,37 @@ describe("createVerifier", () => {
       assert.equal(seen[0]?.check.rubric, "the brief answers the question");
     });
 
+    test("a diff artifact's files reach the judge resolved against the check's cwd (defect 33)", async () => {
+      // A code worker's artifact is a diff, which has no path of its own. Dropping it
+      // handed the judge an empty list, and a judge with no paths reads the repo —
+      // main, where the unmerged work does not exist. The run 3 proving mission
+      // failed a correctly-implemented task exactly this way.
+      const seen: JudgeInput[] = [];
+      const verify = createVerifier({
+        calls: {
+          judge: async (input) => {
+            seen.push(input);
+            return {
+              met: true,
+              evidence: { artifactIds: [], checkOutput: "", reasoning: "read the worktree", byTask: [] },
+            };
+          },
+        },
+      });
+
+      await verify(
+        { kind: "judge", rubric: "the function exists and matches style" },
+        context({
+          cwd: "/tmp/worktrees/t1",
+          artifacts: [
+            { kind: "diff", id: "a1", branch: "orchestra/t1", files: ["src/range.js"], insertions: 9, deletions: 0 },
+          ],
+        }),
+      );
+
+      assert.deepEqual(seen[0]?.artifactPaths, ["/tmp/worktrees/t1/src/range.js"]);
+    });
+
     test("grades the task's own goal, since a task check is not a mission criterion", async () => {
       const seen: JudgeInput[] = [];
       const verify = createVerifier({

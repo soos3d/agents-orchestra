@@ -25,7 +25,7 @@ export const pageProjection = `
       goal: "", status: "", brief: "", outOfScope: [],
       criteria: [], guesses: [], plan: [], estimate: null,
       round: 0, stalls: 0, resets: 0, paused: false,
-      inbox: new Map(), questions: [],
+      inbox: new Map(), questions: [], pendingChange: null,
       tasks: new Map(),
       artifacts: [],
       ledger: null,
@@ -33,6 +33,18 @@ export const pageProjection = `
     });
   }
   resetMission();
+
+  // An approved change is the one thing that moves a signed-off criterion (§3), and
+  // the criteria the page draws come from "outcome_spec_written", which is never
+  // re-emitted for one. So the display follows the diff — an ordinary projection
+  // update, taking no decision: the server's fold is what the loop is judged against.
+  function applyChange(diff) {
+    for (const op of diff) {
+      if (op.op === "add") view.criteria = view.criteria.concat([op.criterion]);
+      else if (op.op === "remove") view.criteria = view.criteria.filter((c) => c.id !== op.criterionId);
+      else view.criteria = view.criteria.map((c) => (c.id === op.criterionId ? op.to : c));
+    }
+  }
 
   function apply(event) {
     switch (event.type) {
@@ -54,6 +66,18 @@ export const pageProjection = `
         view.guesses = event.guesses;
         view.outOfScope = event.outOfScope;
         view.estimate = event.estimate;
+        break;
+      // The mid-mission return (§3): the mission is back at "awaiting_signoff" and the
+      // screen must show what a replan wants to change, not the plan it already
+      // approved. The diff carries "from" as well as "to" (§4.0), so this needs no
+      // ledger lookup — and the resolution only clears it, because the authoritative
+      // criteria arrive as they always do, from the server's own fold.
+      case "criteria_change_requested":
+        view.pendingChange = { diff: event.diff, reasoning: event.reasoning };
+        break;
+      case "criteria_change_resolved":
+        if (event.approved && view.pendingChange) applyChange(view.pendingChange.diff);
+        view.pendingChange = null;
         break;
       case "criterion_checked":
         view.criteria = view.criteria.map((c) =>
@@ -85,6 +109,13 @@ export const pageProjection = `
         view.inbox.set(event.gateId, { kind: "gate", text: event.description });
         break;
       case "gate_resolved": view.inbox.delete(event.gateId); break;
+      // A live worker asking for a capability outside its grant. It carries its id so
+      // the card can answer it, exactly as a question does.
+      case "permission_requested":
+        view.inbox.set(event.requestId, { kind: "permission", id: event.requestId,
+          text: event.tool + " — " + event.detail });
+        break;
+      case "permission_resolved": view.inbox.delete(event.requestId); break;
     }
   }
 

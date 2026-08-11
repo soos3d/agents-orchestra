@@ -64,4 +64,23 @@ describe("needsShell", () => {
   test("leaves an ordinary command alone", () => {
     assert.equal(needsShell('npm test -- --grep "health endpoint"'), false);
   });
+
+  // Defect 34: a raw regex over the whole string read the `=>` inside a quoted
+  // `node -e` script as a redirect, and every criterion check written as a JS
+  // one-liner was refused however runnable it was. Found on proving run 4, after
+  // three runs of prompt fixes aimed at what was actually a false positive.
+  test("metacharacters inside quotes do not need a shell", () => {
+    assert.equal(needsShell('node -e "import(\'./x.js\').then(m => m.clamp(1))"'), false);
+    assert.equal(needsShell("grep -E 'a|b' file.txt"), false);
+    assert.equal(needsShell('node -e "const f = (a) => { return a && a.b; }"'), false);
+  });
+
+  test("metacharacters outside quotes still do", () => {
+    assert.equal(needsShell('node -e "ok" > out.txt'), true);
+    assert.equal(needsShell("node --test $(ls test)"), true);
+  });
+
+  test("an unbalanced quote is a shell question answered loudly elsewhere", () => {
+    assert.equal(needsShell('npm test "unclosed'), true);
+  });
 });

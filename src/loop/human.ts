@@ -18,6 +18,7 @@ import { type Budget } from "../domain/budget.js";
 import { type Envelope } from "../domain/envelope.js";
 import { type Criterion, type CriterionDiff, type Guess, type PlannedTask } from "../domain/ledger.js";
 import { type Estimate } from "../domain/mission.js";
+import { type PermissionAsk } from "../workers/acp/permissionPort.js";
 import { type IntakeQuestion } from "./calls.js";
 
 export interface IntakeAnswer {
@@ -74,6 +75,18 @@ export interface HumanPort {
    * is not.
    */
   requestExtension?(request: ExtendRequest): Promise<Budget | undefined>;
+  /**
+   * The third place a human is needed, and the only one that happens *mid-run*: a
+   * live ACP agent asking for a capability outside its grant (§12, `workers/acp`).
+   *
+   * It is on this port rather than on one of its own because it is the same human
+   * and the same race — whichever surface answers first wins (§10's one inbox). Two
+   * differences from the pair above, both deliberate: a worker is awaiting the
+   * answer, so a surface that cannot answer must **reject** rather than deny on the
+   * human's behalf; and the absence of the method means nobody is there, which the
+   * permission port reads as a denial rather than a wait.
+   */
+  askPermission?(request: PermissionAsk): Promise<boolean>;
 }
 
 /** What the human is shown when the money runs out. Mirrors §9.4's list: what is met,
@@ -122,5 +135,17 @@ export function anyOf(ports: readonly HumanPort[]): HumanPort {
       if (able.length === 0) return Promise.resolve(undefined);
       return Promise.any(able.map((port) => port.requestExtension!(request)));
     },
+    // Present only when a surface can actually answer, because the permission port
+    // reads its absence as "nobody is there" and denies rather than waiting. A method
+    // that existed here and rejected instantly would deny every mid-run request on a
+    // machine with no tty, which is the opposite of what `Promise.any` is for.
+    ...(ports.some((port) => port.askPermission)
+      ? {
+          askPermission: (request: PermissionAsk) =>
+            Promise.any(
+              ports.filter((port) => port.askPermission).map((port) => port.askPermission!(request)),
+            ),
+        }
+      : {}),
   };
 }

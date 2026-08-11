@@ -43,6 +43,15 @@ describe("retryPolicy", () => {
     assert.equal(retryPolicy("merge_conflict", 1).kind, "fix");
   });
 
+  // Defect 31: nothing landed, so re-running the same agent would merge nothing a
+  // second time. The work has to be produced again, which is a fix task.
+  test("sends a branch with no commits to a fix task", () => {
+    const action = retryPolicy("empty_merge", 1);
+
+    assert.equal(action.kind, "fix");
+    assert.match(action.kind === "fix" ? action.reason : "", /no commits/);
+  });
+
   // §8: an escape means the plan was wrong about what the work touches, so it goes
   // back to the planner, not back to the same worker with the same instructions.
   test("never retries a lease escape", () => {

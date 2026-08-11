@@ -51,6 +51,11 @@ export interface LoopDeps {
    *  art. Loaded at the entry point rather than here, so `run` and `resume` get the
    *  same library — and validated on the way back like any other spec. */
   profiles?: readonly AgentSpec[];
+  /** The transports synthesis may pick on *this machine* (§7). Computed at the entry
+   *  point from the discovered config, because what the build ships and what the
+   *  machine can start are different lists — offering the second one is defect 21.
+   *  Absent falls back to everything built, which is what a test wants. */
+  transports?: readonly string[];
   /** Absent means nobody can be asked, which is what `--unattended` amounts to here. */
   requestExtension?(request: ExtendRequest): Promise<Budget | undefined>;
   limits?: Partial<Limits>;
@@ -291,21 +296,38 @@ async function applyPolicy(
  * Every round would re-run the whole check set: wasteful for a command check, and a
  * second model call per criterion per round for a judge, at which point the checking
  * costs more than the work.
+ *
+ * "The last task listing it" means the last task the *current plan* still carries,
+ * which is defect 32. Read as every task the mission ever planned, a task a replan
+ * abandoned — failed, or simply dropped — gates its criteria for the rest of the
+ * mission, and no check ever fires again however much work lands afterwards. A real
+ * mission produced zero `criterion_checked` events that way and could not have
+ * completed. Work already `done` still counts as evidence even if the plan moved on:
+ * it landed, and the criterion is about what landed.
  */
 async function checkCriteria(deps: LoopDeps, state: MissionState, round: number): Promise<void> {
+  const planned = new Set(state.mission.ledger.plan.map((task) => task.id));
+  // An empty plan means nothing has re-planned yet, so every task is current.
+  const current = (taskId: string) => planned.size === 0 || planned.has(taskId);
+
   for (const criterion of state.mission.ledger.criteria) {
-    const satisfying = state.tasks.filter((task) => task.satisfies.includes(criterion.id));
-    if (satisfying.length === 0) continue;
+    const contributors = state.tasks.filter((task) => task.satisfies.includes(criterion.id));
+    if (contributors.length === 0) continue;
     if (criterion.lastCheckedRound === round) continue;
 
-    const allDone = satisfying.every((task) => task.status === "done");
+    const outstanding = contributors.filter(
+      (task) => task.status !== "done" && current(task.id),
+    );
+    const landed = contributors.filter((task) => task.status === "done");
+    const allDone = landed.length > 0 && outstanding.length === 0;
+
     const firstTime = allDone && criterion.lastCheckedRound === undefined;
     // Something that was done no longer is — a revert, a re-plan that added work, a
     // task that had to be redone. Either way the basis for `met` has changed.
     const invalidated = !allDone && criterion.met === true;
     if (!firstTime && !invalidated) continue;
 
-    const result = await deps.checkCriterion(criterion, { tasks: satisfying, cwd: deps.cwd });
+    const result = await deps.checkCriterion(criterion, { tasks: landed, cwd: deps.cwd });
     deps.store.emit({
       missionId: state.mission.id,
       actor: "orchestrator",
@@ -445,14 +467,20 @@ async function planWithOneRetry(
   deps: LoopDeps,
   reason: string,
 ): Promise<Awaited<ReturnType<Calls["plan"]>> | { message: string }> {
+  // The criteria the plan is judged against, so a revision that orphans one is
+  // refused here rather than discovered as a mission that never completes (defect 32).
+  // A proposed criteria change is not this function's business — `reviseLedger` owns
+  // the freeze — so the frozen set is what a plan has to cover.
+  const criteria = () => deps.store.state().mission.ledger.criteria;
+
   const first = await deps.calls.plan(buildPlanInput(deps.store.state(), reason));
-  const check = validatePlan(first.tasks);
+  const check = validatePlan(first.tasks, first.criteria ?? criteria());
   if (check.ok) return first;
 
   const second = await deps.calls.plan(
     buildPlanInput(deps.store.state(), `${reason}\n\nThe last plan was rejected: ${check.message}`),
   );
-  const recheck = validatePlan(second.tasks);
+  const recheck = validatePlan(second.tasks, second.criteria ?? criteria());
   return recheck.ok ? second : { message: recheck.message };
 }
 

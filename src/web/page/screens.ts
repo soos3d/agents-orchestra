@@ -26,6 +26,31 @@ export const pageScreens = `
     }).join("") + "</div>";
   }
 
+  // §13's sign-off screen, returning mid-mission: the diff and the reasoning, above
+  // the spec they would edit. Same two buttons as the plan screen, because from the
+  // port's side this is the same decision — approve, or say why it should stand — but
+  // the words are different, since "revise the plan" and "reject this change" are not
+  // the same thing to the person clicking.
+  function renderCriteriaChange() {
+    const change = view.pendingChange;
+    const ops = change.diff.map((op) =>
+      op.op === "add"
+        ? '<li>add <span class="id">' + esc(op.criterion.id) + "</span><br>+ " + esc(op.criterion.statement) + "</li>"
+        : op.op === "remove"
+          ? '<li>remove <span class="id">' + esc(op.criterionId) + "</span><br>because " + esc(op.reason) + "</li>"
+          : '<li>amend <span class="id">' + esc(op.criterionId) + "</span><br>− " + esc(op.from.statement) +
+            "<br>+ " + esc(op.to.statement) + "<br>because " + esc(op.reason) + "</li>").join("");
+
+    return '<h2>A replan wants to change the contract</h2>' +
+      '<div class="card warn"><p>' + esc(change.reasoning) + "</p><ul>" + ops + "</ul></div>" +
+      renderCriteria() +
+      '<div class="row">' +
+        '<button class="primary" id="approve">approve the change</button>' +
+        '<input id="feedback" placeholder="or say why the criteria should stand…">' +
+        '<button id="revise">reject</button>' +
+      "</div>";
+  }
+
   function renderSignoff() {
     const e = view.estimate;
     const cli = view.plan.filter((t) => t.worker === "code").length;
@@ -72,6 +97,13 @@ export const pageScreens = `
       (i.kind === "question" && i.id
         ? '<div class="row"><input class="reply" data-qid="' + esc(i.id) + '" placeholder="answer…">' +
           '<button class="send-answer" data-qid="' + esc(i.id) + '">answer</button></div>'
+        : "") +
+      // Two buttons and no text box: a permission is a yes or a no, and a worker is
+      // waiting on it (§12). Neither is the primary button — nothing here is the one
+      // you tap through without reading (§11).
+      (i.kind === "permission" && i.id
+        ? '<div class="row"><button class="allow-perm" data-rid="' + esc(i.id) + '">allow</button>' +
+          '<button class="deny-perm" data-rid="' + esc(i.id) + '">deny</button></div>'
         : "") +
       "</div>").join("");
   }
@@ -210,6 +242,10 @@ export const pageScreens = `
       ? '<div class="row"><button id="back-home">← missions</button></div>' : "";
     const screen =
       view.questions.length ? renderIntake() :
+      // Before the plan screen, deliberately: a reopened mission carries the same
+      // status one field apart (§3), and showing the plan screen would put an approve
+      // button under a contract change nobody was shown.
+      view.pendingChange ? renderCriteriaChange() :
       view.status === "awaiting_signoff" ? renderSignoff() :
       renderStrip() + renderCriteria() + renderBoard() + renderWhy() + renderInbox();
 

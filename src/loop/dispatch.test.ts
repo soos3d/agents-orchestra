@@ -34,6 +34,19 @@ const worker =
     return { raw: JSON.stringify(report), elapsedMs: 1234 };
   };
 
+/** A worker that writes its files and leaves them uncommitted, which is what a real
+ *  one does unless something else commits for it (defect 30). */
+const writes =
+  (files: Record<string, string>, report = aReport()): WorkerTransport =>
+  async ({ cwd }) => {
+    for (const [file, contents] of Object.entries(files)) {
+      const target = path.join(cwd, file);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, contents);
+    }
+    return { raw: JSON.stringify(report), elapsedMs: 1234 };
+  };
+
 describe("dispatch", () => {
   let repo: TestRepo;
   let events: EventInput[];
@@ -185,6 +198,91 @@ describe("dispatch", () => {
       assert.equal(types().includes("verification_run"), false);
       assert.equal(types().includes("merge_started"), false);
       assert.equal(onMain("src/sneaky.ts"), false);
+    });
+  });
+
+  // Defect 30, found on the first real coding mission to reach the merge step: the
+  // worker wrote its files, verification passed against the dirty worktree, the merge
+  // merged a branch still sitting on its base and reported success, and the worktree
+  // was removed. The work was verified and then destroyed.
+  describe("a worker that leaves its work uncommitted", () => {
+    let outcome: Awaited<ReturnType<typeof dispatch>>;
+
+    before(async () => {
+      events = [];
+      outcome = await dispatch(
+        aCodeTask({ branch: "feat/uncommitted", owns: ["src/uncommitted.ts"] }),
+        deps({ transport: writes({ "src/uncommitted.ts": "export const a = 1;\n" }) }),
+      );
+    });
+
+    test("has it committed for it, on its own branch, naming the task", async () => {
+      assert.deepEqual(outcome, { status: "done" });
+      const log = await git(repo.path, ["log", "-1", "--pretty=%s", "feat/uncommitted"]);
+      assert.match(log, /t1/);
+    });
+
+    test("lands the work on the integration branch rather than a merge of nothing", async () => {
+      assert.equal(onMain("src/uncommitted.ts"), true);
+      const merged = events.find((event) => event.type === "merge_completed");
+      const started = events.find((event) => event.type === "merge_started");
+      assert.ok(merged && "resultSha" in merged && started && "intoSha" in started);
+      assert.notEqual(merged.resultSha, started.intoSha);
+    });
+
+    // The commit runs before the escape check, so §8 still reads exactly what the
+    // worker wrote — a commit that hid the files would disable a whole section.
+    test("still catches a worker that wrote outside its lease", async () => {
+      events = [];
+      const escaped = await dispatch(
+        aCodeTask({ branch: "feat/uncommitted-escape", owns: ["src/declared2.ts"] }),
+        deps({
+          transport: writes({
+            "src/declared2.ts": "export const a = 1;\n",
+            "src/sneaky2.ts": "export const b = 2;\n",
+          }),
+        }),
+      );
+
+      assert.equal(escaped.status === "failed" && escaped.failure, "lease_escape");
+      const event = events.find((e) => e.type === "lease_escaped");
+      assert.deepEqual(event && "touched" in event ? event.touched : [], ["src/sneaky2.ts"]);
+      assert.equal(onMain("src/sneaky2.ts"), false);
+    });
+  });
+
+  // Defect 31: the same run's real failure mode, one step on. A merge of nothing must
+  // not read as work landing.
+  describe("a worker that changed nothing", () => {
+    let outcome: Awaited<ReturnType<typeof dispatch>>;
+
+    before(async () => {
+      events = [];
+      outcome = await dispatch(
+        aCodeTask({ branch: "feat/nothing", owns: ["src/nothing.ts"] }),
+        deps({ transport: writes({}) }),
+      );
+    });
+
+    test("fails the task with a message naming what happened", () => {
+      assert.equal(outcome.status, "failed");
+      assert.equal(outcome.status === "failed" && outcome.failure, "empty_merge");
+      assert.match(
+        outcome.status === "failed" ? outcome.message : "",
+        /no commits of its own/,
+      );
+    });
+
+    test("never reports the merge as completed", () => {
+      assert.equal(types().includes("merge_completed"), false);
+      assert.ok(types().includes("merge_empty"));
+    });
+
+    // Whatever the worker did do is the only record of it, so the worktree stays for
+    // a human to look at. Everything else about a failure removes it.
+    test("keeps the worktree so anything dirty survives inspection", () => {
+      assert.equal(types().includes("worktree_removed"), false);
+      assert.equal(fs.existsSync(path.join(repo.worktreeRoot, "feat_nothing")), true);
     });
   });
 

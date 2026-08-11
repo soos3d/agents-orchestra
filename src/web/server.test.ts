@@ -93,6 +93,20 @@ describe("parseClientMessage", () => {
     assert.equal(parseClientMessage('{"kind":"answer","questionId":"q1","answer":""}').ok, false);
     assert.equal(parseClientMessage('{"kind":"answer","answer":"staging"}').ok, false);
   });
+
+  // A mid-run permission answer (§12). `approved` is a boolean and not a string,
+  // because "false" is truthy and this is the message that grants a live agent a
+  // capability nobody planned for it.
+  test("accepts a permission resolution and refuses a malformed one", () => {
+    assert.equal(parseClientMessage('{"kind":"resolve","requestId":"perm-t1-1","approved":true}').ok, true);
+    assert.equal(
+      parseClientMessage('{"kind":"resolve","requestId":"perm-t1-1","approved":false,"missionId":"m1"}').ok,
+      true,
+    );
+    assert.equal(parseClientMessage('{"kind":"resolve","requestId":"perm-t1-1","approved":"true"}').ok, false);
+    assert.equal(parseClientMessage('{"kind":"resolve","requestId":"","approved":true}').ok, false);
+    assert.equal(parseClientMessage('{"kind":"resolve","approved":true}').ok, false);
+  });
 });
 
 describe("the web human", () => {
@@ -131,6 +145,35 @@ describe("the web human", () => {
 
     assert.equal(human.deliver({ kind: "approve" }), false);
     assert.equal(human.pending(), "intake");
+  });
+
+  // Permissions are keyed by request id where sign-off and intake are not, because two
+  // workers can be waiting at once — a click on one card must not answer the other.
+  test("a permission resolution reaches the request it names", async () => {
+    const human = createWebHuman();
+    const first = human.askPermission!({ requestId: "perm-t1-1", taskId: "t1", tool: "Write", detail: "a" });
+    const second = human.askPermission!({ requestId: "perm-t2-1", taskId: "t2", tool: "Bash", detail: "b" });
+
+    assert.equal(human.deliver({ kind: "resolve", requestId: "perm-t2-1", approved: false }), true);
+    assert.equal(await second, false);
+
+    assert.equal(human.deliver({ kind: "resolve", requestId: "perm-t1-1", approved: true }), true);
+    assert.equal(await first, true);
+  });
+
+  test("a resolution for a request nobody is waiting on is dropped, not queued", () => {
+    const human = createWebHuman();
+
+    assert.equal(human.deliver({ kind: "resolve", requestId: "perm-t9-1", approved: true }), false);
+  });
+
+  test("a second resolution for the same request is dropped", async () => {
+    const human = createWebHuman();
+    const pending = human.askPermission!({ requestId: "perm-t1-1", taskId: "t1", tool: "Write", detail: "a" });
+
+    assert.equal(human.deliver({ kind: "resolve", requestId: "perm-t1-1", approved: true }), true);
+    assert.equal(await pending, true);
+    assert.equal(human.deliver({ kind: "resolve", requestId: "perm-t1-1", approved: false }), false);
   });
 });
 

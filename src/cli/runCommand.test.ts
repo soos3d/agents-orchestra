@@ -13,7 +13,8 @@ import { type DiscoveredConfig } from "../config/discover.js";
 import { fold } from "../events/fold.js";
 import { type EventInput } from "../events/schema.js";
 import { scriptedCalls } from "../testing/fixtures.js";
-import { aCodeTask, missionCreated, stamp } from "../testing/fixtures.js";
+import { aCodeTask, aCriterion, missionCreated, stamp } from "../testing/fixtures.js";
+import { resolveCriteriaChange } from "../loop/criteriaChange.js";
 import { createWebHuman } from "../web/webHuman.js";
 import { handleFromDashboard, runMission, type RunSurface } from "./runCommand.js";
 import { type Io } from "./main.js";
@@ -89,6 +90,124 @@ describe("handleFromDashboard: answers", () => {
 
     assert.equal(again.ok, false);
     assert.equal(store.inputs.filter((e) => e.type === "question_answered").length, 1);
+  });
+});
+
+// A permission resolution is routed to the *port* through the web human, not written
+// here. The port is the only writer of `permission_resolved` (one writer, one settle —
+// see `workers/acp/permissionPort.ts`), so a second one here would record the same
+// answer twice and hand two decisions to a worker that asked once.
+describe("handleFromDashboard: permissions", () => {
+  test("a resolution reaches the human port and writes nothing itself", async () => {
+    const store = storeOf([missionCreated()]);
+    const human = createWebHuman();
+    const pending = human.askPermission!({
+      requestId: "perm-t1-1",
+      taskId: "t1",
+      tool: "Write",
+      detail: "src/clamp.ts",
+    });
+
+    const result = handleFromDashboard(
+      { kind: "resolve", requestId: "perm-t1-1", approved: true },
+      human,
+      store,
+      "m1",
+      quietIo,
+      () => {},
+    );
+
+    assert.deepEqual(result, { ok: true });
+    assert.equal(await pending, true);
+    assert.equal(store.inputs.some((e) => e.type === "permission_resolved"), false);
+  });
+
+  // Defect 29's web half: the mid-mission sign-off is answered through the same
+  // `approve`/`revise` pair the initial screen uses, so the only question is whether
+  // the click reaches the thing that is waiting. It was reaching nothing before,
+  // because nothing was waiting — the CLI had already exited on the park.
+  test("an approve from the dashboard resolves a pending criteria change", async () => {
+    const store = storeOf([
+      missionCreated(),
+      {
+        ...orchestrator,
+        type: "outcome_spec_written",
+        criteria: [aCriterion({ id: "c1" })],
+        guesses: [],
+        outOfScope: [],
+        estimate: { taskCount: 1, tokens: 0, wallMs: 1000, expectedGates: 0 },
+      },
+      { ...orchestrator, type: "signoff_granted", unattended: false },
+      {
+        ...orchestrator,
+        type: "criteria_change_requested",
+        diff: [
+          {
+            op: "amend",
+            criterionId: "c1",
+            from: aCriterion({ id: "c1" }),
+            to: aCriterion({ id: "c1", statement: "GET /health returns 200 and a build sha" }),
+            reason: "the deploy check reads the sha",
+          },
+        ],
+        reasoning: "c1 as written cannot be met",
+      },
+    ]);
+    const human = createWebHuman();
+    const pending = resolveCriteriaChange({ store, human });
+
+    const result = handleFromDashboard({ kind: "approve" }, human, store, "m1", quietIo, () => {});
+
+    assert.deepEqual(result, { ok: true });
+    assert.deepEqual(await pending, { ok: true, approved: true });
+    assert.equal(
+      store.state().mission.ledger.criteria[0]?.statement,
+      "GET /health returns 200 and a build sha",
+    );
+  });
+
+  test("a rejection from the dashboard keeps the criteria and records the dead end", async () => {
+    const store = storeOf([
+      missionCreated(),
+      {
+        ...orchestrator,
+        type: "outcome_spec_written",
+        criteria: [aCriterion({ id: "c1" })],
+        guesses: [],
+        outOfScope: [],
+        estimate: { taskCount: 1, tokens: 0, wallMs: 1000, expectedGates: 0 },
+      },
+      { ...orchestrator, type: "signoff_granted", unattended: false },
+      {
+        ...orchestrator,
+        type: "criteria_change_requested",
+        diff: [{ op: "remove", criterionId: "c1", reason: "unreachable" }],
+        reasoning: "c1 cannot be met",
+      },
+    ]);
+    const human = createWebHuman();
+    const pending = resolveCriteriaChange({ store, human });
+
+    handleFromDashboard(
+      { kind: "revise", feedback: "c1 stands" },
+      human,
+      store,
+      "m1",
+      quietIo,
+      () => {},
+    );
+
+    assert.deepEqual(await pending, { ok: true, approved: false });
+    assert.equal(store.state().mission.ledger.criteria.length, 1);
+    assert.equal(store.state().mission.ledger.deadEnds[0]?.source, "human");
+  });
+
+  test("a resolution nothing is waiting on is reported rather than swallowed", () => {
+    const store = storeOf([missionCreated()]);
+
+    const result = route(store, { kind: "resolve", requestId: "perm-t9-1", approved: true });
+
+    assert.equal(result.ok, false);
   });
 });
 

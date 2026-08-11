@@ -35,6 +35,24 @@ export async function createWorktree(
     );
   }
 
+  // A failed or crashed attempt leaves its branch behind after the worktree is
+  // gone, and `-b` then refuses to redispatch the task on resume (defect 35). A
+  // leftover branch still sitting exactly on the requested base has no work on it,
+  // so reusing it is safe; one that moved has commits nobody merged, and that stays
+  // a loud failure — deleting it here would destroy the one copy of that work.
+  const existing = await tryGit(repo, ["rev-parse", "--verify", "--quiet", branch]);
+  if (existing.ok && existing.stdout.trim() === baseSha) {
+    await git(repo, ["worktree", "add", dir, branch]);
+    return { path: dir, branch, baseSha };
+  }
+  if (existing.ok) {
+    throw new Error(
+      `Branch '${branch}' already exists at ${existing.stdout.trim().slice(0, 7)}, not the ` +
+        `requested base ${baseSha.slice(0, 7)} — it may hold unmerged work from an earlier ` +
+        `attempt. Inspect it with 'git log ${branch}' and delete it to redispatch.`,
+    );
+  }
+
   await git(repo, ["worktree", "add", "-b", branch, dir, baseSha]);
   return { path: dir, branch, baseSha };
 }

@@ -20,6 +20,7 @@ import { type MissionStore } from "../loop/run.js";
 import { loreDir, missionDir, type DiscoveredConfig } from "../config/discover.js";
 import { readLore } from "../memory/lore.js";
 import { loadSavedMission, seedFromSaved, type SavedMission } from "../memory/savedMission.js";
+import { availableTransports } from "../workers/availability.js";
 import { DEFAULT_TOOL_CLASSES } from "../workers/toolCatalogue.js";
 import { type ClientMessage } from "../web/protocol.js";
 import { startWebServer, type RunningServer } from "../web/server.js";
@@ -330,6 +331,11 @@ export async function runMission(
       // approved plan inside `prepareMission` and `resume` staffs it afterwards. One
       // of the two wired is a feature switched off on the commoner path.
       profiles: promotedAgents(config, (message) => io.err(message)),
+      // What this machine can actually start (§7, defect 21). `run` staffs its
+      // approved plan inside `prepareMission`, so the offer has to be here as well as
+      // in the loop's replan — one of the two wired is a mission staffed against a
+      // transport that cannot spawn, discovered one dispatch at a time.
+      transports: availableTransports(config),
       onWarn: (message) => io.err(message),
     });
 
@@ -447,6 +453,11 @@ export function handleFromDashboard(
     return { ok: true };
   }
 
+  // Sign-off, intake, and a live worker's permission request (`resolve`) all have
+  // something *awaiting* the answer, so they go to the port rather than to the log.
+  // `permission_resolved` is written by the permission port and by nothing else
+  // (`workers/acp/permissionPort.ts`): one writer and one settle, or a request that
+  // two surfaces answer is recorded twice and the worker is handed two decisions.
   return human.deliver(message)
     ? { ok: true }
     : { ok: false, problem: "nothing is waiting on that right now." };

@@ -147,3 +147,34 @@ describe("inspecting a worktree", () => {
     await removeWorktree(repo.path, worktree.path);
   });
 });
+
+describe("redispatch onto a leftover branch (defect 35)", () => {
+  // A failed attempt removes its worktree and leaves its branch; resume then
+  // redispatches the task under the same name, and `-b` refused to create a branch
+  // that exists. A branch still on the requested base carries no work, so it is
+  // reused; one that moved holds the only copy of unmerged commits and stays loud.
+  test("reuses a branch still sitting on the requested base", async () => {
+    const base = await repo.head();
+    const first = await createWorktree(repo.path, repo.worktreeRoot, "feat/retry", base);
+    await removeWorktree(repo.path, first.path);
+
+    const second = await createWorktree(repo.path, repo.worktreeRoot, "feat/retry", base);
+    assert.equal(second.branch, "feat/retry");
+    assert.equal(second.baseSha, base);
+    await removeWorktree(repo.path, second.path);
+  });
+
+  test("refuses a branch that moved off the base, naming the inspection command", async () => {
+    const base = await repo.head();
+    const first = await createWorktree(repo.path, repo.worktreeRoot, "feat/moved", base);
+    fs.writeFileSync(path.join(first.path, "work.txt"), "unmerged\n");
+    await git(first.path, ["add", "-A"]);
+    await git(first.path, ["commit", "-m", "unmerged work"]);
+    await removeWorktree(repo.path, first.path);
+
+    await assert.rejects(
+      () => createWorktree(repo.path, repo.worktreeRoot, "feat/moved", base),
+      /unmerged work from an earlier attempt/,
+    );
+  });
+});

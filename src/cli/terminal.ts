@@ -14,6 +14,7 @@ import readline from "node:readline/promises";
 import { LIMITS } from "../domain/mission.js";
 import { type HumanPort, type IntakeAnswer, type SignoffPresentation } from "../loop/human.js";
 import { type IntakeQuestion } from "../loop/calls.js";
+import { type PermissionAsk } from "../workers/acp/permissionPort.js";
 import { renderSignoff } from "./render.js";
 import { type Io } from "./main.js";
 
@@ -39,6 +40,20 @@ export class NoOneAtTheKeyboardError extends Error {
         "you mean to skip reading the plan.",
     );
     this.name = "NoOneAtTheKeyboardError";
+  }
+}
+
+/** What `askPermission` throws when the input ends with a worker still waiting. It is
+ *  not a denial: another surface may still answer, and only a person may widen a grant
+ *  (§7). */
+export class NoOneToAskError extends Error {
+  constructor(tool: string) {
+    super(
+      `A running agent asked to use '${tool}' and standard input ended without an ` +
+        "answer. Approve or refuse it from the dashboard, or run the mission attached " +
+        "to a terminal.",
+    );
+    this.name = "NoOneToAskError";
   }
 }
 
@@ -153,9 +168,45 @@ export function createTerminalHuman(io: Io, prompter: Prompter): HumanPort {
       return { wallMs: request.budget.wallMs + minutes * 60_000 };
     },
 
-    async awaitSignoff(presentation: SignoffPresentation) {
+    async askPermission(request: PermissionAsk): Promise<boolean> {
       io.out("");
-      io.out(`── ${presentation.missionId} · awaiting your approval ${"─".repeat(20)}`);
+      io.out(`── ${request.taskId} · asks to use ${request.tool} ${"─".repeat(20)}`);
+      if (request.detail) io.out(`  ${request.detail}`);
+      io.out("  It was not granted this at synthesis, so only you can allow it (§7).");
+
+      for (;;) {
+        const line = await prompter.ask("allow this once? [y/n] ");
+
+        // End of input is not an allow, and it is not a deny either. These ports race
+        // (`anyOf`), and a terminal that answered for the human on a machine with no
+        // tty would win that race and the dashboard would never be shown the request.
+        // Raising is what lets another surface take it; the worker keeps waiting, and
+        // the ACP session's own timeout is what bounds that.
+        if (line === undefined) throw new NoOneToAskError(request.tool);
+
+        const reply = line.trim().toLowerCase();
+        if (/^(y|yes|a|allow)$/.test(reply)) return true;
+        if (/^(n|no|d|deny)$/.test(reply)) return false;
+
+        // Nothing defaults. A grant taken by leaning on Enter is exactly the widening
+        // §7 reserves for a person.
+        io.out("  Type 'y' to allow this one call, or 'n' to refuse it.");
+      }
+    },
+
+    async awaitSignoff(presentation: SignoffPresentation) {
+      // One screen, two things it can be asking about (§13): a fresh plan, or a
+      // replan asking to edit a signed-off criterion. Same port, same race, same
+      // end-of-input rule — only the wording changes, because "revise" and "reject"
+      // are the same decision from the loop's side and different words to a human.
+      const change = presentation.proposedChange !== undefined;
+
+      io.out("");
+      io.out(
+        change
+          ? `── ${presentation.missionId} · a replan wants to change the contract ${"─".repeat(8)}`
+          : `── ${presentation.missionId} · awaiting your approval ${"─".repeat(20)}`,
+      );
       io.out(presentation.goal);
       if (presentation.brief) {
         io.out("");
@@ -168,7 +219,11 @@ export function createTerminalHuman(io: Io, prompter: Prompter): HumanPort {
       // Looping rather than defaulting: approving a plan by pressing Enter at the
       // wrong moment is exactly the reflex this screen exists to interrupt.
       for (;;) {
-        const line = await prompter.ask("approve, or type feedback to revise: ");
+        const line = await prompter.ask(
+          change
+            ? "approve the change, or type a reason to reject it: "
+            : "approve, or type feedback to revise: ",
+        );
 
         // End of input is not approval, and this is the one place that distinction
         // has teeth. Skipping sign-off is a decision a human makes with a flag (§17);
@@ -181,7 +236,11 @@ export function createTerminalHuman(io: Io, prompter: Prompter): HumanPort {
         if (/^(a|approve|y|yes)$/i.test(reply)) return { kind: "approve" };
         if (reply !== "") return { kind: "revise", feedback: reply };
 
-        io.out("  Type 'approve' to start work, or say what should change.");
+        io.out(
+          change
+            ? "  Type 'approve' to accept the new contract, or say why it should stand."
+            : "  Type 'approve' to start work, or say what should change.",
+        );
       }
     },
   };

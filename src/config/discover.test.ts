@@ -169,6 +169,55 @@ describe("doctor", () => {
     }
   });
 
+  // Phase 7. The failure mode is the reverse of the usual one: a `doctor` that reports
+  // `acp` as available on a machine with no coding CLI would send the planner at a
+  // transport that cannot spawn (defect 21), and a `doctor` that *fails* on a missing
+  // OpenCode would make an optional extra a prerequisite (§2a).
+  describe("the acp line", () => {
+    test("names the targets that can actually run", () => {
+      const check = doctor({ ...base, agents: ["claude"] }, "v23.11.0").checks.find(
+        (c) => c.name === "acp",
+      );
+
+      assert.equal(check?.level, "ok");
+      assert.match(check?.detail ?? "", /claude/);
+    });
+
+    test("warns, with the fix, when nothing can run over acp", () => {
+      const check = doctor({ ...base, agents: [] }, "v23.11.0").checks.find((c) => c.name === "acp");
+
+      assert.equal(check?.level, "warn");
+      assert.match(check?.fix ?? "", /npm i -g/);
+    });
+  });
+
+  describe("the opencode line", () => {
+    test("never fails, because an optional extra is not a prerequisite", () => {
+      for (const optionalAgents of [[], ["opencode"]]) {
+        const report = doctor({ ...base, optionalAgents }, "v23.11.0");
+        assert.notEqual(report.checks.find((c) => c.name === "opencode")?.level, "fail");
+        assert.equal(report.ready, true);
+      }
+    });
+
+    test("says so when it is installed", () => {
+      const check = doctor({ ...base, optionalAgents: ["opencode"] }, "v23.11.0").checks.find(
+        (c) => c.name === "opencode",
+      );
+
+      assert.match(check?.detail ?? "", /on PATH/);
+    });
+
+    // It is not an acp target until a session against a real binary has been captured
+    // (`acp/registry.ts`), and saying otherwise would ship a command line no capture
+    // backs.
+    test("does not claim it as an acp target on its own", () => {
+      const report = doctor({ ...base, agents: [], optionalAgents: ["opencode"] }, "v23.11.0");
+
+      assert.equal(report.checks.find((c) => c.name === "acp")?.level, "warn");
+    });
+  });
+
   test("the report ends by saying whether it is ready", () => {
     assert.match(formatReport(doctor({ ...base, agents: [] }, "v18.0.0")), /Not ready/);
     assert.match(formatReport(doctor({ ...base, repoRoot: "/work" }, "v23.11.0")), /Ready\./);

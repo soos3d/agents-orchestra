@@ -42,6 +42,18 @@ export const clientMessageSchema = z.discriminatedUnion("kind", [
     missionId: z.string().optional(),
   }),
 
+  // Answers a live worker's permission request (§12, `workers/acp`). Keyed by request
+  // id rather than by task, because two workers can be waiting at once and a click on
+  // one card must not answer the other. `approved` is a boolean and not a string on
+  // purpose: `"false"` is truthy, and this is the message that hands a running agent a
+  // capability nobody planned for it.
+  z.object({
+    kind: z.literal("resolve"),
+    requestId: z.string().min(1),
+    approved: z.boolean(),
+    missionId: z.string().optional(),
+  }),
+
   // Pause drains and parks; unpause lifts the flag so a resume carries on (§10).
   // Panic stays its own message because it is not a stronger pause.
   z.object({ kind: z.literal("pause"), missionId: z.string().optional() }),

@@ -4,7 +4,7 @@
 // agent is synthesized, and the message names the edge the planner has to fix.
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { type PlannedTask } from "../domain/ledger.js";
+import { type Criterion, type PlannedTask } from "../domain/ledger.js";
 import { validatePlan } from "./validate.js";
 
 const task = (id: string, dependsOn: string[] = []): PlannedTask => ({
@@ -60,5 +60,59 @@ describe("validatePlan", () => {
 
     assert.equal(result.ok, false);
     assert.ok(!result.ok && result.message.includes("t1"));
+  });
+
+  // Defect 32's other half. A criterion's check fires when the last task listing it
+  // lands (§4), so a plan that lists it nowhere is a criterion that can never be
+  // checked and a mission that can never legitimately complete. The real mission that
+  // found this replanned itself into exactly that shape and then spun to its cap.
+  describe("criteria coverage", () => {
+    const criterion = (id: string, patch: Partial<Criterion> = {}): Criterion => ({
+      id,
+      statement: `${id} holds`,
+      check: { kind: "command", command: "npm test" },
+      ...patch,
+    });
+
+    const satisfying = (id: string, satisfies: string[]): PlannedTask => ({
+      ...task(id),
+      satisfies,
+    });
+
+    test("accepts a plan whose tasks cover every criterion", () => {
+      const result = validatePlan(
+        [satisfying("t1", ["c1"]), satisfying("t2", ["c2"])],
+        [criterion("c1"), criterion("c2")],
+      );
+
+      assert.equal(result.ok, true);
+    });
+
+    test("rejects a plan that leaves a criterion with no task, naming it", () => {
+      const result = validatePlan(
+        [satisfying("t1", ["c1"])],
+        [criterion("c1"), criterion("c2"), criterion("c3")],
+      );
+
+      assert.equal(result.ok, false);
+      assert.ok(!result.ok && result.message.includes("c2"));
+      assert.ok(!result.ok && result.message.includes("c3"));
+      assert.ok(!result.ok && !result.message.includes("c1"));
+    });
+
+    // A criterion already shown met needs no further work planned against it, and
+    // demanding one would make every replan re-propose work that is already done.
+    test("a criterion already met needs no task", () => {
+      const result = validatePlan(
+        [satisfying("t1", ["c1"])],
+        [criterion("c1"), criterion("c2", { met: true })],
+      );
+
+      assert.equal(result.ok, true);
+    });
+
+    test("checks nothing when no criteria are supplied", () => {
+      assert.equal(validatePlan([satisfying("t1", [])]).ok, true);
+    });
   });
 });

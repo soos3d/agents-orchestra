@@ -18,17 +18,22 @@
 //   escalated at the reset cap parks there with an open question and nothing can
 //   answer it until Phase 3. The inbox is what tells them apart, so reading the
 //   status alone would either strand the first or spin the second.
-import { type InboxItem, type MissionState } from "../events/fold.js";
+import { type MissionState } from "../events/fold.js";
 import { createMergeQueue } from "../git/mergeQueue.js";
 import { currentBranch } from "../git/repo.js";
 import { type Calls } from "../loop/calls.js";
 import { dispatch, type DispatchOutcome } from "../loop/dispatch.js";
+import { resolveCriteriaChange } from "../loop/criteriaChange.js";
 import { unattendedHuman, type HumanPort } from "../loop/human.js";
 import { presentAndSignOff } from "../loop/prepare.js";
 import { runLoop, type LoopDeps, type LoopResult, type MissionStore } from "../loop/run.js";
 import { createCriterionChecker, createVerifier } from "../loop/verify.js";
 import { type Lease } from "../scheduler/leases.js";
 import { type AgentSpec, type Task } from "../domain/task.js";
+import { routeTransport } from "../workers/router.js";
+import { createAcpTransport } from "../workers/acp/transport.js";
+import { createPermissionPort, type PermissionPort } from "../workers/acp/permissionPort.js";
+import { availableTransports } from "../workers/availability.js";
 import { createCliReformatter, createCliTransport } from "../workers/transport.js";
 import { loreDir, type DiscoveredConfig } from "../config/discover.js";
 import { loadProfiles } from "../memory/profiles.js";
@@ -38,7 +43,10 @@ import { type Io } from "./main.js";
 export type Continuation =
   | { kind: "loop" }
   | { kind: "signoff" }
-  | { kind: "criteriaChange"; item?: InboxItem }
+  // What the change *is* comes from `pendingCriteriaChange` on the fold, which carries
+  // the diff whole (§4.0) — the inbox item only carries the reasoning as a summary, and
+  // a screen built from it could not render what would change.
+  | { kind: "criteriaChange" }
   | { kind: "halted"; message: string; code: number }
   | { kind: "unplanned"; message: string };
 
@@ -68,15 +76,12 @@ export function continuationFor(state: MissionState): Continuation {
   // the diff screen has nothing to render for a mission that was never signed off.
   //
   // Keyed on the mission rather than on an open inbox item, because the item is how
-  // the request is *surfaced* and this is a question about what the mission is. The
-  // item comes along for the message it carries.
+  // the request is *surfaced* and this is a question about what the mission is. What
+  // the change proposes is read from `pendingCriteriaChange` when it is answered.
   const openItem = state.inbox.find((item) => !item.resolvedAt);
 
   if (mission.status === "awaiting_signoff") {
-    if (!mission.signedOffAt) return { kind: "signoff" };
-    return openItem?.kind === "criteria_change"
-      ? { kind: "criteriaChange", item: openItem }
-      : { kind: "criteriaChange" };
+    return mission.signedOffAt ? { kind: "criteriaChange" } : { kind: "signoff" };
   }
 
   // A mission killed mid-intake left its questions open. They are re-asked rather
@@ -128,6 +133,11 @@ export interface ExecuteDeps {
     calls: Calls,
     config: DiscoveredConfig,
     onWarn?: (message: string) => void,
+    /** The human the ACP permission port asks (§12). Passed through rather than read
+     *  from a singleton, and passed *here* because a build that gets no human denies
+     *  every mid-run request — which is a feature switched off at the composition
+     *  root, the shape defects 12b, 23 and 24 all had. */
+    human?: HumanPort,
   ) => Promise<LoopDeps>;
   /** Absent means nobody is there, which is what `--unattended` amounts to. */
   human?: HumanPort;
@@ -155,15 +165,12 @@ export async function executeMission(deps: ExecuteDeps): Promise<ExecuteResult> 
   }
 
   if (next.kind === "criteriaChange") {
-    // The mid-mission return (§3). Rendering the diff and taking the answer is the
-    // sign-off screen's job and lands with the shell; until then the mission parks
-    // rather than deciding for the human, which is the one thing that must not
-    // happen — a system that approves its own criteria change has moved its
-    // goalposts and can then legitimately report success.
-    deps.io.out(`${missionId}: a replan wants to change a signed-off criterion.`);
-    if (next.item) deps.io.out(`  ${next.item.summary}`);
-    deps.io.out("  Approving or rejecting it needs the sign-off screen (Phase 3b).");
-    return { code: 1 };
+    // The mid-mission return (§3), answered rather than announced. This branch used
+    // to print that resolving it needed a screen that did not exist and exit 1 —
+    // defect 29, a mission parked at a door with nothing behind it, on `run` and
+    // `resume` alike. It now falls through to the loop once a human has decided.
+    const parked = await settleCriteriaChange(deps, missionId);
+    if (parked) return parked;
   }
 
   const calls = deps.calls();
@@ -183,6 +190,10 @@ export async function executeMission(deps: ExecuteDeps): Promise<ExecuteResult> 
       // here as well as in the loop's replan — wiring only one of the two call sites
       // is how a feature ends up switched off on the path most missions take.
       profiles: promotedAgents(deps.config, (message) => deps.io.err(message)),
+      // And the machine's transports, for the same reason (§7, defect 21): this is
+      // where a resumed `--plan-only` mission is staffed, so a mission approved here
+      // against the built list would be staffed with a transport nothing can start.
+      transports: availableTransports(deps.config),
       unattended: state.mission.unattended,
     });
 
@@ -193,7 +204,13 @@ export async function executeMission(deps: ExecuteDeps): Promise<ExecuteResult> 
   }
 
   const build = deps.buildLoop ?? buildLoopDeps;
-  const loop = await build(deps.store, calls, deps.config, (message) => deps.io.err(message));
+  const loop = await build(
+    deps.store,
+    calls,
+    deps.config,
+    (message) => deps.io.err(message),
+    deps.human,
+  );
 
   // The half of §9.4 that was built and unreachable: `runLoop` has always taken a
   // `requestExtension`, and nothing ever supplied one — so every real mission took
@@ -201,11 +218,24 @@ export async function executeMission(deps: ExecuteDeps): Promise<ExecuteResult> 
   // wired here rather than in `buildLoopDeps` because the human is an entry-point
   // concern and the loop's runtime is not.
   const asker = deps.human?.requestExtension?.bind(deps.human);
-  const result = await runLoop({
-    ...loop,
-    ...(asker ? { requestExtension: asker } : {}),
-    ...(deps.signal ? { signal: deps.signal } : {}),
-  });
+  const runOnce = () =>
+    runLoop({
+      ...loop,
+      ...(asker ? { requestExtension: asker } : {}),
+      ...(deps.signal ? { signal: deps.signal } : {}),
+    });
+
+  let result = await runOnce();
+
+  // The other half of defect 29: `run` never comes back through `continuationFor`, so
+  // a reopen raised *mid-loop* has to be settled here or an attended run exits on the
+  // park exactly as `resume` did. Not capped separately — every reopen costs a reset,
+  // and `maxResets` is what ends a mission that keeps asking (§3).
+  while (result.status === "awaiting_signoff") {
+    const parked = await settleCriteriaChange(deps, missionId);
+    if (parked) return { ...parked, result };
+    result = await runOnce();
+  }
 
   // The mission's contribution back to semantic memory (§6), and it happens here
   // because this is the one place `run` and `resume` both end — wired at the entry
@@ -231,6 +261,56 @@ export async function executeMission(deps: ExecuteDeps): Promise<ExecuteResult> 
 }
 
 /**
+ * The mid-mission return to sign-off (§3), settled where both entry points meet it.
+ *
+ * Returns a result when the mission has to park, and `undefined` when the change was
+ * decided and the loop may carry on. Two ways to park, and neither may be softened:
+ *
+ *   `--unattended` parks rather than approving. A flag that skips reading the plan is
+ *   a reasonable trade; one that lets an unwatched mission rewrite the contract it is
+ *   judged against is the thing sign-off exists to prevent.
+ *
+ *   No human at all parks too, and that is why `unattendedHuman()` is deliberately not
+ *   the fallback here as it is for sign-off. It approves, which is right for a plan
+ *   nobody is there to read and catastrophic for a criteria change: the system would
+ *   be approving its own goalposts.
+ */
+async function settleCriteriaChange(
+  deps: ExecuteDeps,
+  missionId: string,
+): Promise<ExecuteResult | undefined> {
+  const state = deps.store.state();
+  const pending = state.pendingCriteriaChange;
+
+  deps.io.out(`${missionId}: a replan wants to change a signed-off criterion.`);
+  if (pending) deps.io.out(`  ${pending.reasoning}`);
+
+  if (state.mission.unattended || !deps.human) {
+    deps.io.out(
+      state.mission.unattended
+        ? "  Parked: --unattended never approves a change to the contract it skipped " +
+            `reading. Answer it with 'orchestra resume ${missionId}' attached to a terminal.`
+        : "  Parked: nobody is here to decide. Answer it with " +
+            `'orchestra resume ${missionId}' attached to a terminal, or from the dashboard.`,
+    );
+    return { code: 1 };
+  }
+
+  const outcome = await resolveCriteriaChange({ store: deps.store, human: deps.human });
+  if (!outcome.ok) {
+    deps.io.err(outcome.reason);
+    return { code: 1 };
+  }
+
+  deps.io.out(
+    outcome.approved
+      ? "  Approved: the criteria are updated and the mission carries on."
+      : "  Rejected: the signed-off criteria stand, recorded as a dead end.",
+  );
+  return undefined;
+}
+
+/**
  * Procedural memory as synthesis sees it (§6, §7): the agents a human promoted from
  * earlier missions, as specs.
  *
@@ -251,11 +331,35 @@ export function promotedAgents(
 
 /** The runtime a mission needs to actually do work: worktrees, a merge queue, a
  *  worker transport, and the two verifiers. Built once per entry point. */
+/**
+ * The port a live ACP worker asks through (§12), bound to this mission's log and to
+ * whichever surfaces the human has.
+ *
+ * Exported and built here rather than inside the transport for the reason the header
+ * of `permissionPort.ts` gives: there is one writer of `permission_resolved`, and the
+ * transport is a consumer of the decision rather than the owner of it. An absent human
+ * is not an omission — it is `--unattended`, and the port denies rather than parking a
+ * worker on nobody.
+ */
+export function permissionPortFor(
+  store: MissionStore,
+  human?: HumanPort,
+  onWarn?: (message: string) => void,
+): PermissionPort {
+  return createPermissionPort({
+    emit: store.emit,
+    missionId: store.state().mission.id,
+    ...(human?.askPermission ? { ask: (request) => human.askPermission!(request) } : {}),
+    ...(onWarn ? { onWarn } : {}),
+  });
+}
+
 export async function buildLoopDeps(
   store: MissionStore,
   calls: Calls,
   config: DiscoveredConfig,
   onWarn?: (message: string) => void,
+  human?: HumanPort,
 ): Promise<LoopDeps> {
   const repo = config.repoRoot;
   const code = repo
@@ -267,7 +371,27 @@ export async function buildLoopDeps(
       }
     : undefined;
 
-  const transport = createCliTransport();
+  // Routed rather than wired straight through, so a spec naming a transport this build
+  // does not ship gets one message that names the built ids and the fix — instead of
+  // the `cli` transport answering for an id it is not (§7, defect 21). One entry today;
+  // the ACP transport (Phase 7) is one key.
+  // The mid-run half of the human channel (§10, §12): an ACP agent's tool call that its
+  // grant does not cover reaches a person through this, and nothing else writes the
+  // answer down. Built unconditionally — a port nobody passes is a feature finished and
+  // switched off at the same time.
+  const permissions = permissionPortFor(store, human, onWarn);
+
+  const transport = routeTransport({
+    cli: createCliTransport(),
+    // Phase 7's second key. `requestPermission` is what closes defect 14: ACP's
+    // permission channel replaces the blanket `--dangerously-skip-permissions`, and it
+    // is only a replacement if the answer comes from a human rather than from a
+    // default.
+    acp: createAcpTransport({
+      requestPermission: (taskId, request) => permissions.requestPermission(taskId, request),
+      ...(onWarn ? { onWarn } : {}),
+    }),
+  });
   const verify = createVerifier({ calls });
   // §4.1's one reformat attempt. `dispatch` has always accepted a reformatter and no
   // entry point supplied one, so a worker that answered in prose failed outright
@@ -282,6 +406,10 @@ export async function buildLoopDeps(
     calls,
     cwd: repo ?? config.cwd,
     ...(profiles.length > 0 ? { profiles } : {}),
+    // The replan's half of the honest offer (§7). Passed always, including empty: an
+    // omitted list would fall back to everything the build ships, which is the exact
+    // claim this is here to stop making.
+    transports: availableTransports(config),
     checkCriterion: createCriterionChecker({ calls }),
     dispatch: (task: Task, state: MissionState): Promise<DispatchOutcome> =>
       dispatch(task, {

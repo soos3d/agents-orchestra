@@ -17,6 +17,7 @@ import {
   type SignoffDecision,
   type SignoffPresentation,
 } from "../loop/human.js";
+import { type PermissionAsk } from "../workers/acp/permissionPort.js";
 import { type ClientMessage } from "./protocol.js";
 
 export interface WebHuman extends HumanPort {
@@ -30,6 +31,10 @@ export interface WebHuman extends HumanPort {
 export function createWebHuman(): WebHuman {
   let onSignoff: ((decision: SignoffDecision) => void) | undefined;
   let onIntake: ((answers: IntakeAnswer[]) => void) | undefined;
+  // Keyed, where the two above are not: sign-off and intake happen once and block the
+  // mission, but two live workers can be waiting on two permission requests at the
+  // same time (§12). A single slot would let a click on one card answer the other.
+  const onPermission = new Map<string, (approved: boolean) => void>();
 
   return {
     pending: () => (onSignoff ? "signoff" : onIntake ? "intake" : undefined),
@@ -37,6 +42,14 @@ export function createWebHuman(): WebHuman {
     askIntake: (_questions: readonly IntakeQuestion[]) =>
       new Promise<IntakeAnswer[]>((resolve) => {
         onIntake = resolve;
+      }),
+
+    // Never rejects and never times out. A worker is awaiting this, and the human may
+    // be asleep; the ACP session's own timeout is what bounds the wait (§12), which is
+    // the same reason the permission port has no clock of its own.
+    askPermission: (request: PermissionAsk) =>
+      new Promise<boolean>((resolve) => {
+        onPermission.set(request.requestId, resolve);
       }),
 
     awaitSignoff: (_presentation: SignoffPresentation) =>
@@ -57,6 +70,14 @@ export function createWebHuman(): WebHuman {
             ? { kind: "approve" }
             : { kind: "revise", feedback: message.feedback },
         );
+        return true;
+      }
+
+      if (message.kind === "resolve") {
+        const waiting = onPermission.get(message.requestId);
+        if (!waiting) return false;
+        onPermission.delete(message.requestId);
+        waiting(message.approved);
         return true;
       }
 

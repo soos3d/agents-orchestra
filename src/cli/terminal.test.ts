@@ -219,6 +219,56 @@ describe("the extension request", () => {
   });
 });
 
+// A permission request is the one prompt that arrives *mid-run*, with a worker
+// waiting on the other end. The rule it shares with sign-off is the important one:
+// end of input is not approval, and it is not a silent denial either — it raises, so
+// the browser (which races this port through `anyOf`) still gets its turn.
+describe("the terminal permission prompt", () => {
+  const anAsk = { requestId: "perm-t1-1", taskId: "t1", tool: "Write", detail: "src/clamp.ts" };
+
+  test("allows on the short forms a human actually types", async () => {
+    for (const reply of ["y", "yes", "a", "allow", "  Y  "]) {
+      const human = createTerminalHuman(capture(), scriptedPrompter([reply]));
+      assert.equal(await human.askPermission!(anAsk), true, reply);
+    }
+  });
+
+  test("denies on an explicit no, which is a decision and not a failure", async () => {
+    for (const reply of ["n", "no", "d", "deny"]) {
+      const human = createTerminalHuman(capture(), scriptedPrompter([reply]));
+      assert.equal(await human.askPermission!(anAsk), false, reply);
+    }
+  });
+
+  // Neither answer by default: an allow granted by leaning on Enter is the grant §7
+  // reserves for a human, taken by a keystroke.
+  test("an empty reply re-asks rather than defaulting either way", async () => {
+    const prompter = recording(["", "n"]);
+
+    assert.equal(await createTerminalHuman(capture(), prompter).askPermission!(anAsk), false);
+    assert.equal(prompter.prompts.length, 2);
+  });
+
+  test("shows the task, the tool, and what it wants to do with it", async () => {
+    const io = capture();
+
+    await createTerminalHuman(io, scriptedPrompter(["y"])).askPermission!(anAsk);
+
+    const output = io.lines.join("\n");
+    assert.match(output, /t1/);
+    assert.match(output, /Write/);
+    assert.match(output, /src\/clamp\.ts/);
+  });
+
+  // The race, exactly as intake plays it: a machine with no tty must lose rather than
+  // answering for the human, or the dashboard is never asked.
+  test("raises when the input ends, so another surface can still answer", async () => {
+    const human = createTerminalHuman(capture(), scriptedPrompter([]));
+
+    await assert.rejects(() => human.askPermission!(anAsk), /dashboard|terminal/i);
+  });
+});
+
 describe("renderSignoff", () => {
   test("names what each criterion will actually be checked with", () => {
     const lines = renderSignoff(
@@ -246,5 +296,102 @@ describe("renderSignoff", () => {
     const lines = renderSignoff(aPresentation({ guesses: [] })).join("\n");
 
     assert.equal(/GUESSES/.test(lines), false);
+  });
+});
+
+// The mid-mission return (§3, §13): the same screen, showing what a replan wants to
+// change and why, rather than a fresh spec. Defect 29 was this screen not existing on
+// any surface, so the mission parked at a door with nothing behind it.
+describe("the criteria-change screen", () => {
+  const amended = aCriterion({ id: "c1", statement: "GET /health returns 200 and a build sha" });
+
+  const proposing = () =>
+    aPresentation({
+      proposedChange: {
+        reasoning: "no plan can satisfy c1 as written; the endpoint has no version to report",
+        diff: [
+          {
+            op: "amend",
+            criterionId: "c1",
+            from: aCriterion({ id: "c1" }),
+            to: amended,
+            reason: "the sha is what the deploy check actually reads",
+          },
+        ],
+      },
+    });
+
+  test("renders the diff from the event: what it says now, what it would say, and why", () => {
+    const lines = renderSignoff(proposing()).join("\n");
+
+    assert.match(lines, /PROPOSED CHANGE/);
+    assert.match(lines, /amend c1/);
+    assert.match(lines, new RegExp(aCriterion().statement));
+    assert.match(lines, /GET \/health returns 200 and a build sha/);
+    assert.match(lines, /the sha is what the deploy check actually reads/);
+    assert.match(lines, /no plan can satisfy c1 as written/);
+  });
+
+  test("renders an add and a remove without inventing a before or an after", () => {
+    const lines = renderSignoff(
+      aPresentation({
+        proposedChange: {
+          reasoning: "the report was never in scope",
+          diff: [
+            { op: "remove", criterionId: "c2", reason: "there is no report to write" },
+            { op: "add", criterion: aCriterion({ id: "c3", statement: "the summary is under 500 words" }) },
+          ],
+        },
+      }),
+    ).join("\n");
+
+    assert.match(lines, /remove c2/);
+    assert.match(lines, /there is no report to write/);
+    assert.match(lines, /add c3/);
+    assert.match(lines, /the summary is under 500 words/);
+  });
+
+  test("the initial sign-off screen carries no diff block", () => {
+    assert.equal(/PROPOSED CHANGE/.test(renderSignoff(aPresentation()).join("\n")), false);
+  });
+});
+
+describe("the terminal on a criteria change", () => {
+  const proposing = (): SignoffPresentation =>
+    aPresentation({
+      proposedChange: {
+        reasoning: "c1 cannot be met by any plan",
+        diff: [{ op: "remove", criterionId: "c1", reason: "there is no endpoint to check" }],
+      },
+    });
+
+  test("approve applies it; anything else is a reasoned rejection", async () => {
+    const approved = await createTerminalHuman(capture(), scriptedPrompter(["approve"])).awaitSignoff(
+      proposing(),
+    );
+    assert.deepEqual(approved, { kind: "approve" });
+
+    const rejected = await createTerminalHuman(
+      capture(),
+      scriptedPrompter(["c1 stands; find another way"]),
+    ).awaitSignoff(proposing());
+    assert.deepEqual(rejected, { kind: "revise", feedback: "c1 stands; find another way" });
+  });
+
+  // The same rule the initial screen has, and it matters more here: these ports race,
+  // and a terminal with no tty that answered for the human would decide a contract
+  // change the dashboard was about to show somebody.
+  test("end of input rejects rather than resolving, so the dashboard can still answer", async () => {
+    const human = createTerminalHuman(capture(), scriptedPrompter([]));
+
+    await assert.rejects(() => human.awaitSignoff(proposing()), /--unattended|terminal/);
+  });
+
+  test("the prompt asks about the change, not about the plan", async () => {
+    const prompter = recording(["approve"]);
+
+    await createTerminalHuman(capture(), prompter).awaitSignoff(proposing());
+
+    assert.match(prompter.prompts.join("\n"), /reject/i);
   });
 });

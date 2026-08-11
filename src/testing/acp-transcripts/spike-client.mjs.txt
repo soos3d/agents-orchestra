@@ -1,0 +1,144 @@
+// Minimal ACP client that logs every JSON-RPC frame in both directions.
+// Usage: node client.mjs <outfile.jsonl> <cwd> <command> [args...]
+import { spawn } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+
+const [outFile, sessionCwd, cmd, ...args] = process.argv.slice(2);
+const log = fs.createWriteStream(outFile, { flags: "w" });
+const rec = (dir, obj) =>
+  log.write(JSON.stringify({ t: new Date().toISOString(), dir, frame: obj }) + "\n");
+
+const child = spawn(cmd, args, {
+  cwd: sessionCwd,
+  stdio: ["pipe", "pipe", "pipe"],
+  env: { ...process.env },
+});
+
+child.stderr.on("data", (d) => {
+  const s = d.toString();
+  rec("stderr", s);
+  process.stderr.write("[agent stderr] " + s);
+});
+
+let nextId = 1;
+const pending = new Map();
+function send(obj) {
+  rec("out", obj);
+  child.stdin.write(JSON.stringify(obj) + "\n");
+}
+function request(method, params) {
+  const id = nextId++;
+  return new Promise((resolve, reject) => {
+    pending.set(id, { resolve, reject });
+    send({ jsonrpc: "2.0", id, method, params });
+  });
+}
+
+let buf = "";
+child.stdout.on("data", (d) => {
+  buf += d.toString();
+  let i;
+  while ((i = buf.indexOf("\n")) >= 0) {
+    const line = buf.slice(0, i).trim();
+    buf = buf.slice(i + 1);
+    if (!line) continue;
+    let msg;
+    try {
+      msg = JSON.parse(line);
+    } catch {
+      rec("in-nonjson", line);
+      continue;
+    }
+    rec("in", msg);
+    handle(msg);
+  }
+});
+
+function handle(msg) {
+  if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined)) {
+    const p = pending.get(msg.id);
+    pending.delete(msg.id);
+    if (p) (msg.error ? p.reject : p.resolve)(msg.error ?? msg.result);
+    return;
+  }
+  if (msg.method && msg.id !== undefined) return handleServerRequest(msg);
+  // notification: nothing to do, already logged
+}
+
+function handleServerRequest(msg) {
+  const reply = (result) => send({ jsonrpc: "2.0", id: msg.id, result });
+  const fail = (message) =>
+    send({ jsonrpc: "2.0", id: msg.id, error: { code: -32000, message } });
+  const p = msg.params ?? {};
+  switch (msg.method) {
+    case "session/request_permission": {
+      // Prefer allow_once so the turn can complete; capture the frame either way.
+      const opts = p.options ?? [];
+      const want = process.env.ACP_PERMISSION === "reject" ? "reject_once" : "allow_once";
+      const pick =
+        opts.find((o) => o.kind === want) ??
+        opts.find((o) => o.kind === "allow_always") ??
+        opts[0];
+      if (!pick) return reply({ outcome: { outcome: "cancelled" } });
+      return reply({ outcome: { outcome: "selected", optionId: pick.optionId } });
+    }
+    case "fs/read_text_file": {
+      try {
+        return reply({ content: fs.readFileSync(p.path, "utf8") });
+      } catch (e) {
+        return fail(String(e));
+      }
+    }
+    case "fs/write_text_file": {
+      try {
+        fs.mkdirSync(path.dirname(p.path), { recursive: true });
+        fs.writeFileSync(p.path, p.content ?? "");
+        return reply(null);
+      } catch (e) {
+        return fail(String(e));
+      }
+    }
+    default:
+      return fail(`unhandled client method ${msg.method}`);
+  }
+}
+
+const PROMPT =
+  process.env.ACP_PROMPT ??
+  "Create a file named hello.txt in the current directory containing exactly the text: hi";
+
+const timeout = setTimeout(() => {
+  console.error("TIMEOUT — killing agent");
+  child.kill("SIGKILL");
+  process.exit(3);
+}, Number(process.env.ACP_TIMEOUT_MS ?? 180000));
+
+try {
+  const init = await request("initialize", {
+    protocolVersion: Number(process.env.ACP_PROTOCOL ?? 1),
+    clientCapabilities: {
+      fs: { readTextFile: true, writeTextFile: true },
+      terminal: false,
+    },
+    clientInfo: { name: "fable-orchestra-spike", version: "0.0.0" },
+  });
+  console.log("INITIALIZE:", JSON.stringify(init));
+
+  const sess = await request("session/new", { cwd: sessionCwd, mcpServers: [] });
+  console.log("SESSION:", JSON.stringify(sess));
+
+  const res = await request("session/prompt", {
+    sessionId: sess.sessionId,
+    prompt: [{ type: "text", text: PROMPT }],
+  });
+  console.log("PROMPT RESULT:", JSON.stringify(res));
+} catch (e) {
+  console.error("ERROR:", JSON.stringify(e));
+  rec("client-error", e);
+} finally {
+  clearTimeout(timeout);
+  log.end();
+  child.kill("SIGTERM");
+  setTimeout(() => process.exit(0), 300);
+}

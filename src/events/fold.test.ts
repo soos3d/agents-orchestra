@@ -241,6 +241,112 @@ describe("fold", () => {
     });
   });
 
+  // The one door through the freeze (§3). A replan may *ask*; only an approved
+  // `criteria_change_resolved` moves the contract, and the fold is where it moves —
+  // defect 29 was a mission parked at that door with nothing on the other side of it.
+  describe("a criteria change", () => {
+    const amend = (statement: string): EventInput => ({
+      ...orchestrator,
+      type: "criteria_change_requested",
+      diff: [
+        {
+          op: "amend",
+          criterionId: "c1",
+          from: aCriterion(),
+          to: aCriterion({ statement }),
+          reason: "the endpoint returns a build sha as well",
+        },
+      ],
+      reasoning: "the criterion as written cannot be met by any plan",
+    });
+
+    test("a request opens an inbox item and leaves the criteria alone", () => {
+      const state = foldOf([...signedOff(), amend("something easier")]);
+
+      assert.equal(state.mission.ledger.criteria[0]!.statement, aCriterion().statement);
+      assert.equal(state.inbox.filter((item) => item.kind === "criteria_change").length, 1);
+      assert.deepEqual(state.pendingCriteriaChange?.diff[0]?.op, "amend");
+    });
+
+    test("an approved change applies the diff and closes the item", () => {
+      const state = foldOf([
+        ...signedOff(),
+        amend("GET /health returns 200 and a build sha"),
+        { ...orchestrator, actor: "human", type: "criteria_change_resolved", approved: true },
+      ]);
+
+      assert.equal(state.mission.ledger.criteria[0]!.statement, "GET /health returns 200 and a build sha");
+      assert.equal(state.pendingCriteriaChange, undefined);
+      assert.equal(state.inbox[0]?.resolvedAt !== undefined, true);
+    });
+
+    // The rejection is the answer §3 asks for: the contract stands, and the loop
+    // carries on being judged against what the human approved.
+    test("a rejected change leaves the criteria exactly as signed off", () => {
+      const state = foldOf([
+        ...signedOff(),
+        amend("something easier"),
+        { ...orchestrator, actor: "human", type: "criteria_change_resolved", approved: false },
+      ]);
+
+      assert.equal(state.mission.ledger.criteria[0]!.statement, aCriterion().statement);
+      assert.equal(state.pendingCriteriaChange, undefined);
+    });
+
+    // Replay rule 1 applied to the freeze: after an approved change the *new* criteria
+    // are the frozen ones, so a later revision that restates them is legal and one
+    // that quietly reverts them is not.
+    test("the applied criteria are what the freeze then protects", () => {
+      const approved = [
+        ...signedOff(),
+        amend("GET /health returns 200 and a build sha"),
+        { ...orchestrator, actor: "human", type: "criteria_change_resolved", approved: true },
+      ] as EventInput[];
+
+      const legal = foldOf([
+        ...approved,
+        {
+          ...orchestrator,
+          type: "ledger_revised",
+          reason: "replan",
+          ledger: {
+            ...emptyLedger(),
+            criteria: [aCriterion({ statement: "GET /health returns 200 and a build sha" })],
+          },
+        },
+      ]);
+      assert.equal(legal.mission.ledger.criteria.length, 1);
+
+      assert.throws(
+        () =>
+          foldOf([
+            ...approved,
+            {
+              ...orchestrator,
+              type: "ledger_revised",
+              reason: "replan",
+              ledger: { ...emptyLedger(), criteria: [aCriterion()] },
+            },
+          ]),
+        /may not revise the contract/,
+      );
+    });
+
+    // A resolution with nothing pending is a log that says a decision was taken about
+    // a change nobody requested. Quietly ignoring it would let a stray event look like
+    // an applied contract change.
+    test("a resolution with nothing pending raises", () => {
+      assert.throws(
+        () =>
+          foldOf([
+            ...signedOff(),
+            { ...orchestrator, actor: "human", type: "criteria_change_resolved", approved: true },
+          ]),
+        /no criteria change was pending/,
+      );
+    });
+  });
+
   // §6's rule, and the reason memory is worth having at all: a fact recalled from the
   // lore store enters the ledger tier the planner trusts, a stale one enters as a
   // guess, and both survive a resume because the recall is an event rather than a

@@ -76,7 +76,7 @@ describe("synthesizeTasks", () => {
 
     await synthesizeTasks(deps(store, calls), [aPlannedTask()], 0);
 
-    assert.deepEqual(seen[0]!.transports, ["cli"]);
+    assert.deepEqual(seen[0]!.transports, ["cli", "acp"]);
   });
 
   // Prior art, not a roster (§7). Passing them is the whole of the mechanism; what
@@ -151,14 +151,14 @@ describe("synthesizeTasks", () => {
     const store = testStore([missionCreated()]);
     const { calls } = scriptedSynthesize([
       anAgentSpec({ transport: { id: "agent-sdk" } }),
-      anAgentSpec({ transport: { id: "acp" } }),
+      anAgentSpec({ transport: { id: "chrome-mcp" } }),
     ]);
 
     await assert.rejects(
       () => synthesizeTasks(deps(store, calls), [aPlannedTask()], 0),
       (error: Error) => {
         assert.ok(error instanceof UnavailableTransportError);
-        assert.match(error.message, /acp/);
+        assert.match(error.message, /chrome-mcp/);
         // §2a rule 5: the message names the fix.
         assert.match(error.message, /cli/);
         return true;
@@ -289,8 +289,8 @@ describe("synthesis against the envelope", () => {
   test("does not ask the human about a transport it can replan around", async () => {
     const store = testStore([missionCreated()]);
     const { calls } = scriptedSynthesize([
-      anAgentSpec({ transport: { id: "acp" } }),
-      anAgentSpec({ transport: { id: "acp" } }),
+      anAgentSpec({ transport: { id: "chrome-mcp" } }),
+      anAgentSpec({ transport: { id: "chrome-mcp" } }),
     ]);
 
     await assert.rejects(() => synthesizeTasks(deps(store, calls), [aPlannedTask()], 0));
@@ -495,7 +495,10 @@ describe("what the callers catch", () => {
     const store = testStore([missionCreated()]);
 
     for (const specs of [
-      [anAgentSpec({ transport: { id: "acp" } }), anAgentSpec({ transport: { id: "acp" } })],
+      [
+        anAgentSpec({ transport: { id: "chrome-mcp" } }),
+        anAgentSpec({ transport: { id: "chrome-mcp" } }),
+      ],
       [anAgentSpec({ owns: [] }), anAgentSpec({ owns: [] })],
       [anAgentSpec({ tools: ["Nope"] }), anAgentSpec({ tools: ["Nope"] })],
     ]) {

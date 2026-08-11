@@ -5,6 +5,7 @@
 // that cannot tell you what to type next has not helped.
 import fs from "node:fs";
 import path from "node:path";
+import { runnableAcpTargets } from "../workers/availability.js";
 import { type DiscoveredConfig } from "./discover.js";
 
 export type CheckLevel = "ok" | "warn" | "fail";
@@ -74,6 +75,48 @@ function checkAgents(config: DiscoveredConfig): Check {
     level: "fail",
     detail: "no coding agent on PATH",
     fix: "npm i -g @anthropic-ai/claude-code && claude   # log in once, then quit",
+  };
+}
+
+/**
+ * What can run over ACP on this machine (§12), which is the question synthesis is
+ * actually asked at staffing time — `availableTransports` computes the offer and this
+ * line is the same computation made visible.
+ *
+ * A warning rather than a failure when nothing qualifies: `cli` is the fallback path and
+ * a mission runs without ACP. The `workers` check has already gone red in that case, so
+ * this never fires alone.
+ */
+function checkAcp(config: DiscoveredConfig): Check {
+  const targets = runnableAcpTargets(config);
+  if (targets.length > 0) {
+    return { name: "acp", level: "ok", detail: `${targets.join(", ")} (adapters fetched by npx)` };
+  }
+  return {
+    name: "acp",
+    level: "warn",
+    detail: "no agent with a pinned ACP adapter on PATH — workers fall back to the cli transport",
+    fix: "npm i -g @anthropic-ai/claude-code && claude   # log in once, then quit",
+  };
+}
+
+/**
+ * OpenCode, reported and never required.
+ *
+ * ROADMAP Phase 7 names it as the first protocol-native ACP target, arriving for free
+ * once the transport exists — and free still means *probed*. Being on PATH is worth
+ * saying; it is not an `acp` target until a session against a real binary has been
+ * captured into `acp-transcripts/`, so this line never claims one and never fails
+ * (§2a: an optional extra that can fail `doctor` is a prerequisite wearing a disguise).
+ */
+function checkOpenCode(config: DiscoveredConfig): Check {
+  const present = (config.optionalAgents ?? []).includes("opencode");
+  return {
+    name: "opencode",
+    level: "ok",
+    detail: present
+      ? "on PATH — optional; not yet an acp target, its launch is uncaptured"
+      : "not installed — optional extra, nothing here needs it",
   };
 }
 
@@ -167,6 +210,8 @@ export function doctor(
     checkRepo(config),
     checkVerify(config),
     checkAgents(config),
+    checkAcp(config),
+    checkOpenCode(config),
     checkStateDir(config),
     checkIgnored(config),
     checkChannel(config.gatewayUrl),

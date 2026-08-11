@@ -9,7 +9,9 @@ import { git, resolveSha, tryGit } from "./repo.js";
 export type MergeOutcome =
   | { status: "merged"; branch: string; resultSha: string }
   | { status: "conflicted"; branch: string; files: string[]; message: string }
-  | { status: "base_moved"; branch: string; expected: string; actual: string; message: string };
+  | { status: "base_moved"; branch: string; expected: string; actual: string; message: string }
+  /** The branch carries no commits, so there is nothing to merge (defect 31). */
+  | { status: "empty"; branch: string; message: string };
 
 export interface MergeRequest {
   branch: string;
@@ -48,6 +50,24 @@ async function performMerge(repo: string, request: MergeRequest): Promise<MergeO
         `${into} moved from ${expectedBaseSha.slice(0, 8)} to ${actual.slice(0, 8)} since ` +
         `'${branch}' was cut. Rebase the task's worktree onto ${actual.slice(0, 8)} and verify ` +
         `again before merging — merging now would revert whatever landed in between.`,
+    };
+  }
+
+  // An empty merge is a failure, not a success (defect 31). `git merge` answers
+  // "Already up to date" and exits 0 for a branch that never got a commit, so the log
+  // would carry `merge_completed` with a result sha identical to the base while the
+  // worker's work sat uncommitted in a worktree about to be removed. Counted here
+  // rather than by comparing shas, because a branch may legitimately be behind for
+  // other reasons and "no commits of its own" is the fact we mean.
+  const ahead = await git(repo, ["rev-list", "--count", `${into}..${branch}`]);
+  if (Number(ahead) === 0) {
+    return {
+      status: "empty",
+      branch,
+      message:
+        `'${branch}' has no commits of its own, so there is nothing to merge into ` +
+        `${into} — the work was never committed. Its worktree is left in place: check ` +
+        `what the worker wrote before re-running the task.`,
     };
   }
 

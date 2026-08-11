@@ -64,7 +64,31 @@ export function parseCommand(command: string): ParsedCommand {
  * Whether a command needs a shell to mean what it says. Callers use this to fail
  * with an actionable message rather than silently running `npm test | tee log` as a
  * program called `npm` with a literal `|` argument.
+ *
+ * Quote-aware, and that is defect 34: a raw regex over the whole string read the
+ * `=>` inside `node -e "m => m.clamp"` as a redirect and refused a command that
+ * runs fine as a program with arguments. Metacharacters only mean shell when they
+ * appear outside quotes, so this walks the same quote/escape states parseCommand
+ * does. An unbalanced quote returns true — parseCommand will refuse it with the
+ * better message either way.
  */
 export function needsShell(command: string): boolean {
-  return SHELL_METACHARACTERS.test(command);
+  let quote: '"' | "'" | undefined;
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i];
+    if (quote === undefined && (char === '"' || char === "'")) {
+      quote = char;
+      continue;
+    }
+    if (quote !== undefined && char === quote) {
+      quote = undefined;
+      continue;
+    }
+    if (char === "\\" && quote !== "'" && i + 1 < command.length) {
+      i++;
+      continue;
+    }
+    if (quote === undefined && SHELL_METACHARACTERS.test(char)) return true;
+  }
+  return quote !== undefined;
 }

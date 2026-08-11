@@ -8,13 +8,22 @@
 // So the graph is checked before a single agent is synthesized, and a rejection
 // quotes the offending edge because the planner's one structured-return retry is
 // worthless without it.
-import { type PlannedTask } from "../domain/ledger.js";
+import { type Criterion, type PlannedTask } from "../domain/ledger.js";
 
 export type PlanValidation =
   | { ok: true; order: string[] }
   | { ok: false; message: string };
 
-export function validatePlan(plan: readonly PlannedTask[]): PlanValidation {
+/**
+ * @param criteria The contract this plan is supposed to satisfy. Optional because the
+ * graph checks stand alone, and supplied by every real caller — a plan that orphans a
+ * criterion is as unrunnable as one with a cycle, just later and less visibly
+ * (defect 32).
+ */
+export function validatePlan(
+  plan: readonly PlannedTask[],
+  criteria: readonly Criterion[] = [],
+): PlanValidation {
   const duplicate = firstDuplicateId(plan);
   if (duplicate) {
     return {
@@ -36,6 +45,25 @@ export function validatePlan(plan: readonly PlannedTask[]): PlanValidation {
           `Either add that task or drop the edge.`,
       };
     }
+  }
+
+  // Checked after the graph, because an unschedulable plan is the more basic problem
+  // and quoting one rejection at a time is what makes the planner's single retry
+  // usable (§3).
+  const orphaned = criteria.filter(
+    (criterion) =>
+      criterion.met !== true && !plan.some((task) => task.satisfies.includes(criterion.id)),
+  );
+  if (orphaned.length > 0) {
+    const named = orphaned.map((criterion) => `'${criterion.id}' (${criterion.statement})`);
+    return {
+      ok: false,
+      message:
+        `No task in the plan satisfies ${named.join(", ")}. A criterion is checked when ` +
+        `the last task listing it in 'satisfies' lands, so one no task claims can never ` +
+        `be checked and the mission can never complete. Add work for it, or list it on ` +
+        `the task that already covers it.`,
+    };
   }
 
   const sorted = topologicalOrder(plan);
