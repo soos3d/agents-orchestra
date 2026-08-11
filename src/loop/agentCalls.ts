@@ -28,6 +28,7 @@
 //   exception is `judge`, which §3 requires to read artifacts rather than the
 //   worker's report — read-only, and asserted against every other call getting none.
 //   See `JUDGE_TOOLS`.
+import path from "node:path";
 import { z } from "zod";
 import { type DiscoveredConfig } from "../config/discover.js";
 import { evidenceSchema } from "../domain/artifacts.js";
@@ -60,6 +61,8 @@ export type RunQuery = (input: {
   /** Empty for every call but `judge` — see `JUDGE_TOOLS`. */
   tools?: string[];
   maxTurns?: number;
+  /** Absolute directories the call may read outside the process cwd — `judge` only. */
+  directories?: readonly string[];
   signal?: AbortSignal;
 }) => Promise<{ text: string; spend: Spend }>;
 
@@ -98,6 +101,28 @@ export const JUDGE_TOOLS = ["Read", "Glob", "Grep"];
 /** Reading N artifacts is a loop; answering from the prompt is not. */
 export const JUDGE_MAX_TURNS = 20;
 
+/**
+ * The directories a judge is allowed to read, derived from the artifacts it was handed.
+ *
+ * Defect 40, and the third layer of one wound: defect 22 gave the judge tools, 33 and 39
+ * gave it paths that resolve, and it still could not open them — a task's artifacts live
+ * in its worktree, which is not under the orchestrator's cwd, and the Agent SDK refuses
+ * a `Read` outside it. The judge reported exactly that and returned `met: false`, which
+ * is the only honest answer available to it and fails work that was done correctly.
+ *
+ * Derived rather than configured, and that is the security argument as well as the
+ * convenience one: the grant is exactly the directories of the files this criterion is
+ * about, so a judge cannot wander. Relative paths are dropped — `additionalDirectories`
+ * wants absolute ones, and by the time a path reaches here `artifactPaths` has already
+ * resolved everything it could against the check's cwd.
+ */
+export function readableDirectories(artifactPaths: readonly string[]): string[] {
+  const dirs = artifactPaths
+    .filter((candidate) => path.isAbsolute(candidate))
+    .map((candidate) => path.dirname(candidate));
+  return [...new Set(dirs)];
+}
+
 export function createAgentCalls(deps: AgentCallsDeps): Calls {
   const run = deps.runQuery ?? runViaAgentSdk;
   const model = deps.config.orchestratorModel;
@@ -111,6 +136,7 @@ export function createAgentCalls(deps: AgentCallsDeps): Calls {
       model?: string;
       tools?: string[];
       maxTurns?: number;
+      directories?: readonly string[];
     },
   ): Promise<T> => {
     const systemPrompt = withSchema(spec.systemPrompt, spec.schema);
@@ -122,6 +148,7 @@ export function createAgentCalls(deps: AgentCallsDeps): Calls {
         model: spec.model ?? model,
         tools: spec.tools ?? [],
         maxTurns: spec.maxTurns ?? MAX_TURNS,
+        ...(spec.directories ? { directories: spec.directories } : {}),
         ...(deps.signal ? { signal: deps.signal } : {}),
       });
       deps.onSpend?.(call, result.spend);
@@ -186,6 +213,7 @@ export function createAgentCalls(deps: AgentCallsDeps): Calls {
         schema: judgeSchema,
         tools: JUDGE_TOOLS,
         maxTurns: JUDGE_MAX_TURNS,
+        directories: readableDirectories(input.artifactPaths),
       }),
   };
 }
@@ -492,10 +520,18 @@ export function queryOptions(spec: {
   model: string;
   tools?: string[];
   maxTurns?: number;
+  directories?: readonly string[];
 }) {
   return {
     model: spec.model,
     systemPrompt: spec.systemPrompt,
+    // Where the judge is allowed to read, and nowhere else is (defect 40). A task's
+    // artifacts live in its *worktree*, which is not under the orchestrator's cwd, so
+    // a judge handed correct absolute paths still had every `Read` refused — it said
+    // so, returned `met: false`, and failed correct work, which is the right call from
+    // an impossible position. Empty for every call but `judge`: the other five have no
+    // tools at all, so granting them a directory would widen nothing and mean nothing.
+    ...(spec.directories?.length ? { additionalDirectories: [...spec.directories] } : {}),
     // Headroom, not a budget. `maxTurns: 1` reads like "one question, one answer" and
     // is not what it counts: a real `research` call came back `error_max_turns` at
     // num_turns 2 having produced nothing, because a long structured answer spans
@@ -519,6 +555,7 @@ const runViaAgentSdk: RunQuery = async ({
   model,
   tools,
   maxTurns,
+  directories,
   signal,
 }) => {
   // Imported lazily so `--plan-only` against a supplied Calls, and every test above
@@ -537,6 +574,7 @@ const runViaAgentSdk: RunQuery = async ({
         model,
         ...(tools ? { tools } : {}),
         ...(maxTurns ? { maxTurns } : {}),
+        ...(directories ? { directories } : {}),
       }),
       abortController: controller,
     },

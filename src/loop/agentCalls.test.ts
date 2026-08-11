@@ -12,6 +12,7 @@ import {
   MAX_TURNS,
   PROGRESS_MODEL,
   queryOptions,
+  readableDirectories,
   type RunQuery,
 } from "./agentCalls.js";
 import { type ProgressInput } from "./calls.js";
@@ -55,6 +56,51 @@ describe("queryOptions", () => {
 
     assert.deepEqual(options.tools, ["Read"]);
   });
+
+  // Defect 40. A judge with `Read` and a correct absolute path still had every open
+  // refused, because the path was outside the process cwd. The SDK's option for it is
+  // `additionalDirectories`, and the name is asserted here for the same reason
+  // `allowedTools` is above: getting it wrong fails silently and looks like a model
+  // that would not read.
+  test("passes the readable directories a judge needs, under the SDK's own name", () => {
+    const options = queryOptions({
+      systemPrompt: "s",
+      prompt: "p",
+      model: "opus",
+      tools: ["Read"],
+      directories: ["/work/wt/src"],
+    });
+
+    assert.deepEqual(options.additionalDirectories, ["/work/wt/src"]);
+  });
+
+  test("omits the field entirely when there is nowhere extra to read", () => {
+    assert.equal(
+      "additionalDirectories" in queryOptions({ systemPrompt: "s", prompt: "p", model: "opus" }),
+      false,
+    );
+  });
+});
+
+describe("readableDirectories", () => {
+  test("is the set of directories holding the artifacts, deduplicated", () => {
+    assert.deepEqual(
+      readableDirectories(["/a/b/one.js", "/a/b/two.js", "/a/three.md"]),
+      ["/a/b", "/a"],
+    );
+  });
+
+  // `additionalDirectories` wants absolute paths, and by the time one reaches here
+  // `artifactPaths` has resolved everything it could against the check's cwd. A
+  // leftover relative path would resolve against the process cwd, which is the
+  // directory this whole chain of defects was about.
+  test("drops a relative path rather than resolving it somewhere arbitrary", () => {
+    assert.deepEqual(readableDirectories(["notes.md", "/a/b/one.js"]), ["/a/b"]);
+  });
+
+  test("grants nothing when the judge was handed nothing", () => {
+    assert.deepEqual(readableDirectories([]), []);
+  });
 });
 
 // §3 says a judge reads artifacts rather than the worker's report, and `JudgeInput`
@@ -94,12 +140,32 @@ describe("the judge's exemption from the no-tools rule", () => {
     );
   });
 
+  // Defect 40, and the third layer of one wound: 22 gave the judge tools, 33 and 39
+  // gave it paths that resolve, and it still could not open them. A task's artifacts
+  // live in its worktree, which is not under the orchestrator's cwd, and the SDK
+  // refuses a `Read` outside it — so a real judge answered "every Read call failed
+  // with a permission error", returned `met: false`, and failed correct work. The
+  // only honest answer available to it, from an impossible position.
+  test("is granted the directories the artifacts it was handed live in", async () => {
+    const { run, seen } = transport([JSON.stringify({ met: true, evidence: aJudgeEvidence() })]);
+
+    await createAgentCalls({ config, runQuery: run }).judge({
+      ...aJudgeInput(),
+      artifactPaths: ["/work/wt/src/clamp.js", "/work/wt/src/index.js", "/work/wt/NOTES.md"],
+    });
+
+    // The directories of those files and nothing wider: the grant is exactly what this
+    // criterion is about, so a judge cannot wander.
+    assert.deepEqual(seen.directories[0], ["/work/wt/src", "/work/wt"]);
+  });
+
   test("every other decision point still gets none", async () => {
     const { run, seen } = transport([JSON.stringify(aProgressLedger())]);
 
     await createAgentCalls({ config, runQuery: run }).progress(aProgressInput());
 
     assert.deepEqual(seen.tools[0], []);
+    assert.deepEqual(seen.directories[0], [], "a call with no tools has nothing to grant");
   });
 });
 
@@ -115,19 +181,28 @@ interface Recorded {
   systemPrompts: string[];
   tools: string[][];
   maxTurns: number[];
+  directories: (readonly string[])[];
 }
 
 /** Answers in order, recording what it was asked. */
 function transport(answers: readonly string[]): { run: RunQuery; seen: Recorded } {
-  const seen: Recorded = { prompts: [], models: [], systemPrompts: [], tools: [], maxTurns: [] };
+  const seen: Recorded = {
+    prompts: [],
+    models: [],
+    systemPrompts: [],
+    tools: [],
+    maxTurns: [],
+    directories: [],
+  };
   let index = 0;
 
-  const run: RunQuery = async ({ prompt, model, systemPrompt, tools, maxTurns }) => {
+  const run: RunQuery = async ({ prompt, model, systemPrompt, tools, maxTurns, directories }) => {
     seen.prompts.push(prompt);
     seen.models.push(model);
     seen.systemPrompts.push(systemPrompt);
     seen.tools.push(tools ?? []);
     seen.maxTurns.push(maxTurns ?? 0);
+    seen.directories.push(directories ?? []);
     const text = answers[index++];
     if (text === undefined) throw new Error(`transport ran out of answers at call ${index}`);
     return { text, spend: someSpend() };
