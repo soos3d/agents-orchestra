@@ -31,7 +31,10 @@ of a human). Underneath it, `runtime/duplex.ts` is the framed stdio child; above
 `--dangerously-skip-permissions` — the `cli` fallback still passes it, and that is the reason to
 migrate off it. **Five real missions have run over ACP** (2026-08-10): tasks completed first-attempt
 over `acp/claude`, with real commits, merges, and criterion checks — and the runs surfaced defects
-28–35, all fixed. No mission has yet gone brief→`complete` uninterrupted; that is the standing check.
+28–35, all fixed. **Run 8 (2026-08-11) went brief→`complete` uninterrupted** — the standing check,
+met: six synthesized agents, six first-attempt tasks, five real merges, nine criteria `met` with
+evidence. Runs 6–8 cost defects 36–41, five fixed and one open (41: a non-`code` worker editing the
+repo leaves its work uncommitted, and the criteria grade it anyway).
 
 **Phase 6 also added `src/channel/`** — the carrier-independent trust core (§17): `trust.ts` (
 single-use nonce, bound sender identity, replay-approves-once as a property of the store),
