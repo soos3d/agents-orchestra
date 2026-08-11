@@ -1,0 +1,109 @@
+// A bare stdio MCP client: spawn a server, handshake, list tools, optionally call some,
+// and write every frame both ways to a transcript. Deliberately dependency-free and
+// deliberately not sharing code with src/ — the capture must come from the wire, not
+// from our idea of it (the acp-transcripts precedent).
+import { spawn } from "node:child_process";
+import fs from "node:fs";
+import process from "node:process";
+
+const [, , outPath, command, ...args] = process.argv;
+if (!outPath || !command) {
+  console.error("usage: mcp-capture.mjs <out.jsonl> <command> [args...]");
+  process.exit(2);
+}
+
+const frames = [];
+const record = (dir, frame) => frames.push({ dir, at: Date.now(), frame });
+
+const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env } });
+
+let rest = "";
+const pending = new Map();
+let nextId = 1;
+
+child.stdout.on("data", (d) => {
+  rest += d.toString();
+  for (;;) {
+    const nl = rest.indexOf("\n");
+    if (nl < 0) break;
+    const line = rest.slice(0, nl).trim();
+    rest = rest.slice(nl + 1);
+    if (!line) continue;
+    let frame;
+    try {
+      frame = JSON.parse(line);
+    } catch {
+      record("stdout-nonjson", line);
+      continue;
+    }
+    record("in", frame);
+    const waiter = pending.get(frame.id);
+    if (waiter) {
+      pending.delete(frame.id);
+      waiter(frame);
+    }
+  }
+});
+
+const stderr = [];
+child.stderr.on("data", (d) => stderr.push(d.toString()));
+
+const send = (frame) => {
+  record("out", frame);
+  child.stdin.write(JSON.stringify(frame) + "\n");
+};
+
+const request = (method, params) =>
+  new Promise((resolve, reject) => {
+    const id = nextId++;
+    pending.set(id, resolve);
+    send({ jsonrpc: "2.0", id, method, params });
+    setTimeout(() => reject(new Error(`timeout on ${method}`)), 90_000).unref();
+  });
+
+const notify = (method, params) => send({ jsonrpc: "2.0", method, params });
+
+const finish = (note) => {
+  fs.writeFileSync(
+    outPath,
+    frames.map((f) => JSON.stringify(f)).join("\n") + "\n",
+  );
+  fs.writeFileSync(outPath + ".stderr.txt", stderr.join(""));
+  console.log(note);
+  child.kill("SIGTERM");
+  setTimeout(() => child.kill("SIGKILL"), 2000).unref();
+};
+
+try {
+  const init = await request("initialize", {
+    protocolVersion: "2025-06-18",
+    capabilities: {},
+    clientInfo: { name: "fable-orchestra-spike", version: "0.0.0" },
+  });
+  console.log("initialize →", JSON.stringify(init.result?.serverInfo ?? init.error));
+  console.log("protocolVersion:", init.result?.protocolVersion);
+
+  notify("notifications/initialized", {});
+
+  const tools = await request("tools/list", {});
+  const list = tools.result?.tools ?? [];
+  console.log(`tools/list → ${list.length} tools`);
+  for (const t of list) console.log(`  ${t.name}`);
+
+  // Anything after this is scripted by the caller through a JSON file of calls.
+  const callsPath = process.env.MCP_CALLS;
+  if (callsPath && fs.existsSync(callsPath)) {
+    for (const call of JSON.parse(fs.readFileSync(callsPath, "utf8"))) {
+      const started = Date.now();
+      const res = await request("tools/call", call);
+      console.log(
+        `tools/call ${call.name} → ${res.error ? "error " + res.error.message : "ok"} (${Date.now() - started}ms)`,
+      );
+    }
+  }
+
+  finish(`wrote ${frames.length} frames to ${outPath}`);
+} catch (error) {
+  finish(`FAILED: ${error.message} — wrote ${frames.length} frames`);
+  process.exitCode = 1;
+}

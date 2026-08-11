@@ -122,6 +122,44 @@ describe("createVerifier", () => {
       assert.equal(seen[0]?.check.rubric, "the brief answers the question");
     });
 
+    // Defect 39, and the reason this test sits next to defect 33's: same bug, other
+    // branch. A worker reports what it wrote the way it thinks of it — relative to the
+    // directory it was given, which is its worktree. Passed through verbatim, the path
+    // resolved against whatever the orchestrator process was sitting in, the judge read
+    // "File does not exist", and it failed a correctly-written report. Found on a
+    // mission; the suite's fixtures all used absolute paths, which `resolve` leaves
+    // alone and which is why nothing here noticed.
+    test("a relative document path is resolved against the check's cwd too (defect 39)", async () => {
+      const seen: JudgeInput[] = [];
+      const verify = createVerifier({
+        calls: {
+          judge: async (input) => {
+            seen.push(input);
+            return {
+              met: true,
+              evidence: { artifactIds: [], checkOutput: "", reasoning: "read it", byTask: [] },
+            };
+          },
+        },
+      });
+
+      await verify(
+        { kind: "judge", rubric: "the report covers the conventions" },
+        context({
+          cwd: "/tmp/worktrees/t1",
+          artifacts: [
+            { kind: "document", id: "a1", path: "CONVENTIONS.md", summary: "recon" },
+            { kind: "document", id: "a2", path: "/tmp/elsewhere/absolute.md", summary: "already absolute" },
+          ],
+        }),
+      );
+
+      assert.deepEqual(seen[0]?.artifactPaths, [
+        "/tmp/worktrees/t1/CONVENTIONS.md",
+        "/tmp/elsewhere/absolute.md",
+      ]);
+    });
+
     test("a diff artifact's files reach the judge resolved against the check's cwd (defect 33)", async () => {
       // A code worker's artifact is a diff, which has no path of its own. Dropping it
       // handed the judge an empty list, and a judge with no paths reads the repo —

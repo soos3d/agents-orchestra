@@ -93,15 +93,27 @@ async function runCommand(
   };
 }
 
-/** Only artifacts that resolve to a file on disk. A `diff` artifact carries no path
- *  of its own, but the files it names exist in the tree the check runs against —
- *  dropping them handed the judge an empty list on every code task, and a judge with
- *  no paths "inspects the repository" and reads main, where unmerged work does not
- *  exist yet (defect 33). Resolved against `cwd`: the worktree for a task check, the
- *  repo for a criterion check, which is the §4 timing made concrete. */
+/**
+ * Only artifacts that resolve to a file on disk, **every one of them against `cwd`** —
+ * the worktree for a task check, the repo for a criterion check, which is the §4
+ * timing made concrete.
+ *
+ * A `diff` artifact carries no path of its own, and dropping the files it names handed
+ * the judge an empty list on every code task; a judge with no paths "inspects the
+ * repository" and reads main, where unmerged work does not exist yet (defect 33).
+ *
+ * Resolving the *other* kinds is defect 39, which is the same bug one branch over and
+ * was found the same way — on a mission, not in the suite. A worker reports what it
+ * wrote the way it thinks of it, which is relative to the directory it was given, and
+ * that directory is its worktree. Passed through verbatim, `CLAMP_CONVENTIONS.md`
+ * resolves against whatever the orchestrator's process happens to be sitting in, the
+ * judge reads "File does not exist", and it fails the task — correctly, and on work
+ * that was done correctly. `path.resolve` leaves an absolute path alone, so a worker
+ * that reported one still gets what it meant.
+ */
 export function artifactPaths(artifacts: readonly Artifact[], cwd: string): string[] {
   return artifacts.flatMap((artifact) => {
-    if ("path" in artifact) return [artifact.path];
+    if ("path" in artifact) return [path.resolve(cwd, artifact.path)];
     if (artifact.kind === "diff") return artifact.files.map((f) => path.resolve(cwd, f));
     return [];
   });
