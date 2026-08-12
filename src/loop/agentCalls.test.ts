@@ -443,6 +443,32 @@ describe("createAgentCalls", () => {
       assert.equal(seen.prompts.length, 2);
       assert.match(error.message, /cannot continue on an unparseable answer/);
     });
+
+    // P4. "did not return its schema" says the answer did not parse and never says
+    // what it was, so the one thing that identifies the cause — a refusal, a wrapped
+    // fence, a truncation — was discarded at the point of failure. A worker report
+    // has carried its raw text since Phase 1a for the same reason.
+    test("quotes what the model actually said", async () => {
+      const { run } = transport(["nope", "still nope"]);
+      const calls = createAgentCalls({ config, runQuery: run });
+
+      const error = (await calls.progress(aProgressInput()).catch((e: unknown) => e)) as CallFormatError;
+
+      assert.match(error.message, /still nope/);
+      assert.equal(error.raw, "still nope");
+    });
+
+    test("bounds a long reply rather than putting the whole transcript in an error", async () => {
+      const long = `${"x".repeat(9_000)}THE-END`;
+      const { run } = transport([long, long]);
+      const calls = createAgentCalls({ config, runQuery: run });
+
+      const error = (await calls.progress(aProgressInput()).catch((e: unknown) => e)) as CallFormatError;
+
+      assert.ok(error.message.length < 6_000, "the message carries a tail, not the reply");
+      // The tail, because the end of a reply is where a truncation shows.
+      assert.match(error.message, /THE-END$/);
+    });
   });
 
   describe("each decision point validates its own return", () => {

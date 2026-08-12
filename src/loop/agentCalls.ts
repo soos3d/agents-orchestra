@@ -164,7 +164,9 @@ export function createAgentCalls(deps: AgentCallsDeps): Calls {
         ...(deps.signal ? { signal: deps.signal } : {}),
       });
       deps.onSpend?.(call, result.spend);
-      return validate(result.text, spec.schema);
+      // The raw text rides along so a rejection can quote it (P4). Discarded on the
+      // happy path by the caller, which only reads `value`.
+      return { ...validate(result.text, spec.schema), raw: result.text };
     };
 
     const first = await attempt(spec.prompt);
@@ -178,7 +180,7 @@ export function createAgentCalls(deps: AgentCallsDeps): Calls {
     );
     if ("value" in second) return second.value;
 
-    throw new CallFormatError(call, second.problem);
+    throw new CallFormatError(call, second.problem, second.raw);
   };
 
   return {
@@ -252,16 +254,38 @@ function withSchema(systemPrompt: string, schema: z.ZodType<unknown>): string {
   );
 }
 
+/**
+ * The last thing a decision-point reply is worth: a bounded tail of it (P4).
+ *
+ * Deliberately not `tail` from `workers/transport.ts`. That constant is sized for a
+ * worker's final message and importing it would tie the loop's error text to the
+ * worker layer's reformat budget — two numbers that answer different questions and
+ * would then have to move together. 4_000 characters is more than any decision-point
+ * reply needs to be recognisable.
+ */
+const RAW_REPLY_LIMIT = 4_000;
+
+const quotedTail = (raw: string): string =>
+  raw.length <= RAW_REPLY_LIMIT ? raw : `…${raw.slice(-RAW_REPLY_LIMIT)}`;
+
 export class CallFormatError extends Error {
   readonly call: keyof Calls;
+  /** What the model actually said, bounded. Empty only if it said nothing. */
+  readonly raw: string;
 
-  constructor(call: keyof Calls, problem: string) {
+  // `problem` alone says the answer did not parse and never says what the answer was,
+  // so the one thing that would identify the cause — a refusal, a wrapped fence, a
+  // truncation — was thrown away at the point of failure (P4). `WorkerReportError`
+  // has carried its raw text since Phase 1a for exactly this reason.
+  constructor(call: keyof Calls, problem: string, raw = "") {
     super(
       `The '${call}' decision point did not return its schema after one reformat ` +
-        `attempt: ${problem}. The loop cannot continue on an unparseable answer.`,
+        `attempt: ${problem}. The loop cannot continue on an unparseable answer.` +
+        (raw ? `\n\nWhat it said:\n${quotedTail(raw)}` : ""),
     );
     this.name = "CallFormatError";
     this.call = call;
+    this.raw = raw;
   }
 }
 
