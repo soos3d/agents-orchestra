@@ -18,6 +18,7 @@ import { type EventInput } from "../events/schema.js";
 import { promotable, readyTasks, standstill } from "../scheduler/ready.js";
 import { validatePlan } from "../scheduler/validate.js";
 import { type Calls } from "./calls.js";
+import { shouldCheckCriterion } from "./criteria.js";
 import { type DispatchOutcome } from "./dispatch.js";
 import { type ExtendRequest } from "./human.js";
 import { noteAsFact, pendingNotes } from "./notes.js";
@@ -359,6 +360,10 @@ async function applyPolicy(
  * mission produced zero `criterion_checked` events that way and could not have
  * completed. Work already `done` still counts as evidence even if the plan moved on:
  * it landed, and the criterion is about what landed.
+ *
+ * *Whether* to run a given check is `shouldCheckCriterion` (`criteria.ts`) — a pure
+ * decision, separately tested, because a false verdict that can never be revisited
+ * and a judge re-fired every round are opposite mistakes and both cost a mission.
  */
 async function checkCriteria(deps: LoopDeps, state: MissionState, round: number): Promise<void> {
   const planned = new Set(state.mission.ledger.plan.map((task) => task.id));
@@ -368,7 +373,6 @@ async function checkCriteria(deps: LoopDeps, state: MissionState, round: number)
   for (const criterion of state.mission.ledger.criteria) {
     const contributors = state.tasks.filter((task) => task.satisfies.includes(criterion.id));
     if (contributors.length === 0) continue;
-    if (criterion.lastCheckedRound === round) continue;
 
     const outstanding = contributors.filter(
       (task) => task.status !== "done" && current(task.id),
@@ -376,11 +380,7 @@ async function checkCriteria(deps: LoopDeps, state: MissionState, round: number)
     const landed = contributors.filter((task) => task.status === "done");
     const allDone = landed.length > 0 && outstanding.length === 0;
 
-    const firstTime = allDone && criterion.lastCheckedRound === undefined;
-    // Something that was done no longer is — a revert, a re-plan that added work, a
-    // task that had to be redone. Either way the basis for `met` has changed.
-    const invalidated = !allDone && criterion.met === true;
-    if (!firstTime && !invalidated) continue;
+    if (!shouldCheckCriterion({ criterion, allDone, landed, round })) continue;
 
     const result = await deps.checkCriterion(criterion, { tasks: landed, cwd: deps.cwd });
     deps.store.emit({

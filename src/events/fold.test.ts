@@ -112,6 +112,88 @@ describe("fold", () => {
       assert.equal(state.tasks[0].attempts, 2);
     });
 
+    // P1: a criterion checked `false` has to know whether anything landed since, and
+    // the only durable answer is which round each contributing task finished in.
+    // Same fold-derived shape as `attempts` — no new event, because `task_status`
+    // already carries the transition this reads.
+    test("records the round a task reached done in", () => {
+      const status = (from: string, to: string) => ({
+        ...orchestrator,
+        taskId: "t1",
+        type: "task_status" as const,
+        from,
+        to,
+        reason: "r",
+      });
+
+      const state = foldOf([
+        missionCreated(),
+        { ...orchestrator, type: "round_started", round: 4 },
+        { ...orchestrator, type: "task_planned", task: aCodeTask() },
+        status("todo", "running"),
+        status("running", "done"),
+      ] as EventInput[]);
+
+      assert.equal(state.tasks[0].completedRound, 4);
+    });
+
+    // Work redone after a revert lands in a later round, and a criterion re-check
+    // has to see the landing that is current rather than the one it already graded.
+    test("a task that is redone records the later round", () => {
+      const status = (from: string, to: string) => ({
+        ...orchestrator,
+        taskId: "t1",
+        type: "task_status" as const,
+        from,
+        to,
+        reason: "r",
+      });
+
+      const state = foldOf([
+        missionCreated(),
+        { ...orchestrator, type: "round_started", round: 2 },
+        { ...orchestrator, type: "task_planned", task: aCodeTask() },
+        status("todo", "running"),
+        status("running", "done"),
+        { ...orchestrator, type: "round_started", round: 5 },
+        status("done", "todo"),
+        status("todo", "running"),
+        status("running", "done"),
+      ] as EventInput[]);
+
+      assert.equal(state.tasks[0].completedRound, 5);
+    });
+
+    // A replan redefines a task whole (defect 26). Carrying the old completion round
+    // into the new definition would tell a criterion check that work it has never
+    // seen already landed.
+    test("a replan drops the completion round of the task it redefines", () => {
+      const status = (from: string, to: string) => ({
+        ...orchestrator,
+        taskId: "t1",
+        type: "task_status" as const,
+        from,
+        to,
+        reason: "r",
+      });
+
+      const state = foldOf([
+        missionCreated(),
+        { ...orchestrator, type: "round_started", round: 3 },
+        { ...orchestrator, type: "task_planned", task: aCodeTask() },
+        status("todo", "running"),
+        status("running", "done"),
+        {
+          ...orchestrator,
+          type: "task_replanned",
+          task: { ...aCodeTask(), goal: "narrower", status: "todo" },
+          reason: "the first attempt was too broad",
+        },
+      ] as EventInput[]);
+
+      assert.equal(state.tasks[0].completedRound, undefined);
+    });
+
     test("a status event for an unknown task is corruption", () => {
       assert.throws(
         () =>

@@ -321,7 +321,15 @@ const handlers: Handlers = {
   // that is running or done. A question that parked the old definition is moot for
   // the new one, so the association is dropped with it.
   task_replanned: (state, event) => {
-    patchTask(state, event.task.id, { ...event.task, updatedAt: event.at });
+    // `completedRound` is spelled out rather than left to the spread, because the
+    // event's task is a plan record and never carries one — and `patchTask` merges,
+    // so an omitted key would leave the old round standing on a task that has been
+    // redefined. A criterion check would then read work it has never seen as landed.
+    patchTask(state, event.task.id, {
+      ...event.task,
+      completedRound: event.task.completedRound,
+      updatedAt: event.at,
+    });
     const { [event.task.id]: _redefined, ...rest } = state.blockedBy;
     state.blockedBy = rest;
   },
@@ -335,7 +343,11 @@ const handlers: Handlers = {
       event.to === "running"
         ? { startedAt: event.at, attempts: (previous?.attempts ?? 0) + 1 }
         : isTerminal(event.to)
-          ? { endedAt: event.at }
+          ? // `done` is the only terminal status that records a round: `failed` and
+            // `cancelled` land nothing, and a criterion asks what landed. Redone work
+            // overwrites, so the round is always the current landing rather than the
+            // first (P1).
+            { endedAt: event.at, ...(event.to === "done" ? { completedRound: state.mission.round } : {}) }
           : {};
     patchTask(state, taskId, { status: event.to, updatedAt: event.at, ...timing });
     // A lease outlives the worker but not the task: holding it past completion

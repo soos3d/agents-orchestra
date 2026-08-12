@@ -65,6 +65,12 @@ const taskBase = {
   artifacts: z.array(artifactSchema),
   verify: verifySpecSchema,
   attempts: z.number().int().nonnegative(),
+  // The round this task last reached `done` in — folded, like `attempts`, from the
+  // `task_status` transition rather than from an event of its own. It is what lets a
+  // criterion checked `false` tell "nothing has landed since" from "the fix landed in
+  // round 11": without it a false verdict is final, and the mission spins to its reset
+  // cap with the fix already merged.
+  completedRound: z.number().int().nonnegative().optional(),
   budget: z.object({
     wallMs: z.number().int().positive(),
     tokens: z.number().int().positive().optional(),

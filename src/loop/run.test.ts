@@ -345,6 +345,98 @@ describe("runLoop", () => {
     });
   });
 
+  // P1, and run 8's shape exactly: `readme-doc-quality` was checked `false` in round
+  // 6, a replan produced a task to fix it, that task merged by round 11, and the
+  // criterion was never graded again — so the mission could only spin to its reset
+  // cap with the work it needed already on `main`. Defect 32's family: a check that
+  // cannot fire is indistinguishable from a check that fired and failed.
+  describe("re-checking a criterion", () => {
+    test("an unmet criterion is checked again when the fix lands", async () => {
+      let checks = 0;
+      const h = harness({
+        seed: seedMission({ tasks: [aCodeTask({ id: "t1", satisfies: ["c1"] })] }),
+        progress: [
+          // Round 1: the work landed, the check said no, and the mission is going
+          // round in circles — replan.
+          aProgressLedger({ isInLoop: true, isProgressBeingMade: false }),
+          aProgressLedger({ isRequestSatisfied: true, unmetCriteria: [] }),
+        ],
+        plan: [{ tasks: [aPlannedTask({ id: "fix", satisfies: ["c1"] })] }],
+        met: () => ++checks > 1,
+      });
+
+      const result = await runLoop(h.deps);
+
+      assert.deepEqual(h.dispatched, ["t1", "fix"]);
+      assert.deepEqual(h.calls.judged, ["c1", "c1"]);
+      assert.equal(h.store.state().mission.ledger.criteria[0]?.met, true);
+      assert.equal(result.status, "complete");
+    });
+
+    // The expensive complement, and the reason this is a decision rather than "check
+    // every round": a judge is a model call per criterion, and a criterion that
+    // already passed over work that has not moved has nothing new to say.
+    test("a still-met criterion is not re-judged while nothing lands", async () => {
+      const h = harness({
+        seed: seedMission({
+          tasks: [
+            aCodeTask({ id: "t1", owns: ["src/a.ts"], branch: "a", satisfies: ["c1"] }),
+            aCodeTask({
+              id: "t2",
+              owns: ["src/b.ts"],
+              branch: "b",
+              satisfies: [],
+              dependsOn: ["t1"],
+              status: "waiting",
+            }),
+          ],
+        }),
+        // c1's only contributor lands in round 1 and passes; t2 lands in round 2 and
+        // satisfies nothing, so round 2 has no reason to grade c1 again.
+        progress: [
+          aProgressLedger({}),
+          aProgressLedger({ isRequestSatisfied: true, unmetCriteria: [] }),
+        ],
+        met: true,
+      });
+
+      await runLoop(h.deps);
+
+      assert.deepEqual(h.dispatched, ["t1", "t2"]);
+      assert.deepEqual(h.calls.judged, ["c1"]);
+    });
+
+    // And the failing case that is *not* a re-check: no new landing means no new
+    // evidence, so grading it again would buy the same answer at the same price.
+    test("an unmet criterion is not re-judged when nothing new landed", async () => {
+      const h = harness({
+        seed: seedMission({
+          tasks: [
+            aCodeTask({ id: "t1", owns: ["src/a.ts"], branch: "a", satisfies: ["c1"] }),
+            aCodeTask({
+              id: "t2",
+              owns: ["src/b.ts"],
+              branch: "b",
+              satisfies: [],
+              dependsOn: ["t1"],
+              status: "waiting",
+            }),
+          ],
+        }),
+        progress: [aProgressLedger({}), aProgressLedger({})],
+        limits: { maxRounds: 2 },
+        met: false,
+      });
+
+      await runLoop(h.deps);
+
+      // t2 landed in round 2, but it satisfies nothing — c1's own contributor has not
+      // moved since the verdict.
+      assert.deepEqual(h.dispatched, ["t1", "t2"]);
+      assert.deepEqual(h.calls.judged, ["c1"]);
+    });
+  });
+
   describe("stalls and loops", () => {
     // Not progressing means the work is hard. Repeating means nothing more will come
     // of continuing, so it replans immediately rather than burning the stall budget.
