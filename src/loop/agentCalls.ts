@@ -63,11 +63,17 @@ export type RunQuery = (input: {
   maxTurns?: number;
   /** Absolute directories the call may read outside the process cwd — `judge` only. */
   directories?: readonly string[];
+  /** The mission's repository. Absent only when nothing was discovered (P3). */
+  cwd?: string;
   signal?: AbortSignal;
 }) => Promise<{ text: string; spend: Spend }>;
 
 export interface AgentCallsDeps {
-  config: Pick<DiscoveredConfig, "orchestratorModel">;
+  // `repoRoot` and `cwd` are here because P3 was a defect a type was hiding: this was
+  // `Pick<…, "orchestratorModel">` while `createAgentCalls` was handed the whole
+  // config, so every call site read correctly and the mission's own repository was
+  // dropped at the boundary. A decision point then ran wherever the terminal was.
+  config: Pick<DiscoveredConfig, "orchestratorModel" | "repoRoot" | "cwd">;
   /** Where the measured portion of the mission's spend is recorded (§9.5). */
   onSpend?(call: keyof Calls, spend: Spend): void;
   runQuery?: RunQuery;
@@ -126,6 +132,11 @@ export function readableDirectories(artifactPaths: readonly string[]): string[] 
 export function createAgentCalls(deps: AgentCallsDeps): Calls {
   const run = deps.runQuery ?? runViaAgentSdk;
   const model = deps.config.orchestratorModel;
+  // Where the mission lives, which is not where the orchestrator process was started
+  // (P3). `repoRoot` when there is a repo, the discovered directory when there is not
+  // — `discoverConfig` supports both, and a decision point briefing on the wrong tree
+  // is the same class of failure as a judge reading `main` pre-merge (defect 33).
+  const cwd = deps.config.repoRoot ?? deps.config.cwd;
 
   const ask = async <T>(
     call: keyof Calls,
@@ -149,6 +160,7 @@ export function createAgentCalls(deps: AgentCallsDeps): Calls {
         tools: spec.tools ?? [],
         maxTurns: spec.maxTurns ?? MAX_TURNS,
         ...(spec.directories ? { directories: spec.directories } : {}),
+        ...(cwd ? { cwd } : {}),
         ...(deps.signal ? { signal: deps.signal } : {}),
       });
       deps.onSpend?.(call, result.spend);
@@ -537,10 +549,17 @@ export function queryOptions(spec: {
   tools?: string[];
   maxTurns?: number;
   directories?: readonly string[];
+  cwd?: string;
 }) {
   return {
     model: spec.model,
     systemPrompt: spec.systemPrompt,
+    // The mission's repository, not the orchestrator's process directory (P3). A run
+    // started from anywhere else had `judge` reading — and every other call reasoning
+    // about — whatever directory the terminal happened to be in. Omitted rather than
+    // defaulted when nothing was discovered, the same shape as `additionalDirectories`:
+    // an invented `cwd` would be a confident wrong answer.
+    ...(spec.cwd ? { cwd: spec.cwd } : {}),
     // Where the judge is allowed to read, and nowhere else is (defect 40). A task's
     // artifacts live in its *worktree*, which is not under the orchestrator's cwd, so
     // a judge handed correct absolute paths still had every `Read` refused — it said
@@ -572,6 +591,7 @@ const runViaAgentSdk: RunQuery = async ({
   tools,
   maxTurns,
   directories,
+  cwd,
   signal,
 }) => {
   // Imported lazily so `--plan-only` against a supplied Calls, and every test above
@@ -591,6 +611,7 @@ const runViaAgentSdk: RunQuery = async ({
         ...(tools ? { tools } : {}),
         ...(maxTurns ? { maxTurns } : {}),
         ...(directories ? { directories } : {}),
+        ...(cwd ? { cwd } : {}),
       }),
       abortController: controller,
     },

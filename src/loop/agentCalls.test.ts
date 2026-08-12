@@ -17,7 +17,7 @@ import {
 } from "./agentCalls.js";
 import { type ProgressInput } from "./calls.js";
 
-const config = { orchestratorModel: "fable" };
+const config = { orchestratorModel: "fable", cwd: "/work/repo" };
 
 // The defect these exist for: `allowedTools: []` reads like "no tools" and is not.
 // The SDK defines it as the auto-approve list — the restriction is `tools`. With the
@@ -79,6 +79,65 @@ describe("queryOptions", () => {
       "additionalDirectories" in queryOptions({ systemPrompt: "s", prompt: "p", model: "opus" }),
       false,
     );
+  });
+
+  // P3. Every decision point briefs on the mission's repository, and with no `cwd` the
+  // SDK uses the orchestrator's own process directory — so a run started from anywhere
+  // but the target repo had `judge` reading, and `research` reasoning about, whatever
+  // directory the terminal happened to be in. The option *name* is asserted for the
+  // same reason `allowedTools` and `additionalDirectories` are: a wrong one is
+  // accepted silently and reads as a model that would not do its job.
+  test("runs the call in the directory it was given, under the SDK's own name", () => {
+    const options = queryOptions({ systemPrompt: "s", prompt: "p", model: "opus", cwd: "/work/repo" });
+
+    assert.equal(options.cwd, "/work/repo");
+  });
+
+  test("omits cwd entirely when none was discovered", () => {
+    assert.equal("cwd" in queryOptions({ systemPrompt: "s", prompt: "p", model: "opus" }), false);
+  });
+});
+
+// The other half of P3, and the one a type could hide: `createAgentCalls` receives the
+// whole `DiscoveredConfig`, and the repo was dropped at the `Pick` — so every call site
+// looked correct while nothing downstream could know where the mission lives.
+describe("createAgentCalls and the target repo", () => {
+  const runSpy = () => {
+    const seen: { cwd?: string }[] = [];
+    const runQuery: RunQuery = async (input) => {
+      seen.push({ ...(input.cwd === undefined ? {} : { cwd: input.cwd }) });
+      return {
+        text: JSON.stringify({ questions: [] }),
+        spend: { tokens: { measured: 0, estimated: 0, unmeasured: 0 }, wallMs: 0, dispatches: 1 },
+      };
+    };
+    return { seen, runQuery };
+  };
+
+  test("passes the discovered repo root to the call", async () => {
+    const spy = runSpy();
+    const calls = createAgentCalls({
+      config: { orchestratorModel: "opus", cwd: "/anywhere", repoRoot: "/work/repo" },
+      runQuery: spy.runQuery,
+    });
+
+    await calls.intake({ goal: "g", scan: { findings: [], ambiguities: [] } } as never);
+
+    assert.deepEqual(spy.seen, [{ cwd: "/work/repo" }]);
+  });
+
+  // No git repo is a supported configuration (`discoverConfig` falls back to `cwd`),
+  // and a mission run in a plain directory still has one.
+  test("falls back to the discovered cwd when the mission is not in a repo", async () => {
+    const spy = runSpy();
+    const calls = createAgentCalls({
+      config: { orchestratorModel: "opus", cwd: "/work/plain" },
+      runQuery: spy.runQuery,
+    });
+
+    await calls.intake({ goal: "g", scan: { findings: [], ambiguities: [] } } as never);
+
+    assert.deepEqual(spy.seen, [{ cwd: "/work/plain" }]);
   });
 });
 
