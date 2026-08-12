@@ -6,6 +6,7 @@
 // git would encode the same assumptions the defects came from.
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { after, before, describe, test } from "node:test";
 import { type Task } from "../domain/task.js";
@@ -386,5 +387,104 @@ describe("dispatch", () => {
       assert.equal(types().includes("merge_started"), false);
       assert.deepEqual(statuses(), ["running", "verifying", "done"]);
     });
+
+    test("completes outside a git repository, where there is no checkout to protect", async () => {
+      events = [];
+      const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "orchestra-norepo-"));
+      try {
+        const outcome = await dispatch(nonCode("r2", "research"), {
+          emit: (event) => events.push(event),
+          transport: async ({ cwd }) => {
+            fs.writeFileSync(path.join(cwd, "brief.md"), "# findings\n");
+            return { raw: JSON.stringify(aReport()), elapsedMs: 20 };
+          },
+          verify: passes,
+          cwd: elsewhere,
+        });
+
+        assert.deepEqual(outcome, { status: "done" });
+        assert.equal(types().includes("repo_escaped"), false);
+      } finally {
+        fs.rmSync(elsewhere, { recursive: true, force: true });
+      }
+    });
+  });
+
+  // Defect 41. Run 8's `consistency-audit` was staffed `review`, told to "fix any
+  // problems you find directly", and did — in the repository checkout, where §4 gives
+  // it no worktree, no lease, no commit and no escape check. The changes were never
+  // versioned, and the criterion checks, which run with `cwd` = the repo, graded a
+  // working tree containing them. The mission reported `complete`.
+  describe("a non-code worker that edits the checkout", () => {
+    let outcome: Awaited<ReturnType<typeof dispatch>>;
+
+    before(async () => {
+      events = [];
+      outcome = await dispatch(nonCode("t41", "review"), {
+        emit: (event) => events.push(event),
+        transport: async ({ cwd }) => {
+          fs.writeFileSync(path.join(cwd, "audit-check.mjs"), "// added by the auditor\n");
+          return { raw: JSON.stringify(aReport()), elapsedMs: 20 };
+        },
+        verify: passes,
+        cwd: repo.path,
+      });
+    });
+
+    after(() => fs.rmSync(path.join(repo.path, "audit-check.mjs"), { force: true }));
+
+    test("fails the task without retry, naming the file and the fix", () => {
+      assert.equal(outcome.status, "failed");
+      assert.equal(outcome.status === "failed" && outcome.failure, "repo_escape");
+      assert.match(outcome.status === "failed" ? outcome.message : "", /audit-check\.mjs/);
+      assert.match(outcome.status === "failed" ? outcome.message : "", /`code` task/);
+    });
+
+    test("records what was touched, as its own event rather than a lease escape", () => {
+      const escaped = events.find((event) => event.type === "repo_escaped");
+      assert.ok(escaped && "touched" in escaped);
+      assert.deepEqual(escaped.touched, ["audit-check.mjs"]);
+      assert.equal(escaped && "worker" in escaped && escaped.worker, "review");
+      assert.equal(types().includes("lease_escaped"), false);
+    });
+
+    // The check runs before verification for the same reason the lease check does: a
+    // check over a dirty checkout grades changes that never landed.
+    test("never verifies the work it would have graded", () => {
+      assert.equal(types().includes("verification_run"), false);
+      assert.deepEqual(statuses(), ["running", "failed"]);
+    });
+
+    test("leaves the worker's changes where they are", () => {
+      assert.equal(onMain("audit-check.mjs"), true);
+    });
+  });
+
+  test("a checkout the human already left dirty is not blamed on the worker", async () => {
+    events = [];
+    const theirs = path.join(repo.path, "human-notes.txt");
+    fs.writeFileSync(theirs, "my own uncommitted work\n");
+    try {
+      const outcome = await dispatch(nonCode("t42", "research"), {
+        emit: (event) => events.push(event),
+        transport: async () => ({ raw: JSON.stringify(aReport()), elapsedMs: 20 }),
+        verify: passes,
+        cwd: repo.path,
+      });
+
+      assert.deepEqual(outcome, { status: "done" });
+      assert.equal(types().includes("repo_escaped"), false);
+    } finally {
+      fs.rmSync(theirs, { force: true });
+    }
   });
 });
+
+/** A task of a kind §4 gives no git to: no branch, no lease, no worktree. */
+const nonCode = (id: string, worker: "research" | "review" | "general"): Task =>
+  ({
+    ...aCodeTask({ id, worker }),
+    branch: undefined,
+    owns: undefined,
+    verify: { kind: "judge" as const, rubric: "the work answers the goal" },
+  }) as unknown as Task;

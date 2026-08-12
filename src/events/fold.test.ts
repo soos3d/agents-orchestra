@@ -156,6 +156,28 @@ describe("fold", () => {
       );
     });
 
+    // Defect 41: recorded so a human can see which files a mis-staffed worker left in
+    // the checkout, and inert in state because a working tree is not mission state.
+    // The task's own failure arrives through task_status, as every other one does.
+    test("a repo escape changes no state and replays identically", () => {
+      const inputs: EventInput[] = [
+        missionCreated(),
+        { ...orchestrator, type: "task_planned", task: aCodeTask({ worker: "review" }) },
+        { ...orchestrator, taskId: "t1", type: "repo_escaped", worker: "review", touched: ["a.js"] },
+      ];
+
+      const after = foldOf(inputs);
+      const before = foldOf(inputs.slice(0, 2));
+      // Everything except the log's own position: `lastSeq` and `updatedAt` advance for
+      // every event, which is the log recording that something happened rather than the
+      // payload having an effect.
+      assert.deepEqual(after.tasks, before.tasks);
+      assert.deepEqual(after.leases, before.leases);
+      assert.deepEqual(after.inbox, before.inbox);
+      assert.deepEqual(after.mission.status, before.mission.status);
+      assert.deepEqual(after, foldOf(inputs));
+    });
+
     test("keeps worker reports with the round they landed in", () => {
       const state = foldOf([
         missionCreated(),

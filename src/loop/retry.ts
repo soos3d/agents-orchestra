@@ -15,6 +15,8 @@ export type FailureKind =
   /** The worker itself reported it did not land the work. */
   | "worker_failed"
   | "lease_escape"
+  /** A worker with no worktree edited the shared checkout (defect 41). */
+  | "repo_escape"
   | "merge_conflict"
   /** The branch had no commits, so nothing landed however green the check was. */
   | "empty_merge"
@@ -88,6 +90,15 @@ export function retryPolicy(failure: FailureKind, attempts: number): RetryAction
         reason:
           "The worker wrote outside its lease, so the plan was wrong about what this work " +
           "touches. That goes back to the planner, not back to the same worker.",
+      };
+
+    case "repo_escape":
+      return {
+        kind: "none",
+        reason:
+          "A worker with no worktree edited the repository checkout. §4 gives git to " +
+          "`code` tasks only, so this work was staffed as the wrong kind — that is a " +
+          "planning decision, and the replan makes it.",
       };
 
     case "envelope_violation":

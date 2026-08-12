@@ -390,6 +390,14 @@ rejected before anything runs.
 The ledger's dead ends are approaches already shown to fail. Do not propose them
 again.
 
+A task whose goal is to *change files in the repository* is \`code\`, whatever else it
+is also doing. Only a \`code\` task gets a worktree, a file lease, a commit, and a
+verification gate before its work merges; the other kinds run in the shared checkout,
+where an edit is uncommitted, unverified, and fails the task. So "audit the code and
+fix what you find" is not a \`review\` task — it is a \`review\` task that reports, and a
+\`code\` task that fixes, or one \`code\` task doing both. Reading, measuring, and
+writing a report are what the other kinds are for.
+
 You may return \`criteria\` to *request* a change to the outcome spec, with your
 reasoning in the task goals. After sign-off the request goes to a human — it is never
 applied on your say-so.
@@ -428,6 +436,14 @@ again after the worker returns — a file written outside the lease fails the ta
 the files as narrowly as you can. A broad lease like \`src/**\` is not the safe choice:
 it blocks every other task that touches the tree and serializes the mission behind this
 one.
+
+When \`worker\` is not \`code\`, the agent runs in the repository checkout with no
+worktree and no lease, so anything it writes there is uncommitted and fails the task.
+Give a non-code agent a system prompt that says what to produce and where — a report,
+a document, a data file outside the tracked tree — and never one that tells it to edit,
+fix, or clean up the repository. If the task's goal cannot be done without changing
+tracked files, it was planned as the wrong kind: say so in \`role\` and keep the tools
+read-only, rather than granting \`Write\` and letting it try.
 
 Anything under \`profiles\` is an agent a human kept from an earlier mission — prior
 art, not a roster. Adapt one where it fits this task, or ignore them all and write

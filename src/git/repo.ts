@@ -44,6 +44,33 @@ export async function isClean(repo: string): Promise<boolean> {
   return (await git(repo, ["status", "--porcelain"])) === "";
 }
 
+/**
+ * A working tree as two comparable measures, for asking whether something changed a
+ * directory while it ran there (defect 41).
+ *
+ * Two measures because one is not enough. The porcelain lines catch a file appearing,
+ * vanishing, or changing status; the tracked patch catches a *further* edit to a file
+ * that was already dirty, whose status line therefore never moved. Neither catches an
+ * edit to the contents of a file that was already untracked before and after — that is
+ * the known gap, and closing it would mean hashing every untracked path on every
+ * dispatch to catch a case that requires the checkout to be dirty first.
+ */
+export interface WorkingTree {
+  lines: string[];
+  patch: string;
+}
+
+export async function readWorkingTree(repo: string): Promise<WorkingTree> {
+  const status = await git(repo, ["status", "--porcelain"]);
+  // `tryGit`, because a repository with no commits has no HEAD to diff against and
+  // that is a legitimate state rather than an error.
+  const diff = await tryGit(repo, ["diff", "HEAD"]);
+  return {
+    lines: status ? status.split("\n").filter(Boolean) : [],
+    patch: diff.ok ? diff.stdout : "",
+  };
+}
+
 /** Files changed in a worktree against the commit it was created from. */
 export async function changedFiles(worktree: string, baseSha: string): Promise<string[]> {
   const tracked = await git(worktree, ["diff", "--name-only", baseSha]);

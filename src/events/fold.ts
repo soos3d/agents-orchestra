@@ -352,6 +352,10 @@ const handlers: Handlers = {
   },
   lease_rejected: noop, // the dispatch never happened; the plan is what changes
   lease_escaped: noop, // the task fails via task_status — §8 gives it no retry
+  // Same shape: the task fails via task_status, and the record of *what* it dirtied is
+  // the event's own payload. Inert in state, and deliberately so — the working tree it
+  // describes is not mission state, it is a directory a human now has to look at.
+  repo_escaped: noop,
   worker_started: (state, event) => {
     const taskId = requireTaskId(event);
     state.workers = {

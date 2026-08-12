@@ -21,7 +21,13 @@ import {
   taskLedgerSchema,
 } from "../domain/ledger.js";
 import { estimateSchema, missionStatusSchema } from "../domain/mission.js";
-import { agentSpecSchema, taskSchema, taskStatusSchema, transportRefSchema } from "../domain/task.js";
+import {
+  agentSpecSchema,
+  taskSchema,
+  taskStatusSchema,
+  transportRefSchema,
+  workerKindSchema,
+} from "../domain/task.js";
 import { workerReportSchema } from "../domain/report.js";
 
 export const SCHEMA_VERSION = 1;
@@ -154,6 +160,17 @@ const tasks = [
   withBase({
     type: z.literal("lease_escaped"),
     declared: z.array(z.string()),
+    touched: z.array(z.string()),
+  }),
+  // Defect 41: a worker with no worktree edited the shared checkout. Deliberately not
+  // a `lease_escaped` with `declared: []` — an empty lease already means "a lease that
+  // matches nothing" (defect 23), so overloading the event would make every reader tell
+  // "wrote outside what it declared" apart from "declared nothing because §4 gives git
+  // only to `code` tasks". Those are different mistakes with different fixes, which is
+  // the `waiting`/`blocked` argument (§4) one event over.
+  withBase({
+    type: z.literal("repo_escaped"),
+    worker: workerKindSchema,
     touched: z.array(z.string()),
   }),
   withBase({

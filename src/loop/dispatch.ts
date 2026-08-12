@@ -25,10 +25,11 @@ import { type Spend } from "../domain/budget.js";
 import { isCodeTask, type Task, type TaskStatus } from "../domain/task.js";
 import { type Event, type EventInput } from "../events/schema.js";
 import { commitWorktree } from "../git/commit.js";
-import { changedFiles, resolveSha } from "../git/repo.js";
+import { changedFiles, readWorkingTree, repoRoot, resolveSha, type WorkingTree } from "../git/repo.js";
 import { createWorktree, removeWorktree } from "../git/worktree.js";
 import { type MergeQueue } from "../git/mergeQueue.js";
 import { detectEscape, requestLease, type Lease } from "../scheduler/leases.js";
+import { detectRepoEscape } from "../scheduler/repoEscape.js";
 import { parseWorkerReport, type Reformatter } from "../workers/report.js";
 import { type FailureKind } from "./retry.js";
 import { type Verifier } from "./verify.js";
@@ -110,6 +111,9 @@ function createSession(task: Task, deps: DispatchDeps): Session {
   let status: TaskStatus = task.status;
   let worktree: string | undefined;
   let baseSha: string | undefined;
+  /** The checkout as it was before a worker that has no worktree ran in it. Absent
+   *  when the work is isolated, or when the directory is not a repository at all. */
+  let shared: { repo: string; before: WorkingTree } | undefined;
 
   const emit = (event: TaskScopedEvent): void => {
     deps.emit({
@@ -198,6 +202,25 @@ function createSession(task: Task, deps: DispatchDeps): Session {
     return fail("lease_escape", escape.message);
   };
 
+  /**
+   * The lease check's counterpart for a worker that was never given one (defect 41).
+   *
+   * It runs in the same slot for the same reason: a worker that edited the shared
+   * checkout has invalidated whatever is about to be verified there, since the check
+   * would grade uncommitted changes as though they had landed.
+   */
+  const checkRepo = async (): Promise<DispatchOutcome | undefined> => {
+    if (!shared) return undefined;
+
+    const escape = detectRepoEscape(shared.before, await readWorkingTree(shared.repo));
+    if (!escape.escaped) return undefined;
+
+    emit({ type: "repo_escaped", worker: task.worker, touched: escape.touched });
+    // Nothing is reverted and nothing is cleaned up: the worker's edits are the only
+    // record of what it did, and they are sitting in a directory a human owns.
+    return fail("repo_escape", escape.message);
+  };
+
   const verify = async (
     cwd: string,
     artifacts: readonly Artifact[],
@@ -258,6 +281,16 @@ function createSession(task: Task, deps: DispatchDeps): Session {
   const work = async (): Promise<DispatchOutcome> => {
     const cwd = worktree ?? deps.cwd ?? deps.code?.repo ?? process.cwd();
 
+    // Any worker without a worktree runs in a checkout it shares with the mission, so
+    // what it leaves there has to be attributable to it rather than to whatever the
+    // human already had uncommitted. Keyed on the absence of a worktree rather than on
+    // `worker !== "code"`: a code task that reached dispatch with no code context is in
+    // the shared checkout too, and is no more entitled to edit it.
+    if (!worktree) {
+      const root = await repoRoot(cwd);
+      if (root) shared = { repo: root, before: await readWorkingTree(root) };
+    }
+
     move("running", "dispatched");
     // Emitted before the run rather than after it, so a crash mid-worker still leaves
     // a record that one started. The pid belongs here and arrives when the transport
@@ -284,6 +317,7 @@ function createSession(task: Task, deps: DispatchDeps): Session {
     return (
       (await commit()) ??
       (await checkLease()) ??
+      (await checkRepo()) ??
       (await verify(cwd, report.artifacts)) ??
       (report.outcome === "failed"
         ? await cleanup().then(() => fail("worker_failed", report.summary))
