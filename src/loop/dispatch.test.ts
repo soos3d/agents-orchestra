@@ -478,6 +478,96 @@ describe("dispatch", () => {
       fs.rmSync(theirs, { force: true });
     }
   });
+
+  // P5. `discoverVerifyCommand` has found the project's own check since Phase 1 and
+  // `doctor` has reported it, and nothing ever ran it — so a task that satisfied its
+  // own rubric while breaking a neighbouring test merged anyway, and the failure
+  // belonged to whoever came next.
+  describe("the project's own check as a merge gate", () => {
+    const janitor = { command: "node --version", source: "package.json test script" };
+
+    test("blocks the merge when the repository check is red", async () => {
+      events = [];
+      // The task's own check is green; the project's is not. Only the second verifier
+      // call answers `false`, so the two are distinguishable in the assertion below.
+      let calls = 0;
+      const taskGreenRepoRed: Verifier = async () => {
+        calls += 1;
+        return calls === 1
+          ? { passed: true, output: "exit 0" }
+          : { passed: false, output: "exit 1\n2 tests failed in src/other.test.ts" };
+      };
+
+      const outcome = await dispatch(
+        aCodeTask({ branch: "feat/janitor-red", owns: ["src/janitor-red.ts"] }),
+        deps({
+          transport: worker({ "src/janitor-red.ts": "export const x = 1;\n" }),
+          verify: taskGreenRepoRed,
+          repoVerify: janitor,
+        }),
+      );
+
+      assert.equal(outcome.status, "failed");
+      assert.equal(outcome.status === "failed" && outcome.failure, "verification");
+      // Named, so a fix task knows it is the project's check rather than its own.
+      assert.match(
+        outcome.status === "failed" ? outcome.message : "",
+        /project's check \(node --version, from package.json test script\)/,
+      );
+      assert.equal(types().includes("merge_started"), false);
+      assert.equal(onMain("src/janitor-red.ts"), false);
+    });
+
+    test("merges when both checks are green, running the project's after the task's", async () => {
+      events = [];
+      const outcome = await dispatch(
+        aCodeTask({ branch: "feat/janitor-green", owns: ["src/janitor-green.ts"] }),
+        deps({
+          transport: worker({ "src/janitor-green.ts": "export const y = 2;\n" }),
+          repoVerify: janitor,
+        }),
+      );
+
+      assert.deepEqual(outcome, { status: "done" });
+      const runs = events.filter((event) => event.type === "verification_run");
+      assert.equal(runs.length, 2, "the task's check and the project's are both on the log");
+      assert.equal(
+        runs[1] && "spec" in runs[1] && runs[1].spec.kind === "command" && runs[1].spec.command,
+        "node --version",
+      );
+      assert.equal(onMain("src/janitor-green.ts"), true);
+    });
+
+    // Discovered rather than configured: no command found means no gate. Inventing
+    // `npm test` would fail every mission in a project that does not have one.
+    test("merges with no janitor at all when no command was discovered", async () => {
+      events = [];
+      const outcome = await dispatch(
+        aCodeTask({ branch: "feat/janitor-absent", owns: ["src/janitor-absent.ts"] }),
+        deps({ transport: worker({ "src/janitor-absent.ts": "export const z = 3;\n" }) }),
+      );
+
+      assert.deepEqual(outcome, { status: "done" });
+      assert.equal(events.filter((event) => event.type === "verification_run").length, 1);
+      assert.equal(onMain("src/janitor-absent.ts"), true);
+    });
+
+    // A worker with no worktree has nowhere isolated to run it and nothing to merge,
+    // so a red repository would fail work that never touched it.
+    test("never runs for a task with no worktree", async () => {
+      events = [];
+      const outcome = await dispatch(nonCode("t-janitor", "research"), {
+        emit: (event) => events.push(event),
+        transport: async () => ({ raw: JSON.stringify(aReport()), elapsedMs: 20 }),
+        verify: passes,
+        cwd: repo.path,
+        repoVerify: janitor,
+      });
+
+      assert.deepEqual(outcome, { status: "done" });
+      assert.equal(events.filter((event) => event.type === "verification_run").length, 1);
+    });
+  });
 });
 
 /** A task of a kind §4 gives no git to: no branch, no lease, no worktree. */

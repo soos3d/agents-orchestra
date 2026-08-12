@@ -5,7 +5,7 @@
 // joined them up. This is the join, and the order matters more than any single step:
 //
 //   lease → worktree pinned to a base sha → worker → report → commit → escape check →
-//   verification → merge → worktree removal → spend
+//   verification → the project's own check → merge → worktree removal → spend
 //
 // Two of those check the worker rather than the work. The escape check runs *before*
 // verification because a worker that wrote outside its lease has already invalidated
@@ -20,6 +20,11 @@
 // ahead of verification so a merge of a green worktree is a merge of green commits;
 // verifying committed state is also the only way the thing verified and the thing
 // merged are the same thing.
+//
+// The project's own check (P5) is last before the merge and for the same reason the
+// merge is last: a task's `VerifySpec` grades the task, and a task that satisfies its
+// own rubric can still break the repository it is about to merge into. Run in the
+// worktree, where the commits are and the integration branch is not.
 import { type Artifact } from "../domain/artifacts.js";
 import { type Spend } from "../domain/budget.js";
 import { isCodeTask, type Task, type TaskStatus } from "../domain/task.js";
@@ -69,6 +74,17 @@ export interface DispatchDeps {
   code?: CodeContext;
   /** Where non-code work runs. */
   cwd?: string;
+  /**
+   * The project's own check — `npm test`, `make check` — as a merge gate (P5).
+   *
+   * `discoverVerifyCommand` has found it since Phase 1 and `doctor` has reported it,
+   * and nothing ever ran it: a task's own `VerifySpec` grades the task, and a task
+   * that passes its own check can still break the repository it is merging into.
+   * Optional because it is discovered rather than configured — absent means no
+   * command was found, and inventing `npm test` would fail every mission in a
+   * project that does not have one.
+   */
+  repoVerify?: { command: string; source: string };
   reformat?: Reformatter;
   signal?: AbortSignal;
 }
@@ -240,6 +256,40 @@ function createSession(task: Task, deps: DispatchDeps): Session {
     return fail("verification", result.output);
   };
 
+  /**
+   * The repository's own check, between the task's verification and the merge (P5).
+   *
+   * A task's `VerifySpec` grades the task. It says nothing about whether the rest of
+   * the project still works, and a worker that satisfies its own rubric while breaking
+   * a neighbouring test merges anyway — the failure then belongs to whoever comes
+   * next. Running it in the *worktree* is what makes it a gate rather than a report:
+   * the commits are all there, and nothing has reached the integration branch yet.
+   *
+   * Code tasks only. A worker with no worktree has nowhere isolated to run it and
+   * nothing to merge, so a red repository would fail work that never touched it.
+   *
+   * Fails as `verification`, which `retryPolicy` already routes to a fix task rather
+   * than a blind retry — running the same worker against the same red suite twice
+   * teaches nothing.
+   */
+  const janitor = async (): Promise<DispatchOutcome | undefined> => {
+    if (!deps.repoVerify || !isCodeTask(task) || !worktree) return undefined;
+
+    const spec = { kind: "command" as const, command: deps.repoVerify.command };
+    const result = await deps.verify(spec, { task, cwd: worktree, artifacts: [] });
+    emit({ type: "verification_run", spec, passed: result.passed, output: result.output });
+    if (result.passed) return undefined;
+
+    // The branch stays, exactly as it does for the task's own check: a fix task needs
+    // those commits, and nothing has reached the integration branch.
+    await cleanup();
+    return fail(
+      "verification",
+      `The task's own check passed, but the project's check (${deps.repoVerify.command}, ` +
+        `from ${deps.repoVerify.source}) failed in the worktree:\n${result.output}`,
+    );
+  };
+
   const merge = async (): Promise<DispatchOutcome | undefined> => {
     if (!isCodeTask(task) || !deps.code || !baseSha) return undefined;
     const { into, mergeQueue } = deps.code;
@@ -322,6 +372,7 @@ function createSession(task: Task, deps: DispatchDeps): Session {
       (report.outcome === "failed"
         ? await cleanup().then(() => fail("worker_failed", report.summary))
         : undefined) ??
+      (await janitor()) ??
       (await merge()) ??
       (await cleanup().then(() => {
         move("done", "verified");

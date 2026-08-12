@@ -13,7 +13,13 @@ import path from "node:path";
 import { describe, test } from "node:test";
 import { readLore } from "../memory/lore.js";
 import { saveProfile } from "../memory/profiles.js";
-import { buildLoopDeps, continuationFor, executeMission, permissionPortFor } from "./execute.js";
+import {
+  buildLoopDeps,
+  continuationFor,
+  dispatchOptionsFor,
+  executeMission,
+  permissionPortFor,
+} from "./execute.js";
 import {
   aCodeTask,
   aCriterion,
@@ -466,6 +472,36 @@ describe("executeMission", () => {
 
     assert.equal(result.met, true);
     assert.match(result.evidence.checkOutput, /exit 0/);
+  });
+
+  // P5, and the composition-root lesson again (defects 12b, 23, 24): the janitor is an
+  // optional field on `DispatchDeps`, which is exactly the shape of a mechanism that
+  // is built, unit-tested, and reachable only through a parameter nobody passes. The
+  // gate itself is asserted in dispatch.test.ts; what is asserted here is that a
+  // discovered command actually arrives.
+  describe("the project's own check reaches dispatch", () => {
+    test("a discovered verify command is passed to the dispatch", () => {
+      const options = dispatchOptionsFor(
+        { emit: () => {}, transport: async () => ({ raw: "", elapsedMs: 0 }), verify: async () => ({ passed: true, output: "" }) },
+        { verify: { command: "npm test", source: "package.json test script" } },
+      );
+
+      assert.deepEqual(options.repoVerify, {
+        command: "npm test",
+        source: "package.json test script",
+      });
+    });
+
+    // Absent means no gate, not a default. A project with no check of its own is a
+    // supported configuration, and `npm test` invented for one would fail every task.
+    test("no discovered command means no janitor, rather than an invented one", () => {
+      const options = dispatchOptionsFor(
+        { emit: () => {}, transport: async () => ({ raw: "", elapsedMs: 0 }), verify: async () => ({ passed: true, output: "" }) },
+        {},
+      );
+
+      assert.equal("repoVerify" in options, false);
+    });
   });
 
   // The same lesson a sixth time, and this one has teeth: the ACP permission port is

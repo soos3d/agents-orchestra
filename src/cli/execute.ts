@@ -22,7 +22,7 @@ import { type MissionState } from "../events/fold.js";
 import { createMergeQueue } from "../git/mergeQueue.js";
 import { currentBranch } from "../git/repo.js";
 import { type Calls } from "../loop/calls.js";
-import { dispatch, type DispatchOutcome } from "../loop/dispatch.js";
+import { dispatch, type DispatchDeps, type DispatchOutcome } from "../loop/dispatch.js";
 import { resolveCriteriaChange } from "../loop/criteriaChange.js";
 import { unattendedHuman, type HumanPort } from "../loop/human.js";
 import { presentAndSignOff } from "../loop/prepare.js";
@@ -412,15 +412,40 @@ export async function buildLoopDeps(
     transports: availableTransports(config),
     checkCriterion: createCriterionChecker({ calls }),
     dispatch: (task: Task, state: MissionState): Promise<DispatchOutcome> =>
-      dispatch(task, {
-        emit: store.emit,
-        transport,
-        verify,
-        reformat,
-        held: heldLeases(state),
-        ...(code ? { code } : {}),
-        cwd: repo ?? config.cwd,
-      }),
+      dispatch(
+        task,
+        dispatchOptionsFor({
+          emit: store.emit,
+          transport,
+          verify,
+          reformat,
+          held: heldLeases(state),
+          ...(code ? { code } : {}),
+          cwd: repo ?? config.cwd,
+        }, config),
+      ),
+  };
+}
+
+/**
+ * The options a real dispatch runs under, as a function rather than an inline literal.
+ *
+ * Every optional field on `DispatchDeps` is a place a feature can be finished and
+ * switched off at once — `reformat` and `owns` both were, and both surfaced on a
+ * mission rather than in the suite (defects 23, 24). This is where the conditional
+ * ones are decided, so a test can assert the decision without spawning a worker.
+ */
+export function dispatchOptionsFor(
+  base: DispatchDeps,
+  config: Pick<DiscoveredConfig, "verify">,
+): DispatchDeps {
+  return {
+    ...base,
+    // The project's own check as a merge gate (P5). Spread conditionally rather than
+    // passed as `undefined`, and only when one was discovered — `dispatch` skips the
+    // gate entirely without it, which is the honest behaviour in a project that has no
+    // check to run. Inventing `npm test` would fail every mission in one.
+    ...(config.verify ? { repoVerify: config.verify } : {}),
   };
 }
 
