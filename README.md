@@ -12,17 +12,22 @@ Design lives in [`specs.md`](./specs.md). What gets built and in what order live
 
 ## Status
 
-**Phases 1–6 have landed.** A mission runs end to end: scan, intake, research, outcome spec, plan,
+**Phases 1–7 have landed.** A mission runs end to end: scan, intake, research, outcome spec, plan,
 sign-off, synthesis, dispatch into parallel worktrees, verification, merge, replan. Memory recalls
 lore before the scan and writes back on completion; saved missions replay with `--saved`. An
 attended run serves a dashboard on loopback, and `orchestra serve` outlives missions — compose one
 from the page, watch any of them, answer a parked one's question, pause, forget. `ask_human` parks
 exactly the tasks it blocks while the rest keep running, and the carrier-independent trust core for
 the future phone mirror (single-use nonces, one bound sender, replay approves once) ships tested.
+Workers also run over **ACP** — a pinned adapter per target, a real permission channel in place of
+`--dangerously-skip-permissions` — and a real mission has gone from brief to `complete`
+uninterrupted on it: six synthesized agents, five real merges, nine criteria met with evidence.
 
-What is not built: ACP (Phase 7), computer use and gates (Phase 8), and the concrete phone carrier —
-plus the smaller leftovers named in ROADMAP's Phase 6 notes (kill-task, serve-side resume, the
-retention sweep).
+What is not built: computer use and gates (Phase 8 — the plan is
+[`PHASE-8-PLAN.md`](./PHASE-8-PLAN.md)) and the concrete phone carrier, plus the smaller leftovers
+named in ROADMAP's Phase 6, 7, and 9 notes (kill-task, serve-side resume, the retention sweep,
+dashboard streaming of worker activity, and the cousin-survey leftovers: plan critics, scan cache,
+pipeline depth, partial plans).
 
 ## Install
 
@@ -105,8 +110,9 @@ in at any time without blocking the loop, and panic stops dispatch immediately.
 |---|---|
 | `--plan-only` | scan, intake, research, spec, plan, estimate — then stop. Nothing runs. |
 | `--budget <minutes>` | wall-clock ceiling for the mission. Default 240. |
-| `--unattended` | skip sign-off. Requires `--force`, and is never written to config. |
-| `--force` | the explicit acknowledgement `--unattended` needs until `--saved` lands in Phase 5. |
+| `--unattended` | skip sign-off. Requires `--saved` or `--force`, and is never written to config. |
+| `--saved <name>` | replay a saved mission — goal, envelope, criteria skeleton. Scan and research still re-run. |
+| `--force` | the explicit acknowledgement `--unattended` needs when there is no `--saved`. |
 | `--no-web` | no dashboard. For CI, where binding a port is a nuisance and nobody will open it. |
 
 Wall-clock is the ceiling that actually binds. Token budgets are secondary and cover only the
@@ -172,7 +178,7 @@ seam; a canned `events.jsonl` plus scripted answers drives every path above it.
 ## Develop
 
 ```bash
-npm test          # 462 tests, ~40s
+npm test          # 873 tests, ~80s
 npm run typecheck
 npm run build
 npm run dev -- doctor

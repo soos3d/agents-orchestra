@@ -33,8 +33,9 @@ migrate off it. **Five real missions have run over ACP** (2026-08-10): tasks com
 over `acp/claude`, with real commits, merges, and criterion checks — and the runs surfaced defects
 28–35, all fixed. **Run 8 (2026-08-11) went brief→`complete` uninterrupted** — the standing check,
 met: six synthesized agents, six first-attempt tasks, five real merges, nine criteria `met` with
-evidence. Runs 6–8 cost defects 36–41, five fixed and one open (41: a non-`code` worker editing the
-repo leaves its work uncommitted, and the criteria grade it anyway).
+evidence. Runs 6–8 cost defects 36–41, all fixed — 41 (a non-`code` worker editing the repo leaves its work
+uncommitted, and the criteria grade it anyway) is closed by refusing the dispatch rather than
+committing for it, and is the one fix no mission has run through yet.
 
 **Phase 6 also added `src/channel/`** — the carrier-independent trust core (§17): `trust.ts` (
 single-use nonce, bound sender identity, replay-approves-once as a property of the store),
@@ -81,6 +82,11 @@ The design docs are authoritative and code comments cite them by section number 
 
 - @specs.md — the full design, §0–§17
 - @ROADMAP.md — phases, milestone checklist, known-defects table
+- [NEXT-PLAN.md](./NEXT-PLAN.md) — execution order: commit defect 41, P1–P5, **open-source**,
+  then Phase 8. Read this before starting the next session.
+- [PHASE-8-PLAN.md](./PHASE-8-PLAN.md) — Phase 8 design (P1–P5 detail, B1–B7, security). The
+  cousin-survey leftovers stay named there, not this phase. Not @-embedded on purpose.
+  §0 of specs.md is the survey itself.
 
 ## Commands
 
@@ -207,6 +213,13 @@ folded state — which is what makes the whole loop assertable against a canned 
 - **An empty `owns` is not "no restriction", it is a lease that matches nothing.** `readyTasks` skips
   the overlap check when a code task declares none, and `detectEscape` then counts every changed file
   as an escape — so a code spec without a lease is refused at synthesis (defect 23).
+- **A worker with no worktree runs in the shared checkout, and may not change it.** §4 gives git to
+  `code` tasks only, so a `research` or `review` worker gets no lease, no commit and no merge gate —
+  and it is still standing in the repo. `dispatch` compares the working tree before and after
+  (`git/repo.ts` `readWorkingTree`, `scheduler/repoEscape.ts`) and fails a delta as `repo_escape`,
+  because the alternative — committing for it — is a code path with none of the guarantees §8 and
+  defects 30/31 bought. It compares rather than asking "is it dirty": the human's own uncommitted
+  work is not the mission's business (defect 41).
 - **Every scanner over model output has to know what it is inside of.** `needsShell` read the `=>`
   inside a quoted string as a redirect (defect 34); `extractJsonObject` took the first fence match
   and stopped at a fence *inside* a JSON string (defect 38); the ACP reader split a UTF-8 sequence
