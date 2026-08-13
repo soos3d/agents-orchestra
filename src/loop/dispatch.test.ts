@@ -479,6 +479,90 @@ describe("dispatch", () => {
     }
   });
 
+  // P2, and the 41-vs-27 collision resolved end to end: a `review` or `research`
+  // worker may be obliged to leave a file behind and may not write into the checkout,
+  // so the runtime gives it one directory and tells it where that is.
+  describe("a worker with nowhere else to write", () => {
+    let artifactRoot: string;
+
+    const runWith = async (worker: WorkerTransport) => {
+      events = [];
+      artifactRoot = fs.mkdtempSync(path.join(os.tmpdir(), "orchestra-artifacts-"));
+      return dispatch(nonCode("t-art", "research"), {
+        emit: (event) => events.push(event),
+        transport: worker,
+        verify: passes,
+        cwd: repo.path,
+        artifactRoot,
+      });
+    };
+
+    test("is told an absolute directory that already exists", async () => {
+      let told: string | undefined;
+      const outcome = await runWith(async ({ artifactDir }) => {
+        told = artifactDir;
+        return { raw: JSON.stringify(aReport()), elapsedMs: 20 };
+      });
+
+      assert.deepEqual(outcome, { status: "done" });
+      assert.equal(told, path.join(artifactRoot, "t-art"));
+      assert.equal(fs.existsSync(told!), true);
+      // 0700: a mission's artifacts are not world-readable (§17).
+      assert.equal(fs.statSync(told!).mode & 0o777, 0o700);
+    });
+
+    // The whole point: work that lands here is not a repo escape, because
+    // `.orchestra/` is not the checkout. Written against a directory outside the repo
+    // for the same reason — what matters is that the checkout did not move.
+    test("writing there completes the task rather than escaping the repo", async () => {
+      const outcome = await runWith(async ({ artifactDir }) => {
+        fs.writeFileSync(path.join(artifactDir!, "report.md"), "# findings\n");
+        return { raw: JSON.stringify(aReport()), elapsedMs: 20 };
+      });
+
+      assert.deepEqual(outcome, { status: "done" });
+      assert.equal(types().includes("repo_escaped"), false);
+    });
+
+    // The verifier is what writes the evidence (`verify.test.ts`); what is asserted
+    // here is that it is handed somewhere to write it.
+    test("the check is told where to keep its evidence", async () => {
+      events = [];
+      artifactRoot = fs.mkdtempSync(path.join(os.tmpdir(), "orchestra-artifacts-"));
+      let told: string | undefined;
+
+      await dispatch(nonCode("t-art3", "research"), {
+        emit: (event) => events.push(event),
+        transport: async () => ({ raw: JSON.stringify(aReport()), elapsedMs: 20 }),
+        verify: async (_spec, context) => {
+          told = context.evidenceDir;
+          return { passed: true, output: "exit 0" };
+        },
+        cwd: repo.path,
+        artifactRoot,
+      });
+
+      assert.equal(told, path.join(artifactRoot, "t-art3"));
+    });
+
+    test("a dispatch with no artifact root tells the worker nothing", async () => {
+      events = [];
+      let told: string | undefined = "not-overwritten";
+      const outcome = await dispatch(nonCode("t-art2", "research"), {
+        emit: (event) => events.push(event),
+        transport: async ({ artifactDir }) => {
+          told = artifactDir;
+          return { raw: JSON.stringify(aReport()), elapsedMs: 20 };
+        },
+        verify: passes,
+        cwd: repo.path,
+      });
+
+      assert.deepEqual(outcome, { status: "done" });
+      assert.equal(told, undefined);
+    });
+  });
+
   // P5. `discoverVerifyCommand` has found the project's own check since Phase 1 and
   // `doctor` has reported it, and nothing ever ran it — so a task that satisfied its
   // own rubric while breaking a neighbouring test merged anyway, and the failure

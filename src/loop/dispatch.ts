@@ -25,6 +25,8 @@
 // merge is last: a task's `VerifySpec` grades the task, and a task that satisfies its
 // own rubric can still break the repository it is about to merge into. Run in the
 // worktree, where the commits are and the integration branch is not.
+import { taskArtifactDir } from "../config/discover.js";
+import { ensurePrivateDir } from "../config/hygiene.js";
 import { type Artifact } from "../domain/artifacts.js";
 import { type Spend } from "../domain/budget.js";
 import { isCodeTask, type Task, type TaskStatus } from "../domain/task.js";
@@ -51,6 +53,9 @@ export interface WorkerRun {
 export type WorkerTransport = (input: {
   task: Task;
   cwd: string;
+  /** The one directory this task may write outputs to, absolute and already created
+   *  (P2). Absent when the dispatch was built without an artifact root. */
+  artifactDir?: string;
   signal?: AbortSignal;
 }) => Promise<WorkerRun>;
 
@@ -74,6 +79,15 @@ export interface DispatchDeps {
   code?: CodeContext;
   /** Where non-code work runs. */
   cwd?: string;
+  /**
+   * The mission's artifact root — `<stateDir>/missions/<missionId>/artifacts` (P2).
+   *
+   * A worker with no worktree may not write into the checkout (defect 41) and may
+   * still be obliged to leave a file behind (defect 27), so this is the one place it
+   * legally can. Created per task, at `0700`, before the worker runs. Absent means the
+   * worker is told nothing about a directory and behaves as it did before.
+   */
+  artifactRoot?: string;
   /**
    * The project's own check — `npm test`, `make check` — as a merge gate (P5).
    *
@@ -240,13 +254,19 @@ function createSession(task: Task, deps: DispatchDeps): Session {
   const verify = async (
     cwd: string,
     artifacts: readonly Artifact[],
+    evidenceDir?: string,
   ): Promise<DispatchOutcome | undefined> => {
     move("verifying", "worker finished");
     const spec = task.verify;
     const where =
       spec.kind === "command" && spec.cwd === "repo" ? (deps.code?.repo ?? cwd) : cwd;
 
-    const result = await deps.verify(spec, { task, cwd: where, artifacts });
+    const result = await deps.verify(spec, {
+      task,
+      cwd: where,
+      artifacts,
+      ...(evidenceDir ? { evidenceDir } : {}),
+    });
     emit({ type: "verification_run", spec, passed: result.passed, output: result.output });
     if (result.passed) return undefined;
 
@@ -341,6 +361,18 @@ function createSession(task: Task, deps: DispatchDeps): Session {
       if (root) shared = { repo: root, before: await readWorkingTree(root) };
     }
 
+    // The one directory this task may write outputs to (P2). Under `.orchestra/`,
+    // which is gitignored and re-asserted every run, so these writes are invisible to
+    // the escape check above by construction.
+    //
+    // Created eagerly only for a worker that has no worktree, because that worker is
+    // *told* about it and a worker told to write somewhere that does not exist writes
+    // somewhere else. A code task writes into its worktree and merges; its directory
+    // is only where a check's evidence lands, and `keepEvidence` creates it if a check
+    // actually produces any.
+    const artifactDir = deps.artifactRoot ? taskArtifactDir(deps.artifactRoot, task.id) : undefined;
+    if (artifactDir && !worktree) ensurePrivateDir(artifactDir);
+
     move("running", "dispatched");
     // Emitted before the run rather than after it, so a crash mid-worker still leaves
     // a record that one started. The pid belongs here and arrives when the transport
@@ -351,7 +383,12 @@ function createSession(task: Task, deps: DispatchDeps): Session {
       transport: task.agentSpec.transport,
     });
 
-    const run = await deps.transport({ task, cwd, signal: deps.signal });
+    const run = await deps.transport({
+      task,
+      cwd,
+      ...(artifactDir ? { artifactDir } : {}),
+      signal: deps.signal,
+    });
     const report = await parseWorkerReport(run.raw, { reformat: deps.reformat });
 
     emit({ type: "worker_report", report });
@@ -368,7 +405,7 @@ function createSession(task: Task, deps: DispatchDeps): Session {
       (await commit()) ??
       (await checkLease()) ??
       (await checkRepo()) ??
-      (await verify(cwd, report.artifacts)) ??
+      (await verify(cwd, report.artifacts, artifactDir)) ??
       (report.outcome === "failed"
         ? await cleanup().then(() => fail("worker_failed", report.summary))
         : undefined) ??

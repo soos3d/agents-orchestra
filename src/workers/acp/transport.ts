@@ -108,7 +108,7 @@ export function createAcpTransport(deps: AcpTransportDeps): WorkerTransport {
   const onWarn = deps.onWarn ?? ((): void => undefined);
   const clientInfo = deps.clientInfo ?? DEFAULT_CLIENT_INFO;
 
-  return async ({ task, cwd, signal }): Promise<WorkerRun> => {
+  return async ({ task, cwd, artifactDir, signal }): Promise<WorkerRun> => {
     const { transport } = task.agentSpec;
     if (transport.id !== "acp") {
       throw new AcpSessionError(
@@ -136,7 +136,15 @@ export function createAcpTransport(deps: AcpTransportDeps): WorkerTransport {
     });
 
     try {
-      const raw = await runSession({ proc, task, cwd, clientInfo, onWarn, requestPermission: deps.requestPermission });
+      const raw = await runSession({
+        proc,
+        task,
+        cwd,
+        ...(artifactDir ? { artifactDir } : {}),
+        clientInfo,
+        onWarn,
+        requestPermission: deps.requestPermission,
+      });
       return { raw, elapsedMs: Date.now() - startedAt };
     } finally {
       // Nothing else will: the turn ended, the process has no reason to, and an agent
@@ -150,6 +158,8 @@ interface SessionInput {
   readonly proc: DuplexProcess;
   readonly task: Task;
   readonly cwd: string;
+  /** The task's artifact directory, absolute and already created (P2). */
+  readonly artifactDir?: string;
   readonly clientInfo: ClientInfo;
   readonly onWarn: (message: string) => void;
   readonly requestPermission: AcpTransportDeps["requestPermission"];
@@ -168,7 +178,7 @@ async function runSession(input: SessionInput): Promise<string> {
   parseInitializeResult(await client.request((id) => initializeRequest(id, input.clientInfo)));
   const { sessionId } = parseSessionNewResult(await client.request((id) => sessionNewRequest(id, input.cwd)));
   parseSessionPromptResult(
-    await client.request((id) => sessionPromptRequest(id, sessionId, workerPrompt(input.task))),
+    await client.request((id) => sessionPromptRequest(id, sessionId, workerPrompt(input.task, input.artifactDir))),
   );
 
   return client.text();

@@ -49,6 +49,10 @@ export interface LoopDeps {
   checkCriterion: CriterionChecker;
   /** Where a criterion's command check runs — the repo, after the work merged. */
   cwd: string;
+  /** The mission's artifact root, where a criterion's full verdict is kept (P2). A
+   *  criterion is about work several tasks landed, so its evidence belongs to the
+   *  mission rather than to any one task's directory. */
+  artifactRoot?: string;
   /** Agents a human promoted from earlier missions (§7), handed to synthesis as prior
    *  art. Loaded at the entry point rather than here, so `run` and `resume` get the
    *  same library — and validated on the way back like any other spec. */
@@ -382,7 +386,11 @@ async function checkCriteria(deps: LoopDeps, state: MissionState, round: number)
 
     if (!shouldCheckCriterion({ criterion, allDone, landed, round })) continue;
 
-    const result = await deps.checkCriterion(criterion, { tasks: landed, cwd: deps.cwd });
+    const result = await deps.checkCriterion(criterion, {
+      tasks: landed,
+      cwd: deps.cwd,
+      ...(deps.artifactRoot ? { evidenceDir: deps.artifactRoot } : {}),
+    });
     deps.store.emit({
       missionId: state.mission.id,
       actor: "orchestrator",

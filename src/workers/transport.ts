@@ -114,7 +114,7 @@ export function tail(raw: string, limit = REFORMAT_INPUT_LIMIT): string {
  *  under another id should say so rather than silently running an ACP task through a
  *  subscription CLI. */
 export function createCliTransport(options: CliTransportOptions = {}): WorkerTransport {
-  return async ({ task, cwd, signal }): Promise<WorkerRun> => {
+  return async ({ task, cwd, artifactDir, signal }): Promise<WorkerRun> => {
     const { transport, model } = task.agentSpec;
     if (transport.id !== "cli") {
       throw new Error(
@@ -125,7 +125,7 @@ export function createCliTransport(options: CliTransportOptions = {}): WorkerTra
 
     // What the worker is told is assembled in one place for every transport, so the
     // CLI and ACP paths cannot drift into two contracts (`prompt.ts`).
-    const prompt = workerPrompt(task);
+    const prompt = workerPrompt(task, artifactDir);
     const runners = options.runners ?? { claude: runClaudeCode, codex: runCodex };
     const run = transport.target === "codex" ? runners.codex : runners.claude;
 

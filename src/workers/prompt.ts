@@ -21,9 +21,36 @@ import { renderSchema } from "../runtime/json.js";
  * Nothing about the mission, the ledger, or the other tasks (§4, context discipline) —
  * the goal is written self-contained at plan time precisely so this can be true.
  */
-export function workerPrompt(task: Task): string {
+export function workerPrompt(task: Task, artifactDir?: string): string {
   const { systemPrompt } = task.agentSpec;
-  return `${systemPrompt}\n\n## Your task\n\n${task.goal}\n\n${REPORT_INSTRUCTION}`;
+  return [
+    systemPrompt,
+    `## Your task\n\n${task.goal}`,
+    ...(artifactDir ? [outputInstruction(task, artifactDir)] : []),
+    REPORT_INSTRUCTION,
+  ].join("\n\n");
+}
+
+/**
+ * Where a worker's outputs go (P2), injected by the runtime rather than invented by
+ * the spec — the same rule `outputPath` is validated against at synthesis.
+ *
+ * It exists because a task can be obliged to leave a file (a judge grades files on
+ * disk, defect 27) and forbidden to write into the checkout (defect 41), which left
+ * exactly one legal location and no way for the worker to know it. The path is
+ * absolute because a worker resolves paths against the directory it was given, and
+ * that directory is not this one.
+ */
+function outputInstruction(task: Task, artifactDir: string): string {
+  const declared = task.agentSpec.outputPath;
+  return (
+    `## Where your output goes\n\n` +
+    `Write any file this task produces under \`${artifactDir}\`. That directory ` +
+    `exists and is yours; nothing outside it is.` +
+    (declared ? ` This task's output belongs at \`${artifactDir}/${declared}\`.` : "") +
+    `\n\nReport every file you write as an artifact with its full path, or the check ` +
+    `that grades this task will not be able to open it.`
+  );
 }
 
 /**

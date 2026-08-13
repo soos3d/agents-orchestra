@@ -31,6 +31,7 @@ import { type AgentSpec, type WorkerKind } from "../domain/task.js";
 import { type EventInput } from "../events/schema.js";
 import { AVAILABLE_TRANSPORTS } from "../workers/transport.js";
 import { classOf, resolveClasses } from "../workers/toolCatalogue.js";
+import { declaresLegalOutput } from "./artifactPath.js";
 import { type Calls } from "./calls.js";
 import { type MissionStore } from "./run.js";
 
@@ -138,6 +139,29 @@ export class ArtifactToolError extends SynthesisError {
  * edit the same file unnoticed, and any code task that actually wrote something failed
  * without retry. The whole of §8 was built, tested, and inert.
  */
+/**
+ * An agent that would write outside the one directory the task was given (P2).
+ *
+ * The 41-vs-27 collision resolved: a judge rubric may oblige an artifact, and a
+ * worker with no worktree may not write into the checkout — so it has exactly one
+ * legal location, and a spec that names another has broken the contract before the
+ * task has started. A planning-level failure like the lease, not a human decision:
+ * the directory is not negotiable and no code path widens it.
+ */
+export class ArtifactEscapeError extends SynthesisError {
+  constructor(taskId: string, declared: string) {
+    super(
+      taskId,
+      `Task '${taskId}' declared an output path of '${declared}', twice, which is not ` +
+        `inside the artifact directory it is given at dispatch. A spec names only what ` +
+        `goes inside that directory — a relative path like "report.md" — and the ` +
+        `runtime supplies the directory itself. Omit 'outputPath' to write to the ` +
+        `directory directly, or plan the task as 'code' if it needs to change the repo.`,
+    );
+    this.name = "ArtifactEscapeError";
+  }
+}
+
 export class UndeclaredLeaseError extends SynthesisError {
   constructor(taskId: string) {
     super(
@@ -261,7 +285,7 @@ export async function synthesizeTasks(
 /** What was wrong with a spec: the sentence the model gets on its retry, the string
  *  the event and the error record, and which of the three failures it was. */
 interface SpecProblem {
-  kind: "transport" | "capability" | "lease" | "artifact";
+  kind: "transport" | "capability" | "lease" | "artifact" | "outputPath";
   requested: string;
   retry: string;
 }
@@ -342,6 +366,23 @@ function inspect(
           `verify by 'command', or 'none' with a reason, if the work truly leaves no file.`,
       };
     }
+  }
+
+  // P2. A worker with no worktree has exactly one legal place to write — the artifact
+  // directory the runtime hands it — because writing into the shared checkout is
+  // refused (defect 41) and a rubric may still oblige a file (defect 27). A spec that
+  // names somewhere else is that contract broken before the task has started.
+  if (spec.outputPath !== undefined && !declaresLegalOutput(spec.outputPath)) {
+    return {
+      kind: "outputPath",
+      requested: spec.outputPath,
+      retry:
+        `'outputPath' must be relative to the artifact directory this task is given at ` +
+        `dispatch — e.g. "report.md" or "findings/summary.md". '${spec.outputPath}' is ` +
+        `absolute or leaves that directory. The runtime supplies the directory; the ` +
+        `spec names only what goes inside it. Omit the field to write to the directory ` +
+        `itself.`,
+    };
   }
 
   if (task.worker === "code" && (spec.owns ?? []).length === 0) {
@@ -428,6 +469,9 @@ function raise(
     return new UnavailableTransportError(task.id, problem.requested, transports);
   }
   if (problem.kind === "lease") return new UndeclaredLeaseError(task.id);
+  if (problem.kind === "outputPath") {
+    return new ArtifactEscapeError(task.id, problem.requested);
+  }
   // A planning problem like the lease: the plan can re-scope the task or change how
   // it is verified, and no human decision is being requested.
   if (problem.kind === "artifact") return new ArtifactToolError(task.id);

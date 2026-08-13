@@ -9,7 +9,9 @@
 // judge call gets a criterion shaped from the task. It still reads artifacts and
 // never the worker's report: grading a summary written by the thing being graded is
 // not verification.
+import fs from "node:fs";
 import path from "node:path";
+import { ensurePrivateDir, FILE_MODE } from "../config/hygiene.js";
 import { type Artifact, type Evidence, type VerifySpec } from "../domain/artifacts.js";
 import { type Criterion } from "../domain/ledger.js";
 import { type Task } from "../domain/task.js";
@@ -22,6 +24,9 @@ export interface VerifyContext {
   /** Where a `command` check runs: the worktree for code, the repo otherwise. */
   cwd: string;
   artifacts: readonly Artifact[];
+  /** Where the full check output is kept (P2). Absent means the log's tail is the
+   *  only record, which is the behaviour before the artifact directory existed. */
+  evidenceDir?: string;
 }
 
 export interface VerifyResult {
@@ -48,16 +53,53 @@ export function createVerifier(deps: VerifierDeps): Verifier {
     }
 
     if (spec.kind === "judge") {
+      const paths = artifactPaths(context.artifacts, context.cwd);
       const result = await deps.calls.judge({
         criterion: { id: context.task.id, statement: context.task.goal, check: spec },
         check: spec,
-        artifactPaths: artifactPaths(context.artifacts, context.cwd),
+        artifactPaths: paths,
       });
+      keepEvidence(context.evidenceDir, "check.txt", [
+        `task: ${context.task.id}`,
+        `graded: ${paths.join(", ") || "(no artifact paths)"}`,
+        "",
+        result.evidence.reasoning,
+      ]);
       return { passed: result.met, output: result.evidence.reasoning };
     }
 
-    return runCommand(spec.command, context.cwd, deps);
+    const result = await runCommand(spec.command, context.cwd, deps);
+    keepEvidence(context.evidenceDir, "check.txt", [
+      `task: ${context.task.id}`,
+      `command: ${spec.command}`,
+      "",
+      result.output,
+    ]);
+    return result;
   };
+}
+
+/**
+ * Writes a check's full output beside the work it graded (P2), and never fails the
+ * check for failing to.
+ *
+ * The log carries a tail, and a tail is enough to see which assertion failed and not
+ * enough to re-argue a mission weeks later — defect 30 is the standing reminder that a
+ * string in a log cannot re-open a file. A write that does not happen is a missing
+ * convenience; a check that fails because a disk was full would be a mission lost to
+ * bookkeeping, so this is best-effort by design and returns the path only on success.
+ */
+function keepEvidence(dir: string | undefined, name: string, lines: readonly string[]): string | undefined {
+  if (!dir) return undefined;
+  const file = path.join(dir, name);
+  try {
+    ensurePrivateDir(dir);
+    fs.writeFileSync(file, `${lines.join("\n")}\n`, { mode: FILE_MODE });
+    fs.chmodSync(file, FILE_MODE);
+    return file;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Shared by both levels of check, so a criterion and a task read a failing command
@@ -125,6 +167,9 @@ export interface CriterionContext {
   /** Where a `command` check runs. The repo, not a worktree: a criterion is about the
    *  outcome, and by now the work has merged. */
   cwd: string;
+  /** Where the full verdict is kept (P2). The mission's artifact root rather than any
+   *  one task's: a criterion is about work several tasks landed. */
+  evidenceDir?: string;
 }
 
 export type CriterionChecker = (
@@ -146,14 +191,29 @@ export function createCriterionChecker(deps: VerifierDeps): CriterionChecker {
     const artifactIds = artifacts.map((artifact) => artifact.id);
 
     if (criterion.check.kind === "judge") {
+      const paths = artifactPaths(artifacts, context.cwd);
       const result = await deps.calls.judge({
         criterion,
         check: criterion.check,
-        artifactPaths: artifactPaths(artifacts, context.cwd),
+        artifactPaths: paths,
       });
+      // The paths are kept alongside the verdict deliberately: defect 33, 39 and 40
+      // were each a judge reading the wrong files or none, and every one of them was
+      // diagnosed from a verdict that did not say what it had opened.
+      const kept = keepEvidence(context.evidenceDir, `criterion-${criterion.id}.txt`, [
+        `criterion: ${criterion.id} — ${criterion.statement}`,
+        `met: ${result.met}`,
+        `graded: ${paths.join(", ") || "(no artifact paths)"}`,
+        "",
+        result.evidence.reasoning,
+      ]);
       return {
         met: result.met,
-        evidence: { ...result.evidence, byTask: result.evidence.byTask.length ? result.evidence.byTask : byTask },
+        evidence: {
+          ...result.evidence,
+          byTask: result.evidence.byTask.length ? result.evidence.byTask : byTask,
+          ...(kept ? { checkOutputPath: kept } : {}),
+        },
       };
     }
 
@@ -175,6 +235,13 @@ export function createCriterionChecker(deps: VerifierDeps): CriterionChecker {
     }
 
     const result = await runCommand(criterion.check.command, context.cwd, deps);
+    const kept = keepEvidence(context.evidenceDir, `criterion-${criterion.id}.txt`, [
+      `criterion: ${criterion.id} — ${criterion.statement}`,
+      `met: ${result.passed}`,
+      `command: ${criterion.check.command}`,
+      "",
+      result.output,
+    ]);
     return {
       met: result.passed,
       evidence: {
@@ -184,6 +251,7 @@ export function createCriterionChecker(deps: VerifierDeps): CriterionChecker {
           ? `'${criterion.check.command}' passed against the work from ${byTask.join(", ")}.`
           : `'${criterion.check.command}' did not pass, so the outcome is not met yet.`,
         byTask,
+        ...(kept ? { checkOutputPath: kept } : {}),
       },
     };
   };

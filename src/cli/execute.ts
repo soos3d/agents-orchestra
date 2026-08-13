@@ -35,7 +35,7 @@ import { createAcpTransport } from "../workers/acp/transport.js";
 import { createPermissionPort, type PermissionPort } from "../workers/acp/permissionPort.js";
 import { availableTransports } from "../workers/availability.js";
 import { createCliReformatter, createCliTransport } from "../workers/transport.js";
-import { loreDir, type DiscoveredConfig } from "../config/discover.js";
+import { artifactRoot, loreDir, type DiscoveredConfig } from "../config/discover.js";
 import { loadProfiles } from "../memory/profiles.js";
 import { recordLearnings } from "../memory/writeBack.js";
 import { type Io } from "./main.js";
@@ -401,10 +401,16 @@ export async function buildLoopDeps(
 
   const profiles = promotedAgents(config, onWarn);
 
+  // Where every task's outputs and every criterion's verdict land (P2). Derived from
+  // the mission on the log rather than passed in, so `run` and `resume` cannot disagree
+  // about where a mission's artifacts live.
+  const root = artifactRoot(config.stateDir, store.state().mission.id);
+
   return {
     store,
     calls,
     cwd: repo ?? config.cwd,
+    artifactRoot: root,
     ...(profiles.length > 0 ? { profiles } : {}),
     // The replan's half of the honest offer (§7). Passed always, including empty: an
     // omitted list would fall back to everything the build ships, which is the exact
@@ -421,6 +427,7 @@ export async function buildLoopDeps(
           reformat,
           held: heldLeases(state),
           ...(code ? { code } : {}),
+          artifactRoot: root,
           cwd: repo ?? config.cwd,
         }, config),
       ),

@@ -129,6 +129,43 @@ export async function discoverConfig(cwd = process.cwd()): Promise<DiscoveredCon
 export const missionDir = (stateDir: string, missionId: string): string =>
   path.join(stateDir, "missions", missionId);
 
+/**
+ * Where a task's outputs belong (P2), and the answer to a collision the system had
+ * no legal resolution for: a judge rubric obliges an artifact (defect 27) and a
+ * non-`code` worker has nowhere to write one, because writing into the checkout is
+ * now refused (defect 41). One directory per task, under the mission's own state.
+ *
+ * `.orchestra/` is gitignored and re-asserted every run, so a write here is invisible
+ * to `detectRepoEscape` by construction — the escape check does not have to know this
+ * directory exists.
+ *
+ * The id guard is `forgetMission`'s, for the same reason: a task id reaches here from
+ * a plan a model wrote, and `..` in one would put a mission's artifacts anywhere on
+ * the disk.
+ */
+export const artifactDir = (stateDir: string, missionId: string, taskId: string): string =>
+  taskArtifactDir(artifactRoot(stateDir, missionId), taskId);
+
+/** The mission's half of it: what a composition root computes once and hands the loop. */
+export const artifactRoot = (stateDir: string, missionId: string): string =>
+  path.join(missionDir(stateDir, missionId), "artifacts");
+
+/**
+ * The task's half, guarded — and it is the half `dispatch` calls, which is why the
+ * guard lives here rather than only in `artifactDir`. A task id is written by a model
+ * and joined onto a path; `..` in one would put a mission's artifacts anywhere on the
+ * disk.
+ */
+export function taskArtifactDir(root: string, taskId: string): string {
+  if (taskId === "" || taskId.includes("..") || taskId.includes(path.sep)) {
+    throw new Error(
+      `Refusing to build an artifact directory for '${taskId}': not a task id. ` +
+        `A task id is a plain name with no path separators.`,
+    );
+  }
+  return path.join(root, taskId);
+}
+
 /** Semantic memory is cross-mission (§6), so it is a sibling of `missions/` rather
  *  than something inside one — a mission deleted by `orchestra forget` must not take
  *  the environment's accumulated lore with it. */

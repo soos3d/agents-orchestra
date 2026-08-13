@@ -475,11 +475,17 @@ one.
 
 When \`worker\` is not \`code\`, the agent runs in the repository checkout with no
 worktree and no lease, so anything it writes there is uncommitted and fails the task.
-Give a non-code agent a system prompt that says what to produce and where — a report,
-a document, a data file outside the tracked tree — and never one that tells it to edit,
-fix, or clean up the repository. If the task's goal cannot be done without changing
-tracked files, it was planned as the wrong kind: say so in \`role\` and keep the tools
-read-only, rather than granting \`Write\` and letting it try.
+It is given one directory it may write to — its own artifact directory, whose absolute
+path the runtime puts in the worker's prompt at dispatch — and that is where a report,
+a document, or a data file belongs. Never write a non-code system prompt that tells it
+to edit, fix, or clean up the repository. If the task's goal cannot be done without
+changing tracked files, it was planned as the wrong kind: say so in \`role\` and keep
+the tools read-only, rather than granting \`Write\` and letting it try.
+
+\`outputPath\` is optional and names a file *inside* that directory — \`"report.md"\`,
+\`"findings/summary.md"\`. It is relative, always: the runtime decides the directory and
+a spec that names an absolute path, or one that climbs out with \`..\`, is refused at
+validation and costs the task a retry. Leave it out to write to the directory itself.
 
 Anything under \`profiles\` is an agent a human kept from an earlier mission — prior
 art, not a roster. Adapt one where it fits this task, or ignore them all and write
@@ -510,8 +516,9 @@ something different:
 So a rubric that says "the final message must…", "the output must…", or "the report
 must contain…" cannot be evaluated and the task fails however well it was done. If the
 deliverable is a document, a review, or a set of findings, then **the work has to leave
-a file behind**: say so in the system prompt, name the path, and write the rubric about
-that file's contents. And the agent has to be *able* to leave it — a judge-verified
+a file behind**: say so in the system prompt, name it in \`outputPath\` when the task
+has no worktree, and write the rubric about that file's contents. And the agent has to
+be *able* to leave it — a judge-verified
 spec must grant a writing tool (\`Write\`), least privilege notwithstanding; one that
 cannot write the artifact its own rubric grades fails validation. If the task genuinely
 produces no file, use \`command\` or \`none\` with a reason — never \`judge\`.

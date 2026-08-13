@@ -45,6 +45,15 @@ export const agentSpecSchema = z.object({
   // where it is required — an empty lease is not "no restriction", it is a lease that
   // matches nothing, which makes the post-hoc escape check fail every writing worker.
   owns: z.array(z.string()).optional(),
+  // Where this agent's outputs go, relative to the per-task artifact directory the
+  // runtime hands it (P2). Absent means the directory itself, which is the common
+  // case. Relative on purpose: synthesis runs long before dispatch and the directory
+  // is the runtime's to decide, so an absolute path here is a spec choosing its own
+  // location — and it is refused at validation rather than at dispatch, the same door
+  // as an undeclared lease. `z.string()` rather than a branded type for the same
+  // reason `tools` is `z.array(z.string())`: an illegal declaration has to be
+  // *representable* or the refusal is untestable.
+  outputPath: z.string().optional(),
   model: z.string().min(1),
   verify: verifySpecSchema,
 });

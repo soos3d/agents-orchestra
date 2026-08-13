@@ -76,4 +76,46 @@ describe("the worker prompt", () => {
 
     assert.equal(seen.at(-1)!.cli, "codex");
   });
+
+  // P2. A worker that may not write into the checkout (defect 41) and may still be
+  // obliged to leave a file behind (defect 27) has exactly one legal location, and no
+  // way to know it unless the runtime says so.
+  describe("where the output goes", () => {
+    const dir = "/state/missions/m1/artifacts/t1";
+
+    test("names the absolute directory, because the worker resolves against another one", () => {
+      const prompt = workerPrompt(aCodeTask(), dir);
+
+      assert.ok(prompt.includes(dir));
+      assert.match(prompt, /Report every file you write as an artifact/);
+    });
+
+    test("names the declared file when the spec declared one", () => {
+      const task = aCodeTask({ agentSpec: anAgentSpec({ outputPath: "report.md" }) });
+
+      assert.ok(workerPrompt(task, dir).includes(`${dir}/report.md`));
+    });
+
+    // Absent means the directory itself, and saying nothing beats inventing a path.
+    test("says nothing about a directory when the dispatch had none", () => {
+      assert.equal(workerPrompt(aCodeTask()).includes("Where your output goes"), false);
+    });
+
+    // The report instruction is the last thing a worker reads for a reason (§4.1);
+    // an output section wedged after it would bury the contract that matters most.
+    test("comes before the report instruction", () => {
+      const prompt = workerPrompt(aCodeTask(), dir);
+
+      assert.ok(prompt.indexOf(dir) < prompt.indexOf("## How to finish"));
+    });
+
+    test("the cli transport passes the directory through", async () => {
+      const { runners, seen } = fakeRunners();
+      const task = aCodeTask();
+
+      await createCliTransport({ runners })({ task, cwd: "/worktree", artifactDir: dir });
+
+      assert.equal(seen.at(-1)!.prompt, workerPrompt(task, dir));
+    });
+  });
 });

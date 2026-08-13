@@ -235,7 +235,12 @@ describe("executeMission", () => {
   // from it (§7, defect 21), so a fixture claiming an empty PATH is a machine that can
   // staff nothing — which is a real state, asserted below, and not the one these
   // tests are about.
-  const config = { cwd: "/repo", stateDir: "/state", worktreeRoot: "/wt", agents: ["claude"], orchestratorModel: "opus", maxConcurrency: 4 } satisfies DiscoveredConfig;
+  // `stateDir` is a real directory, not a fixture path: a dispatch creates the task's
+  // artifact directory under it before a worker with no worktree runs (P2), so a
+  // `/state` that does not exist fails every dispatch on the mkdir instead of on the
+  // thing being asserted.
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "orchestra-execute-"));
+  const config = { cwd: "/repo", stateDir, worktreeRoot: "/wt", agents: ["claude"], orchestratorModel: "opus", maxConcurrency: 4 } satisfies DiscoveredConfig;
 
   function harness(seed: EventInput[], against: DiscoveredConfig = config, human?: HumanPort) {
     const store = testStore(seed);
@@ -472,6 +477,35 @@ describe("executeMission", () => {
 
     assert.equal(result.met, true);
     assert.match(result.evidence.checkOutput, /exit 0/);
+  });
+
+  // P2, composition root. The artifact directory is a contract with two ends — a
+  // worker is told where to write and a check is told where to look — and both are
+  // optional fields, which is the shape a feature gets finished and switched off in.
+  test("the entry point gives the loop an artifact root under the mission's own state", async () => {
+    const store = testStore(planOnlyMission());
+    const deps = await buildLoopDeps(store, {} as Calls, config);
+
+    assert.equal(deps.artifactRoot, path.join(stateDir, "missions", "m1", "artifacts"));
+  });
+
+  // The end a worker sees. A dispatch that computed a root and never handed it over
+  // would leave every non-code task exactly where defect 41 left it: obliged to
+  // produce a file and with nowhere legal to put one.
+  test("the dispatch it builds creates the task's directory and tells the worker", async () => {
+    const store = testStore(planOnlyMission());
+    const deps = await buildLoopDeps(store, {} as Calls, config);
+
+    // `chrome-mcp` is unbuilt, so the router refuses before any worker runs — but the
+    // directory is created ahead of the transport, which is what this reads.
+    await deps.dispatch!(
+      aCodeTask({ id: "t-root", agentSpec: anAgentSpec({ transport: { id: "chrome-mcp" } }) }),
+      aMissionState(),
+    );
+
+    const dir = path.join(stateDir, "missions", "m1", "artifacts", "t-root");
+    assert.equal(fs.existsSync(dir), true);
+    assert.equal(fs.statSync(dir).mode & 0o777, 0o700);
   });
 
   // P5, and the composition-root lesson again (defects 12b, 23, 24): the janitor is an

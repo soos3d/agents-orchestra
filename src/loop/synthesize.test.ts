@@ -31,6 +31,7 @@ import {
 import { type Calls } from "./calls.js";
 import { type MissionStore } from "./run.js";
 import {
+  ArtifactEscapeError,
   ArtifactToolError,
   EnvelopeViolationError,
   SynthesisError,
@@ -361,6 +362,87 @@ describe("the lease a code agent declares", () => {
 
     assert.equal(added, 1);
     assert.equal((store.state().tasks[0] as unknown as { owns?: string[] }).owns, undefined);
+  });
+});
+
+// P2, and the 41-vs-27 collision resolved: a judge rubric may oblige an artifact, and
+// a worker with no worktree may not write into the checkout — so it has exactly one
+// legal place to write, and the spec names only what goes inside it.
+describe("the declared output path", () => {
+  test("a relative path inside the task's directory is accepted", async () => {
+    const store = testStore([missionCreated()]);
+    const { calls } = scriptedSynthesize([
+      anAgentSpec({ worker: "research", outputPath: "findings/report.md" }),
+    ]);
+
+    const added = await synthesizeTasks(
+      deps(store, calls),
+      [aPlannedTask({ worker: "research" })],
+      0,
+    );
+
+    assert.equal(added, 1);
+    assert.equal(store.state().tasks[0]?.agentSpec.outputPath, "findings/report.md");
+  });
+
+  // The common case. Absent means the directory itself, which is what most tasks want.
+  test("declaring nothing is legal", async () => {
+    const store = testStore([missionCreated()]);
+    const { calls } = scriptedSynthesize([anAgentSpec({ worker: "research" })]);
+
+    assert.equal(
+      await synthesizeTasks(deps(store, calls), [aPlannedTask({ worker: "research" })], 0),
+      1,
+    );
+  });
+
+  test("re-asks once when the spec names somewhere else", async () => {
+    const store = testStore([missionCreated()]);
+    const { calls, seen } = scriptedSynthesize([
+      anAgentSpec({ worker: "research", outputPath: "/tmp/report.md" }),
+      anAgentSpec({ worker: "research", outputPath: "report.md" }),
+    ]);
+
+    const added = await synthesizeTasks(
+      deps(store, calls),
+      [aPlannedTask({ worker: "research" })],
+      0,
+    );
+
+    assert.equal(added, 1);
+    assert.match(seen[1]!.rejected ?? "", /relative to the artifact directory/);
+  });
+
+  // Adversarial, and the same door as an undeclared lease: no code path widens the
+  // directory, so a spec that insists goes back to the planner.
+  test("refuses a spec that insists on writing outside the directory", async () => {
+    const store = testStore([missionCreated()]);
+    const { calls } = scriptedSynthesize([
+      anAgentSpec({ worker: "research", outputPath: "../../etc/passwd" }),
+      anAgentSpec({ worker: "research", outputPath: "../../etc/passwd" }),
+    ]);
+
+    await assert.rejects(
+      () => synthesizeTasks(deps(store, calls), [aPlannedTask({ worker: "research" })], 0),
+      (error: Error) => {
+        assert.ok(error instanceof ArtifactEscapeError);
+        assert.ok(error instanceof SynthesisError, "the callers catch the base and park");
+        assert.match(error.message, /artifact directory/);
+        return true;
+      },
+    );
+  });
+
+  // A code task writes into its worktree and merges; the artifact directory is for
+  // work that has no worktree. Nothing here demands a declaration from one.
+  test("a code task is not required to declare an output path", async () => {
+    const store = testStore([missionCreated()]);
+    const { calls } = scriptedSynthesize([anAgentSpec({ owns: ["src/a.ts"] })]);
+
+    assert.equal(
+      await synthesizeTasks(deps(store, calls), [aPlannedTask({ worker: "code" })], 0),
+      1,
+    );
   });
 });
 

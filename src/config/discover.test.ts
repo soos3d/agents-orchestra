@@ -6,7 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { after, beforeEach, describe, test } from "node:test";
-import { discoverConfig, discoverVerifyCommand, missionDir } from "./discover.js";
+import { artifactDir, discoverConfig, discoverVerifyCommand, missionDir } from "./discover.js";
 import { doctor, formatReport } from "./doctor.js";
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "orchestra-config-"));
@@ -104,6 +104,24 @@ describe("discoverConfig", () => {
       missionDir("/state", "m1"),
       path.join("/state", "missions", "m1"),
     );
+  });
+
+  // P2: the one place a worker with no worktree may write, and the id reaching it
+  // comes from a plan a model wrote — so it is guarded the way `forgetMission` guards
+  // a mission id, and for the same reason.
+  describe("artifactDir", () => {
+    test("gives each task its own directory under the mission", () => {
+      assert.equal(
+        artifactDir("/state", "m1", "recon"),
+        path.join("/state", "missions", "m1", "artifacts", "recon"),
+      );
+    });
+
+    test("refuses a task id that is a path", () => {
+      assert.throws(() => artifactDir("/state", "m1", "../../etc"), /not a task id/);
+      assert.throws(() => artifactDir("/state", "m1", "a/b"), /not a task id/);
+      assert.throws(() => artifactDir("/state", "m1", ""), /not a task id/);
+    });
   });
 });
 

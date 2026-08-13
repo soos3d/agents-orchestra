@@ -8,7 +8,7 @@ import path from "node:path";
 import { after, describe, test } from "node:test";
 import { type JudgeInput } from "./calls.js";
 import { aCodeTask } from "../testing/fixtures.js";
-import { createVerifier } from "./verify.js";
+import { createCriterionChecker, createVerifier } from "./verify.js";
 
 // A check command is argv, not a shell line, so a script on disk is how a test gets
 // a program that prints and exits non-zero without shell metacharacters.
@@ -221,5 +221,117 @@ describe("createVerifier", () => {
 
     assert.equal(result.passed, true);
     assert.match(result.output, /the artifact is the deliverable/);
+  });
+
+  // P2. The log carries a tail, which is enough to see which assertion failed and not
+  // enough to re-argue a mission weeks later. Defect 30 is the standing reminder that
+  // a string in a log cannot re-open a file that was deleted.
+  describe("evidence on disk", () => {
+    const evidenceDir = () => fs.mkdtempSync(path.join(scratch, "evidence-"));
+
+    test("a command check's full output is written beside the work", async () => {
+      const dir = evidenceDir();
+      const verify = createVerifier({ calls: neverJudges });
+      const script = writeScript('console.log("2 tests failed"); process.exit(1);');
+
+      await verify({ kind: "command", command: `node ${script}` }, context({ evidenceDir: dir }));
+
+      const kept = fs.readFileSync(path.join(dir, "check.txt"), "utf8");
+      assert.match(kept, /2 tests failed/);
+      assert.match(kept, /command: node/);
+      // §17: a mission's evidence is not world-readable.
+      assert.equal(fs.statSync(path.join(dir, "check.txt")).mode & 0o777, 0o600);
+    });
+
+    // What the judge opened, recorded next to what it concluded — defects 33, 39 and
+    // 40 were each a judge reading the wrong files or none, and every one was
+    // diagnosed from a verdict that did not say what it had read.
+    test("a judge check records the paths it graded", async () => {
+      const dir = evidenceDir();
+      const verify = createVerifier({
+        calls: {
+          judge: async () => ({
+            met: true,
+            evidence: { artifactIds: [], checkOutput: "", reasoning: "the file says so", byTask: [] },
+          }),
+        },
+      });
+
+      await verify(
+        { kind: "judge", rubric: "the report names the policy" },
+        context({
+          evidenceDir: dir,
+          artifacts: [{ kind: "document", id: "a1", path: "/abs/report.md", summary: "s" }],
+        }),
+      );
+
+      const kept = fs.readFileSync(path.join(dir, "check.txt"), "utf8");
+      assert.match(kept, /graded: \/abs\/report\.md/);
+      assert.match(kept, /the file says so/);
+    });
+
+    test("with no directory the check still runs, and writes nothing", async () => {
+      const verify = createVerifier({ calls: neverJudges });
+
+      const result = await verify({ kind: "command", command: "node -e ''" }, context());
+
+      assert.equal(result.passed, true);
+    });
+
+    // Bookkeeping must not decide a mission: a full disk is a missing convenience,
+    // not a failed check.
+    test("a directory that cannot be written does not fail the check", async () => {
+      const verify = createVerifier({ calls: neverJudges });
+
+      const result = await verify(
+        { kind: "command", command: "node -e ''" },
+        context({ evidenceDir: path.join(scratch, "no-such-file.js", "nested") }),
+      );
+
+      assert.equal(result.passed, true);
+    });
+  });
+});
+
+// A criterion's verdict is what a mission terminates on, so where it can be re-read
+// matters more here than for a task check (P2). One file per criterion, under the
+// mission's own artifact root rather than any one task's: a criterion is about work
+// several tasks landed.
+describe("createCriterionChecker evidence", () => {
+  const criterion = (patch = {}) => ({
+    id: "c1",
+    statement: "the README documents the NaN policy",
+    check: { kind: "command" as const, command: "node -e ''" },
+    ...patch,
+  });
+
+  test("records where the full verdict was written", async () => {
+    const dir = fs.mkdtempSync(path.join(scratch, "criterion-"));
+    const check = createCriterionChecker({ calls: neverJudges });
+
+    const result = await check(criterion(), { tasks: [], cwd: process.cwd(), evidenceDir: dir });
+
+    assert.equal(result.met, true);
+    assert.equal(result.evidence.checkOutputPath, path.join(dir, "criterion-c1.txt"));
+    assert.match(fs.readFileSync(result.evidence.checkOutputPath!, "utf8"), /criterion: c1/);
+  });
+
+  test("names the file after the criterion, so several do not overwrite each other", async () => {
+    const dir = fs.mkdtempSync(path.join(scratch, "criterion-"));
+    const check = createCriterionChecker({ calls: neverJudges });
+
+    await check(criterion({ id: "c1" }), { tasks: [], cwd: process.cwd(), evidenceDir: dir });
+    await check(criterion({ id: "c2" }), { tasks: [], cwd: process.cwd(), evidenceDir: dir });
+
+    assert.deepEqual(fs.readdirSync(dir).sort(), ["criterion-c1.txt", "criterion-c2.txt"]);
+  });
+
+  test("with no directory the verdict carries no path, and the check still answers", async () => {
+    const check = createCriterionChecker({ calls: neverJudges });
+
+    const result = await check(criterion(), { tasks: [], cwd: process.cwd() });
+
+    assert.equal(result.met, true);
+    assert.equal(result.evidence.checkOutputPath, undefined);
   });
 });

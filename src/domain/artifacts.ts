@@ -49,6 +49,12 @@ export const evidenceSchema = z.object({
   checkOutput: z.string(),
   reasoning: z.string(),
   byTask: z.array(z.string()),
+  // Where the full check output was written, when there was a directory to write it
+  // to (P2). The log carries a tail; a mission that has to be re-argued weeks later
+  // needs the whole thing, and defect 30 is the standing reminder that a string in a
+  // log cannot re-open a file that was deleted. Optional because the directory is a
+  // runtime dependency and a check without one still runs.
+  checkOutputPath: z.string().optional(),
 });
 
 export type Artifact = z.infer<typeof artifactSchema>;
