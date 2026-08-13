@@ -80,10 +80,19 @@ browser session to close until Phase 8.
 The design docs are authoritative and code comments cite them by section number (`§9.1`,
 `§2a rule 5`, "defect 13"). Read the cited section before changing the behavior it describes.
 
+**P1–P5 have landed on top of Phase 7** (`NEXT-PLAN.md`), and four of them change something a
+session will trip over: a criterion checked `false` is re-checkable (`loop/criteria.ts`), every
+task has an artifact directory it may write to (`config/discover.ts` `artifactDir`,
+`loop/artifactPath.ts`), decision points run in the target repo rather than the process cwd, and
+the project's own verify command is a merge gate for code tasks. The repo is prepared to publish
+under Apache-2.0 — `LICENSE`, `NOTICE`, `CONTRIBUTING.md`, `.github/workflows/ci.yml`, a public
+`package.json` — and `npm publish` plus making the GitHub repo public are the only steps left.
+
 - @specs.md — the full design, §0–§17
 - @ROADMAP.md — phases, milestone checklist, known-defects table
-- [NEXT-PLAN.md](./NEXT-PLAN.md) — execution order: commit defect 41, P1–P5, **open-source**,
-  then Phase 8. Read this before starting the next session.
+- [NEXT-PLAN.md](./NEXT-PLAN.md) — execution order: ~~commit defect 41~~, ~~P1–P5~~,
+  **open-source** (prepared; publish is the remaining step), then Phase 8. Read this before
+  starting the next session.
 - [PHASE-8-PLAN.md](./PHASE-8-PLAN.md) — Phase 8 design (P1–P5 detail, B1–B7, security). The
   cousin-survey leftovers stay named there, not this phase. Not @-embedded on purpose.
   §0 of specs.md is the survey itself.
@@ -91,7 +100,7 @@ The design docs are authoritative and code comments cite them by section number 
 ## Commands
 
 ```
-npm test          # node:test via tsx over src/**/*.test.ts — the whole suite, ~30s
+npm test          # node:test via tsx over src/**/*.test.ts — the whole suite, ~80s
 npm run typecheck # tsc --noEmit (includes tests; the build config excludes them)
 npm run build     # tsc -p tsconfig.build.json → dist/
 npm run dev       # run the CLI from source, e.g. `npm run dev -- doctor`
@@ -100,7 +109,9 @@ npm run dev       # run the CLI from source, e.g. `npm run dev -- doctor`
 Single test file: `node --import tsx --no-warnings --test src/events/fold.test.ts`.
 Single test by name: append `--test-name-pattern "<name>"`.
 
-There is no lint or format tooling and no CI — `npm run typecheck && npm test` is the only gate.
+There is no lint or format tooling — `npm run typecheck && npm test` is the whole gate, and CI runs
+exactly that on Node 22 and 24. The suite needs Node 21+ (`node --test` gained globs there); the
+shipped binary runs on 20, which a separate CI job asserts.
 
 ## Architecture
 
@@ -210,6 +221,27 @@ folded state — which is what makes the whole loop assertable against a canned 
   so `violations()` has something to judge. `AgentSpec.tools` is `z.array(z.string())` on purpose —
   an out-of-envelope tool has to be representable or the validation is untestable, the same argument
   that keeps `criteria` typed `unknown[]`.
+- **A worker with no worktree has exactly one place it may write, and the runtime tells it where.**
+  P2: a judge grades files on disk (defect 27) and the checkout is refused (defect 41), which left
+  a task obliged to produce a file with nowhere to put one. `artifactDir(stateDir, missionId,
+  taskId)` is that place, created `0700` before the worker runs and injected into `workerPrompt` as
+  an absolute path. `AgentSpec.outputPath` is optional and **relative** — synthesis runs long
+  before dispatch and the directory is the runtime's to decide, so an absolute path or a `..` is
+  refused at validation (`ArtifactEscapeError`). Check output and judge verdicts land there too;
+  `keepEvidence` is best-effort by design, because a full disk must not fail a check.
+- **A criterion checked `false` is re-checked when a contributor lands after the verdict, and a
+  still-`met` one is never re-judged.** `shouldCheckCriterion` (`loop/criteria.ts`) is the decision
+  and it is pure, because the two mistakes it can make are opposite: never firing again parks a
+  mission whose fix already merged (P1, observed on run 8), and firing every round buys a judge
+  call per criterion per round. `Task.completedRound` is folded from `task_status` the way
+  `attempts` is — `task_replanned` spells it out rather than leaving it to the spread, since
+  `patchTask` merges.
+- **`src/testing/receipts/` is a real mission's log, committed.** `receipt.test.ts` replays it
+  through `createEventLog` and folds it, so a change that alters what `fold` produces from a log
+  this version did not write fails the suite. Re-record it only from a real run.
+- **The suite cannot run on Node 20**, which the package still supports: `node --test` did not
+  accept a glob until v21. CI tests on 22 and 24 and has a separate job that builds on 20 and runs
+  the shipped binary. Do not "fix" this by raising `engines` — the runtime is fine on 20.
 - **An empty `owns` is not "no restriction", it is a lease that matches nothing.** `readyTasks` skips
   the overlap check when a code task declares none, and `detectEscape` then counts every changed file
   as an escape — so a code spec without a lease is refused at synthesis (defect 23).

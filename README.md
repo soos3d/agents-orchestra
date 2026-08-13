@@ -7,8 +7,14 @@ down, asks up to three questions, plans a set of tasks, waits for you to sign of
 purpose-built agent for each task, runs them in parallel, verifies each, and re-assesses after every
 round. It loops until the outcome is met, the budget is spent, or it is genuinely blocked.
 
-Design lives in [`specs.md`](./specs.md). What gets built and in what order lives in
-[`ROADMAP.md`](./ROADMAP.md).
+**What it is not.** Not a coding swarm — a task can be research, review, or writing, and only `code`
+tasks get git. Not a hosted service and not a desktop app: one npm package, one `orchestra` binary,
+one process, no database, no daemon. Not autonomous by default — a human signs off on the outcome
+spec and the plan before anything is synthesized, and `--unattended` has to be asked for twice.
+
+Apache-2.0. Design lives in [`specs.md`](./specs.md); what gets built and in what order lives in
+[`ROADMAP.md`](./ROADMAP.md). Both are the internal design record rather than user documentation —
+you do not need either to run a mission.
 
 ## Status
 
@@ -38,10 +44,16 @@ npm i -g @anthropic-ai/claude-code && claude   # log in once, then quit
 npm i -g @openai/codex             && codex    # log in once, then quit
 ```
 
-Then the orchestrator itself. There is no published package yet, so it is a clone and a link:
+Then the orchestrator itself:
 
 ```bash
-git clone <this repo> && cd fable-orchestra
+npm i -g fable-orchestra
+```
+
+Or from source, which is the same thing plus the tests:
+
+```bash
+git clone https://github.com/soos3d/fable-orchestra.git && cd fable-orchestra
 npm install
 npm run build
 npm link          # puts `orchestra` on your PATH
@@ -178,7 +190,7 @@ seam; a canned `events.jsonl` plus scripted answers drives every path above it.
 ## Develop
 
 ```bash
-npm test          # 873 tests, ~80s
+npm test          # 937 tests, ~80s
 npm run typecheck
 npm run build
 npm run dev -- doctor
@@ -186,7 +198,9 @@ npm run dev -- doctor
 
 A single file: `node --import tsx --no-warnings --test src/events/fold.test.ts`.
 
-`npm run typecheck && npm test` is the whole gate — there is no lint, no formatter, and no CI.
+`npm run typecheck && npm test` is the whole gate — there is no lint and no formatter, and CI runs
+exactly those two commands on Node 20 and 22. [`CONTRIBUTING.md`](./CONTRIBUTING.md) has the
+conventions a first patch has to hit.
 
 **One rule the suite cannot enforce for you.** `src/loop/agentCalls.ts` is the file the fixture
 harness substitutes for, so a green suite says nothing about what a model actually receives. Six
@@ -201,3 +215,17 @@ worker reports containing real names. The directory is created `0700`, its files
 `.gitignore` entry is re-asserted on **every** run rather than written once — the failure being
 prevented is somebody deleting the line. `orchestra forget <missionId>` deletes a mission outright.
 Disk encryption is assumed, not provided.
+
+Each task also gets `.orchestra/missions/<id>/artifacts/<taskId>/`, which is the one place a worker
+without a git worktree may write. Check output and judge verdicts are kept there too, because the
+log carries only a tail and a mission sometimes has to be re-argued weeks later.
+
+## What happens next
+
+[`NEXT-PLAN.md`](./NEXT-PLAN.md) is the execution order and
+[`PHASE-8-PLAN.md`](./PHASE-8-PLAN.md) is the computer-use design. Neither is required reading to
+run a mission — they are where the work goes, not how the tool is used.
+
+## License
+
+Apache-2.0. See [`LICENSE`](./LICENSE).

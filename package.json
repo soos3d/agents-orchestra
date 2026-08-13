@@ -1,12 +1,36 @@
 {
   "name": "fable-orchestra",
   "version": "0.1.0",
-  "private": true,
+  "description": "A looping orchestrator: give it a goal in any domain, it researches, specs, plans, waits for your sign-off, then synthesizes an agent per task and runs them to a verified outcome.",
+  "license": "Apache-2.0",
   "type": "module",
-  "description": "A Fable-brained orchestrator that dispatches coding tasks to Claude Code and Codex workers in isolated git worktrees.",
   "bin": {
     "orchestra": "dist/index.js"
   },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/soos3d/fable-orchestra.git"
+  },
+  "bugs": {
+    "url": "https://github.com/soos3d/fable-orchestra/issues"
+  },
+  "homepage": "https://github.com/soos3d/fable-orchestra#readme",
+  "files": [
+    "dist",
+    "NOTICE"
+  ],
+  "keywords": [
+    "agent",
+    "orchestrator",
+    "claude",
+    "codex",
+    "acp",
+    "automation",
+    "cli"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "dev": "node --import tsx --no-warnings src/index.ts",

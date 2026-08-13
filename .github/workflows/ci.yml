@@ -1,0 +1,65 @@
+# The gate the laptop already runs: `npm run typecheck && npm test`, and nothing else.
+#
+# No live-model job, deliberately. Everything above `src/loop/calls.ts` is tested with
+# scripted answers and no spend, and keeping that true is worth more than a nightly
+# bill. The one thing CI cannot check is what a model actually receives — see the
+# `agentCalls.ts` note in CONTRIBUTING.md.
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  gate:
+    name: typecheck and test (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 22 and 24 rather than 20, and the floor job below says why: `node --test`
+        # did not accept a glob until v21, so the suite cannot be *run* on the oldest
+        # Node the package supports.
+        node: ["22", "24"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck
+
+      # The suite includes the run receipt (`src/testing/receipts/`): a real mission's
+      # committed events.jsonl, replayed through the log and folded. A tampered copy
+      # fails here rather than in a demo.
+      - run: npm test
+
+      - run: npm run build
+
+  floor:
+    name: the shipped binary runs on the oldest supported node
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # `engines` says >=20 and `doctor` enforces it, so something has to prove it.
+          # The build and the CLI are what a user gets; the test harness is not.
+          node-version: "20"
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+      # `doctor` exits non-zero when a prerequisite is missing, and a runner has no
+      # coding CLI installed — so this asserts the binary starts and reports, which is
+      # the thing a wrong Node version would break.
+      - run: node dist/index.js doctor || true
+      - run: node dist/index.js help
