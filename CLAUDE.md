@@ -74,28 +74,25 @@ reporting `blocked` raises the question; the inbox answers it; `question_answere
 to `waiting`, where the scheduler owns the promotion. Pause works the same way: a folded flag the
 loop parks on, lifted by `orchestra resume`. Still open after Phase 6: kill-task, serve-side resume
 of a parked mission, the retention sweep, artifact content serving, envelope editing on compose, and
-the concrete OpenClaw carrier (see the Phase 6 as-built notes in ROADMAP.md); panic still has no
-browser session to close until Phase 8.
+the concrete OpenClaw carrier; panic still has no browser session to close until Phase 8.
 
-The design docs are authoritative and code comments cite them by section number (`§9.1`,
-`§2a rule 5`, "defect 13"). Read the cited section before changing the behavior it describes.
+**The design docs are authoritative, and they are not in this repository.** `specs.md` (§0–§17),
+`ROADMAP.md` (phases, milestone checklist, the numbered defect table), `NEXT-PLAN.md` (execution
+order) and `PHASE-8-PLAN.md` are kept privately and are gitignored — they exist on the maintainer's
+machine and nowhere else. Comments cite them by section number (`§9.1`, `§2a rule 5`) and by defect
+number ("defect 13"), and those citations stay: each is a load-bearing sentence about *why* the
+code is shaped as it is. If the files are present on this machine, read the cited section before
+changing the behaviour it describes. If they are not — you are working from a clone — then the
+comment beside the citation and the failure mode named in the test header are what you have, and
+they are enough; do not delete a citation you cannot follow, and do not invent a new one.
 
-**P1–P5 have landed on top of Phase 7** (`NEXT-PLAN.md`), and four of them change something a
-session will trip over: a criterion checked `false` is re-checkable (`loop/criteria.ts`), every
+**P1–P5 have landed on top of Phase 7**, and four of them change something a session will trip
+over: a criterion checked `false` is re-checkable (`loop/criteria.ts`), every
 task has an artifact directory it may write to (`config/discover.ts` `artifactDir`,
 `loop/artifactPath.ts`), decision points run in the target repo rather than the process cwd, and
 the project's own verify command is a merge gate for code tasks. The repo is prepared to publish
 under Apache-2.0 — `LICENSE`, `NOTICE`, `CONTRIBUTING.md`, `.github/workflows/ci.yml`, a public
 `package.json` — and `npm publish` plus making the GitHub repo public are the only steps left.
-
-- @specs.md — the full design, §0–§17
-- @ROADMAP.md — phases, milestone checklist, known-defects table
-- [NEXT-PLAN.md](./NEXT-PLAN.md) — execution order: ~~commit defect 41~~, ~~P1–P5~~,
-  **open-source** (prepared; publish is the remaining step), then Phase 8. Read this before
-  starting the next session.
-- [PHASE-8-PLAN.md](./PHASE-8-PLAN.md) — Phase 8 design (P1–P5 detail, B1–B7, security). The
-  cousin-survey leftovers stay named there, not this phase. Not @-embedded on purpose.
-  §0 of specs.md is the survey itself.
 
 ## Commands
 

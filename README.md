@@ -12,9 +12,14 @@ tasks get git. Not a hosted service and not a desktop app: one npm package, one 
 one process, no database, no daemon. Not autonomous by default — a human signs off on the outcome
 spec and the plan before anything is synthesized, and `--unattended` has to be asked for twice.
 
-Apache-2.0. Design lives in [`specs.md`](./specs.md); what gets built and in what order lives in
-[`ROADMAP.md`](./ROADMAP.md). Both are the internal design record rather than user documentation —
-you do not need either to run a mission.
+Apache-2.0.
+
+The design document and the roadmap are kept privately and are not part of this repository. Code
+comments cite them by section (`§9.1`) and by defect number ("defect 30"), and those citations are
+left in deliberately: each one says *why* a piece of code is shaped the way it is, and the reason
+is usually a bug that a real mission found. You do not need either document to run a mission or to
+send a patch — [`CONTRIBUTING.md`](./CONTRIBUTING.md) and `CLAUDE.md` carry what a change has to
+respect.
 
 ## Status
 
@@ -29,11 +34,10 @@ Workers also run over **ACP** — a pinned adapter per target, a real permission
 `--dangerously-skip-permissions` — and a real mission has gone from brief to `complete`
 uninterrupted on it: six synthesized agents, five real merges, nine criteria met with evidence.
 
-What is not built: computer use and gates (Phase 8 — the plan is
-[`PHASE-8-PLAN.md`](./PHASE-8-PLAN.md)) and the concrete phone carrier, plus the smaller leftovers
-named in ROADMAP's Phase 6, 7, and 9 notes (kill-task, serve-side resume, the retention sweep,
-dashboard streaming of worker activity, and the cousin-survey leftovers: plan critics, scan cache,
-pipeline depth, partial plans).
+What is not built: computer use and its approval gates, and the concrete phone carrier for the
+inbox. Smaller things are started and named rather than half-wired — killing a single task,
+resuming a parked mission from the server rather than the CLI, the artifact retention sweep, and
+streaming live worker activity to the dashboard.
 
 ## Install
 
@@ -219,12 +223,6 @@ Disk encryption is assumed, not provided.
 Each task also gets `.orchestra/missions/<id>/artifacts/<taskId>/`, which is the one place a worker
 without a git worktree may write. Check output and judge verdicts are kept there too, because the
 log carries only a tail and a mission sometimes has to be re-argued weeks later.
-
-## What happens next
-
-[`NEXT-PLAN.md`](./NEXT-PLAN.md) is the execution order and
-[`PHASE-8-PLAN.md`](./PHASE-8-PLAN.md) is the computer-use design. Neither is required reading to
-run a mission — they are where the work goes, not how the tool is used.
 
 ## License
 

@@ -122,3 +122,11 @@ dist
 # fable-orchestra: mission state, screenshots, and reports — never commit
 /.orchestra/
 .DS_Store
+# Design docs. Kept locally, deliberately not published — the code cites them by
+# section number (§N) and by defect number, and those citations point at documents
+# that live outside this repository.
+/specs.md
+/ROADMAP.md
+/NEXT-PLAN.md
+/PHASE-8-PLAN.md
+/PHASE-2-PLAN.md

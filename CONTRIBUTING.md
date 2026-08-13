@@ -32,8 +32,8 @@ log. Node 20 is the floor (`engines`), and `orchestra doctor` enforces it at run
   "conflict detected".
 - **A new optional field on a `Deps` interface needs a composition-root test.** This is not style
   advice. Three separate features have been built to spec, unit-tested, and left switched off
-  because no entry point passed the parameter — see defects 12b, 23 and 24 in `ROADMAP.md`. Test
-  the thing that *builds* it (`buildLoopDeps`, `runMission`), not only the mechanism.
+  because no entry point passed the parameter. Test the thing that *builds* it
+  (`buildLoopDeps`, `runMission`), not only the mechanism.
 
 `CLAUDE.md` has the rest, including the architecture and the gotchas. It is written for an agent
 working in the repo and is just as useful to a person.
@@ -57,12 +57,20 @@ The same habit applies below the transport seam: the ACP protocol schemas in
 `src/testing/acp-transcripts/` are executable fixtures parsed by the suite, and adapter versions are
 pinned exact. Bump one and re-capture.
 
-## Design docs
+## The citations in the comments
 
-`specs.md` (§0–§17) is authoritative and code comments cite it by section number. If you are
-changing behaviour a section describes, read that section first and say in the PR whether the
-section still holds. `ROADMAP.md` carries the phase history and the defect table; a fix for a
-defect listed there should say which number it closes.
+Code comments cite a design document by section (`§9.1`, `§2a rule 5`) and past bugs by number
+("defect 30", "P2"). **Those documents are not in this repository** — they are kept privately — and
+the citations are left in anyway, because each one is a load-bearing sentence about why the code is
+shaped the way it is, and the reason is almost always a bug a real mission found.
+
+You do not need them. What matters is next to the citation: the comment above a function explains
+the failure it prevents, and the test file's header names the failure mode under test. If you are
+changing behaviour that a comment says a section requires, say so in the PR and describe what you
+believe the constraint is — that is enough for a reviewer to check it against the document.
+
+Please do not delete a citation because you cannot follow it, and please do not add a new `§N`
+reference to a document you have not read.
 
 ## Pull requests
 
