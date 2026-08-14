@@ -27,6 +27,42 @@ import { type MissionRegistry } from "./registry.js";
 /** Never configurable. See the header. */
 export const HOST = "127.0.0.1";
 
+/** The loopback names a browser may legitimately have reached this server by. Exact
+ *  hostnames, never a suffix test — `127.0.0.1.evil.example` ends with a loopback
+ *  literal and resolves to somebody else's machine. */
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]", "::1"]);
+
+/**
+ * Whether a socket claiming this `Origin` may connect (§17).
+ *
+ * Binding to loopback is a statement about the network, and a WebSocket is the one
+ * browser API that ignores the same-origin policy: any page in any tab can open
+ * `ws://127.0.0.1:<port>` and send `approve` or `panic`, and read the mission's
+ * events — the real records and real names §17 spends a row on — straight back out.
+ * A guessable `--port` is all that stands in the way, so the check is here rather
+ * than in the argument about who can route to 127.0.0.1.
+ *
+ * Absent means a native client (a test, a CLI, `ws` itself), which no browser can
+ * forge: browsers always send `Origin` on a WebSocket handshake. The literal string
+ * `"null"` is *not* absent — it is what a sandboxed iframe on a hostile page sends,
+ * and a `!origin` guard would wave it through.
+ *
+ * Pure, and exported, because this file sits below the fixture harness and what the
+ * server *decides* belongs where it can be asserted without a socket.
+ */
+export function isAllowedOrigin(origin: string | undefined, port: number): boolean {
+  if (origin === undefined) return true;
+
+  let url: URL;
+  try {
+    url = new URL(origin);
+  } catch {
+    return false;
+  }
+
+  return LOOPBACK_HOSTS.has(url.hostname) && url.port === String(port);
+}
+
 export interface WebServerDeps {
   /** Reads the one mission's log — the per-run mode. Injected rather than reading
    *  the file here, so the server has no opinion about where a mission lives and
@@ -87,7 +123,24 @@ export async function startWebServer(deps: WebServerDeps): Promise<RunningServer
   // In per-run mode a cursor streams from connect; in serve mode it streams nothing
   // until the client watches a mission.
   const sockets = new Map<WebSocket, { seq: number; missionId?: string }>();
-  const wss = new WebSocketServer({ server });
+
+  // Assigned once `listen` resolves, which is before any client can reach the
+  // upgrade handler — the port is what an allowed origin has to match, and asking
+  // for a free one (port 0) means it is not knowable any earlier.
+  let boundPort = 0;
+
+  const wss = new WebSocketServer({
+    server,
+    verifyClient: ({ req }: { req: http.IncomingMessage }) => {
+      // `req.headers.origin` rather than ws's `info.origin`, which is typed as a
+      // plain string: absent and present-but-hostile are the two cases that matter
+      // and they must stay distinguishable.
+      const origin = req.headers.origin;
+      if (isAllowedOrigin(origin, boundPort)) return true;
+      warn(`Refused a dashboard socket from origin '${origin}'. The dashboard is loopback-only (§17).`);
+      return false;
+    },
+  });
 
   const feedFor = (cursor: { missionId?: string }): readonly Event[] =>
     deps.registry
@@ -160,6 +213,7 @@ export async function startWebServer(deps: WebServerDeps): Promise<RunningServer
 
   const address = server.address();
   const port = typeof address === "object" && address ? address.port : 0;
+  boundPort = port;
 
   return {
     url: `http://${HOST}:${port}`,

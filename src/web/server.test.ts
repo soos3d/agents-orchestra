@@ -12,7 +12,7 @@ import { WebSocket } from "ws";
 import { missionCreated, stamp } from "../testing/fixtures.js";
 import { type Event, type EventInput } from "../events/schema.js";
 import { parseClientMessage } from "./protocol.js";
-import { eventsSince, HOST, startWebServer, type RunningServer } from "./server.js";
+import { eventsSince, HOST, isAllowedOrigin, startWebServer, type RunningServer } from "./server.js";
 import { createWebHuman } from "./webHuman.js";
 
 const someEvents = (count: number): Event[] =>
@@ -41,6 +41,49 @@ describe("eventsSince", () => {
 
   test("a cursor past the end returns nothing rather than replaying", () => {
     assert.deepEqual(eventsSince(someEvents(2), 99), []);
+  });
+});
+
+// A WebSocket is not subject to the same-origin policy, so "bound to loopback" is a
+// statement about the network and not about who may connect: any page in any tab can
+// open ws://127.0.0.1:<port> and send `approve` or `panic`, and read the mission's
+// events back. The origin check is what makes loopback mean what §17 claims it means.
+describe("isAllowedOrigin", () => {
+  test("a native client sends no Origin at all, and is allowed", () => {
+    assert.equal(isAllowedOrigin(undefined, 4173), true);
+  });
+
+  test("the page this server served is allowed, by either loopback name", () => {
+    assert.equal(isAllowedOrigin("http://127.0.0.1:4173", 4173), true);
+    assert.equal(isAllowedOrigin("http://localhost:4173", 4173), true);
+    assert.equal(isAllowedOrigin("http://[::1]:4173", 4173), true);
+  });
+
+  // The attack this exists for: the user visits a page, that page opens a socket to
+  // a port it guessed, and approves a plan the user never saw.
+  test("refuses a remote origin whatever it claims to be", () => {
+    for (const origin of [
+      "https://evil.example",
+      "http://127.0.0.1.evil.example:4173",
+      "http://evil.example:4173",
+      "http://notlocalhost:4173",
+    ]) {
+      assert.equal(isAllowedOrigin(origin, 4173), false, origin);
+    }
+  });
+
+  // A sandboxed iframe on a hostile page sends the literal string "null", which is
+  // neither absent nor parseable — the case a `!origin` guard would wave through.
+  test("refuses a null origin rather than reading it as absent", () => {
+    assert.equal(isAllowedOrigin("null", 4173), false);
+    assert.equal(isAllowedOrigin("", 4173), false);
+    assert.equal(isAllowedOrigin("not a url", 4173), false);
+  });
+
+  // Another local service is not this local service. A dev server on :3000 is a page
+  // the user is running, not a page the user approved anything on.
+  test("refuses loopback on a different port", () => {
+    assert.equal(isAllowedOrigin("http://127.0.0.1:3000", 4173), false);
   });
 });
 
@@ -231,6 +274,50 @@ describe("the server", () => {
         }),
       );
     });
+
+  // The pure check above says what the rule is; this says the socket actually applies
+  // it. A browser cannot forge `Origin`, so refusing the handshake is what turns
+  // "bound to loopback" into "only this page may approve things".
+  test("refuses a handshake from a page on another origin", async () => {
+    const warnings: string[] = [];
+    const server = await startWebServer({
+      events: () => someEvents(1),
+      onMessage: () => ({ ok: true }),
+      onWarn: (message) => warnings.push(message),
+    });
+    running.push(server);
+
+    const refused = await new Promise<string>((resolve) => {
+      const socket = new WebSocket(server.url.replace("http://", "ws://"), {
+        origin: "https://evil.example",
+      });
+      socket.once("error", (error) => resolve(error.message));
+      socket.once("open", () => resolve("connected"));
+    });
+
+    assert.notEqual(refused, "connected");
+    assert.ok(
+      warnings.some((message) => message.includes("evil.example")),
+      "the refusal is reported, not silent",
+    );
+  });
+
+  test("accepts the page it served, which sends its own origin", async () => {
+    const server = await serve(someEvents(1));
+
+    const connected = await new Promise<boolean>((resolve) => {
+      const socket = new WebSocket(server.url.replace("http://", "ws://"), {
+        origin: server.url,
+      });
+      socket.once("error", () => resolve(false));
+      socket.once("open", () => {
+        socket.close();
+        resolve(true);
+      });
+    });
+
+    assert.equal(connected, true);
+  });
 
   test("binds loopback and nothing else — this socket can approve things (§17)", async () => {
     const server = await serve(someEvents(1));
