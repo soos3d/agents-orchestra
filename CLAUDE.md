@@ -97,18 +97,21 @@ under Apache-2.0 — `LICENSE`, `NOTICE`, `CONTRIBUTING.md`, `.github/workflows/
 ## Commands
 
 ```
-npm test          # node:test via tsx over src/**/*.test.ts — the whole suite, ~80s
-npm run typecheck # tsc --noEmit (includes tests; the build config excludes them)
-npm run build     # tsc -p tsconfig.build.json → dist/
+npm test          # node:test via tsx over src/**/*.test.ts(x) — the whole suite, ~80s
+npm run typecheck # tsc --noEmit (includes tests and the dashboard; build config excludes both)
+npm run build     # tsc -p tsconfig.build.json → dist/, then esbuild → dist/web/app.js
+npm run build:web # just the dashboard bundle; add `-- --watch` while working on it
 npm run dev       # run the CLI from source, e.g. `npm run dev -- doctor`
 ```
 
 Single test file: `node --import tsx --no-warnings --test src/events/fold.test.ts`.
 Single test by name: append `--test-name-pattern "<name>"`.
 
-There is no lint or format tooling — `npm run typecheck && npm test` is the whole gate, and CI runs
-exactly that on Node 22 and 24. The suite needs Node 21+ (`node --test` gained globs there); the
-shipped binary runs on 20, which a separate CI job asserts.
+There is no lint or format tooling — `npm run typecheck && npm test` is the whole gate. **`npm run
+build` now has to run before `npm test` on a fresh checkout**, because the dashboard is a bundle and
+`web/server.test.ts` asserts that the route serving it returns something; CI does them in that
+order. The suite needs Node 21+ (`node --test` gained globs there); the shipped binary runs on 20,
+which a separate CI job asserts.
 
 ## Architecture
 
@@ -170,12 +173,26 @@ folded state — which is what makes the whole loop assertable against a canned 
 
 - **The web layer is below the fixture harness, exactly like `agentCalls.ts`.** Nothing above it
   substitutes for a socket. Keep what the server *decides* — `eventsSince`, `parseClientMessage`,
-  `renderSignoff` — in pure functions with tests, and leave only plumbing in `web/server.ts`.
-- **The page is client-side JavaScript carried in TypeScript template literals** (`web/page/*` —
-  style, projection, screens, wire, composed by `shell.html.ts`). A backtick or `${` inside a
-  fragment silently truncates or interpolates the page; `shell.test.ts` trips on it, and it has
-  already caught one comment. No `send()` argument may derive from the page's own fold — the one
-  exception is the id of the element that was clicked.
+  `isAllowedOrigin`, `renderSignoff` — in pure functions with tests, and leave only plumbing in
+  `web/server.ts`.
+- **A WebSocket ignores the same-origin policy, so loopback is not an access control.** Any page in
+  any tab could open `ws://127.0.0.1:<port>` and send `approve` or `panic` until `isAllowedOrigin`
+  landed. Two of its rules are counter-intuitive and both are tested: an *absent* `Origin` is a
+  native client and is allowed, while the literal string `"null"` is a sandboxed iframe on a hostile
+  page and is not; and loopback hosts match exactly and by port, because
+  `127.0.0.1.evil.example` ends with a loopback literal.
+- **The dashboard is a Preact bundle** (`web/app/` — `state`, `screens.tsx`, `wire`, `main.tsx`),
+  built by esbuild into `dist/web/app.js` and served on `/app.js`. It is the *maintainer's* build:
+  `npm i -g` is unchanged, one binary and one process, no dev server. `web/app/state.ts` imports the
+  `Event` union **as a type**, so tsc checks every `case` against the real schema and the bundler
+  erases zod entirely — `grep zod dist/web/app.js` returns nothing, and it should stay that way.
+  No `send()` argument may derive from the page's own fold — the one exception is the id of the
+  element that was clicked, which is why every outbound message lives in `web/app/wire.ts`.
+- **`npm run dev` will serve a stale or missing bundle.** `tsx` runs the server from source but the
+  page is whatever `dist/web/app.js` last held, so run `npm run build:web -- --watch` alongside it.
+  A missing bundle answers 503 with the command to type rather than 404ing into a blank page
+  (`web/assets.ts`) — that failure is the whole reason the resolution is a pure, separately tested
+  function.
 - **End of input is not approval.** `Prompter.ask` returns `undefined` for a closed pipe and `""` for
   a human pressing Enter, and conflating them hands sign-off to a shell redirect. The same
   distinction is why the terminal port *rejects* on intake when nothing was answered: these ports

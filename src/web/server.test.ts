@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import { after, describe, test } from "node:test";
 import { WebSocket } from "ws";
 import { missionCreated, stamp } from "../testing/fixtures.js";
+import { BUNDLE_ROUTE } from "./assets.js";
 import { type Event, type EventInput } from "../events/schema.js";
 import { parseClientMessage } from "./protocol.js";
 import { eventsSince, HOST, isAllowedOrigin, startWebServer, type RunningServer } from "./server.js";
@@ -317,6 +318,20 @@ describe("the server", () => {
     });
 
     assert.equal(connected, true);
+  });
+
+  // The page is a bundle now, so "the server serves a page" is two routes and the
+  // second one can be missing in a way the first never could.
+  test("serves the bundle the shell asks for", async () => {
+    const server = await serve(someEvents(1));
+    const response = await fetch(`${server.url}${BUNDLE_ROUTE}`);
+    const body = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("content-type") ?? "", /javascript/);
+    // Built by `npm run build` before the suite runs in CI, and by hand otherwise.
+    // If this is empty the bundle step did not happen, which is the thing to know.
+    assert.ok(body.length > 0);
   });
 
   test("binds loopback and nothing else — this socket can approve things (§17)", async () => {

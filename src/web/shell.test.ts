@@ -1,79 +1,43 @@
-// The failure mode under test: the page is client-side JavaScript carried inside
-// TypeScript template literals, and a fragment that picks up a backtick or a
-// dollar-brace does not fail the build — it silently truncates or interpolates the
-// page, and the first sign is a blank dashboard on a live mission. The composition
-// is also asserted whole: the ids the wire fragment binds must exist in the markup,
-// or the script throws on load and every screen dies with it.
+// The failure mode under test: the shell is the one thing the browser loads before
+// any JavaScript runs, so a skeleton that has lost its mount point or its script tag
+// is a permanently blank dashboard with nothing in the console to explain it.
+//
+// This file used to guard something else. The page was client JavaScript carried in
+// TypeScript template literals, and a fragment that picked up a backtick or a
+// dollar-brace silently truncated or interpolated it — the assertions here were the
+// only thing standing between that and a blank screen on a live mission. The bundle
+// removed the template literals, so that guard is gone with the hazard it existed
+// for, and the screen assertions it also carried moved to `app/screens.test.tsx`,
+// where they can test what a view actually renders instead of whether a string
+// appears somewhere in a script.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { pageProjection } from "./page/projection.js";
-import { pageScreens } from "./page/screens.js";
-import { pageStyle } from "./page/style.js";
-import { pageWire } from "./page/wire.js";
+import { BUNDLE_ROUTE } from "./assets.js";
 import { shellHtml } from "./shell.html.js";
 
-const fragments = {
-  pageProjection,
-  pageScreens,
-  pageStyle,
-  pageWire,
-};
-
-test("no fragment contains a backtick or template interpolation", () => {
-  for (const [name, fragment] of Object.entries(fragments)) {
-    assert.ok(!fragment.includes("`"), `${name} contains a backtick`);
-    assert.ok(!fragment.includes("${"), `${name} contains a template interpolation`);
-  }
+test("the shell carries the mount point the bundle renders into", () => {
+  assert.ok(shellHtml().includes('id="app"'));
 });
 
-test("the composed page carries every id the script binds", () => {
+test("the shell loads the bundle as a module, and by the route the server serves", () => {
   const html = shellHtml();
-  // The elements the wire and render fragments reach for unconditionally.
-  for (const id of ["goal", "bar", "screen", "note", "send-note", "panic", "log"]) {
-    assert.ok(html.includes(`id="${id}"`), `missing element #${id}`);
-  }
+
+  assert.ok(html.includes(`<script type="module" src="${BUNDLE_ROUTE}"></script>`));
+  // One script, and it is external. An inline one would need `script-src
+  // 'unsafe-inline'` back, which is the directive the bundle bought us out of.
+  assert.equal(html.match(/<script/g)?.length, 1);
+  assert.ok(!html.includes("<script>"));
 });
 
-// A worker is awaiting this one, so a card with no buttons is a mission that hangs
-// until the ACP session times out (§12). Asserted against the composed page, because
-// the projection, the card, and the handler live in three fragments and any one of
-// them going missing costs the same thing.
-test("a permission request can be answered from the inbox", () => {
+test("the shell is one whole document", () => {
   const html = shellHtml();
-  for (const piece of ["permission_requested", "allow-perm", "deny-perm", "function sendResolve("]) {
-    assert.ok(html.includes(piece), `the page no longer carries ${piece}`);
-  }
-});
 
-// The mid-mission return (§3, §13). The page renders `awaiting_signoff` as the plan
-// screen, and a reopened mission is the *same* status one field apart — so without
-// this the human would be shown the original plan and an approve button that, clicked,
-// approves a criteria change they were never shown. Defect 29's web half.
-test("a reopened mission renders the diff rather than the original plan", () => {
-  const html = shellHtml();
-  for (const piece of [
-    "criteria_change_requested",
-    "criteria_change_resolved",
-    "function renderCriteriaChange(",
-    "view.pendingChange",
-  ]) {
-    assert.ok(html.includes(piece), `the page no longer carries ${piece}`);
-  }
-});
-
-test("the composed page is one document with one script", () => {
-  const html = shellHtml();
   assert.ok(html.startsWith("<!doctype html>"));
-  assert.equal(html.match(/<script>/g)?.length, 1);
-  assert.equal(html.match(/<\/script>/g)?.length, 1);
   assert.ok(html.trimEnd().endsWith("</html>"));
 });
 
-test("the screens cover the board, the strip, and the provenance panel", () => {
-  // Phase 6's three additions, asserted by the functions that draw them existing in
-  // the shipped script — the cheapest tripwire against a fragment edit dropping one.
-  const html = shellHtml();
-  for (const fn of ["renderBoard", "renderStrip", "renderWhy", "renderInbox", "renderSignoff"]) {
-    assert.ok(html.includes(`function ${fn}(`), `page no longer defines ${fn}`);
-  }
+// Not decoration: the browser paints this before the socket opens, and a mission that
+// is slow to connect should say so rather than showing an empty page.
+test("the shell says something before any script has run", () => {
+  assert.ok(shellHtml().includes("connecting…"));
 });

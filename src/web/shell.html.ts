@@ -1,19 +1,17 @@
-// The dashboard page, composed from string fragments.
+// The dashboard page: a document skeleton and one script tag.
 //
-// A string rather than a bundle because §2a allows one process and no build step
-// beyond `tsc`: a Vite dev server or a committed React bundle both buy component
-// structure these screens do not need, and both put a second toolchain between a
-// clone and a working `orchestra run`. Phase 6 grew the page to a board and a
-// provenance panel and the trade still held — what changed is that the page now
-// lives in `page/` as four fragments (style, projection, screens, wire), because a
-// thousand-line template literal is what the file-size rule exists to prevent.
+// It was four string fragments concatenated into an inline `<script>`, which bought
+// §2a's no-build-step constraint at the price of carrying client JavaScript inside
+// TypeScript template literals — where a stray backtick silently truncated the page.
+// The bundle replaces that. The constraint it was protecting is unharmed: the build
+// is the *maintainer's*, `npm i -g @soos3d/orchestra` is unchanged, and a user still
+// runs one binary and one process with no dev server and no services.
 //
-// The page renders from events and holds no state the log does not. The second
-// reducer it computes is named and contained in `page/projection.ts`.
-import { pageProjection } from "./page/projection.js";
-import { pageScreens } from "./page/screens.js";
+// What the trade bought, beyond the look: `script-src 'self'` instead of
+// `'unsafe-inline'`, and a page whose reducer is typechecked against the real event
+// union rather than being untyped JavaScript in a string.
+import { BUNDLE_ROUTE } from "./assets.js";
 import { pageStyle } from "./page/style.js";
-import { pageWire } from "./page/wire.js";
 
 export function shellHtml(): string {
   return `<!doctype html>
@@ -25,30 +23,8 @@ export function shellHtml(): string {
 <style>${pageStyle}</style>
 </head>
 <body>
-<main>
-  <h1 id="goal">connecting…</h1>
-  <div class="bar" id="bar"></div>
-  <div id="screen"></div>
-  <div id="mission-extras">
-    <h2>Note — steers the mission, never blocks it</h2>
-    <div class="row">
-      <input id="note" placeholder="e.g. stop using the staging database">
-      <button id="send-note">send</button>
-      <button id="pause" title="drain in-flight work and park — reversible">pause</button>
-      <button id="panic" title="stop dispatching now — worktrees are left intact">panic</button>
-    </div>
-    <h2>Timeline</h2>
-    <div class="log" id="log"></div>
-  </div>
-</main>
-<script>
-(() => {
-  "use strict";
-${pageProjection}
-${pageScreens}
-${pageWire}
-})();
-</script>
+<main id="app"><h1>connecting…</h1></main>
+<script type="module" src="${BUNDLE_ROUTE}"></script>
 </body>
 </html>`;
 }

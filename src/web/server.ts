@@ -20,6 +20,7 @@
 import http from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import { type Event } from "../events/schema.js";
+import { BUNDLE_ROUTE, readBundle } from "./assets.js";
 import { shellHtml } from "./shell.html.js";
 import { parseClientMessage, type ClientMessage } from "./protocol.js";
 import { type MissionRegistry } from "./registry.js";
@@ -105,6 +106,28 @@ export async function startWebServer(deps: WebServerDeps): Promise<RunningServer
     }
 
     const path = (request.url ?? "/").split("?")[0];
+
+    if (path === BUNDLE_ROUTE) {
+      let bundle: string;
+      try {
+        bundle = readBundle(import.meta.url);
+      } catch (error) {
+        // A missing bundle is a contributor who has not run `npm run build`, and the
+        // worst possible report of it is a blank page with a console error. Say what
+        // is wrong and what to type, on the wire and on the terminal (§2a rule 5).
+        const message = error instanceof Error ? error.message : String(error);
+        warn(message);
+        response.writeHead(503, { "content-type": "text/plain; charset=utf-8" }).end(message);
+        return;
+      }
+      response.writeHead(200, {
+        "content-type": "text/javascript; charset=utf-8",
+        "cache-control": "no-store",
+      });
+      response.end(bundle);
+      return;
+    }
+
     if (path !== "/") {
       response.writeHead(404, { "content-type": "text/plain" }).end("No such page.");
       return;
@@ -115,7 +138,11 @@ export async function startWebServer(deps: WebServerDeps): Promise<RunningServer
       // The page loads nothing from anywhere. Stated in a header as well as being
       // true, so a future edit that reaches for a CDN fails in the browser rather
       // than quietly putting a third party inside the approval surface.
-      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'",
+      //
+      // `script-src 'self'` rather than `'unsafe-inline'`: the page is a bundle now,
+      // so the weaker directive the inline fragments needed is gone.
+      "content-security-policy":
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; connect-src 'self'",
     });
     response.end(html);
   });

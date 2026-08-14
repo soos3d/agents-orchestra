@@ -194,17 +194,21 @@ seam; a canned `events.jsonl` plus scripted answers drives every path above it.
 ## Develop
 
 ```bash
-npm test          # 937 tests, ~80s
+npm run build     # tsc → dist/, then the dashboard bundle → dist/web/app.js
+npm test          # 960 tests, ~80s
 npm run typecheck
-npm run build
 npm run dev -- doctor
 ```
 
 A single file: `node --import tsx --no-warnings --test src/events/fold.test.ts`.
 
-`npm run typecheck && npm test` is the whole gate — there is no lint and no formatter, and CI runs
-exactly those two commands on Node 20 and 22. [`CONTRIBUTING.md`](./CONTRIBUTING.md) has the
-conventions a first patch has to hit.
+Build before testing on a fresh checkout: the dashboard is a bundle, and the suite asserts the route
+that serves it. There is no lint and no formatter — typecheck, build, and test are the whole gate,
+and CI runs exactly that on Node 22 and 24, with a separate job proving the shipped binary starts on
+Node 20. [`CONTRIBUTING.md`](./CONTRIBUTING.md) has the conventions a first patch has to hit.
+
+Working on the dashboard itself: `npm run build:web -- --watch` alongside `npm run dev`, or the page
+you reload is the one you built last.
 
 **One rule the suite cannot enforce for you.** `src/loop/agentCalls.ts` is the file the fixture
 harness substitutes for, so a green suite says nothing about what a model actually receives. Six

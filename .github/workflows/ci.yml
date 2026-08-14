@@ -34,12 +34,15 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
 
+      # Before the suite, not after: the dashboard is a bundle, and `server.test.ts`
+      # asserts that the route serving it returns something. On a fresh checkout
+      # `dist/` does not exist, so a build that ran last would test nothing.
+      - run: npm run build
+
       # The suite includes the run receipt (`src/testing/receipts/`): a real mission's
       # committed events.jsonl, replayed through the log and folded. A tampered copy
       # fails here rather than in a demo.
       - run: npm test
-
-      - run: npm run build
 
   floor:
     name: the shipped binary runs on the oldest supported node
