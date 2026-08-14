@@ -94,7 +94,7 @@ export interface AcpTransportDeps {
   clientInfo?: ClientInfo;
 }
 
-const DEFAULT_CLIENT_INFO: ClientInfo = { name: "fable-orchestra", version: "0.1.0" };
+const DEFAULT_CLIENT_INFO: ClientInfo = { name: "orchestra", version: "0.1.0" };
 
 /**
  * The `acp` transport (§7's registry, second row).

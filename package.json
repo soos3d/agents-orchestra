@@ -1,5 +1,5 @@
 {
-  "name": "fable-orchestra",
+  "name": "@soos3d/orchestra",
   "version": "0.1.0",
   "description": "A looping orchestrator: give it a goal in any domain, it researches, specs, plans, waits for your sign-off, then synthesizes an agent per task and runs them to a verified outcome.",
   "license": "Apache-2.0",
@@ -12,12 +12,15 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/soos3d/fable-orchestra.git"
+    "url": "git+https://github.com/soos3d/orchestra.git"
   },
   "bugs": {
-    "url": "https://github.com/soos3d/fable-orchestra/issues"
+    "url": "https://github.com/soos3d/orchestra/issues"
   },
-  "homepage": "https://github.com/soos3d/fable-orchestra#readme",
+  "homepage": "https://github.com/soos3d/orchestra#readme",
+  "publishConfig": {
+    "access": "public"
+  },
   "files": [
     "dist",
     "NOTICE"

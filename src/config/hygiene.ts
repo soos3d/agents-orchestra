@@ -14,7 +14,7 @@ import path from "node:path";
 export const DIR_MODE = 0o700;
 export const FILE_MODE = 0o600;
 
-const MARKER = "# fable-orchestra: mission state, screenshots, and reports — never commit";
+const MARKER = "# orchestra: mission state, screenshots, and reports — never commit";
 
 export interface GitignoreResult {
   file: string;

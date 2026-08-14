@@ -119,7 +119,7 @@ dist
 
 # End of https://mrkandreev.name/snippets/gitignore-generator/#Node
 
-# fable-orchestra: mission state, screenshots, and reports — never commit
+# orchestra: mission state, screenshots, and reports — never commit
 /.orchestra/
 .DS_Store
 # Design docs. Kept locally, deliberately not published — the code cites them by

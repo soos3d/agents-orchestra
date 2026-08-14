@@ -245,7 +245,7 @@ describe("the server", () => {
     const html = await response.text();
 
     assert.equal(response.status, 200);
-    assert.match(html, /<title>fable-orchestra<\/title>/);
+    assert.match(html, /<title>Mission Control<\/title>/);
     // No external origin can be reached even if a future edit reaches for one.
     assert.match(response.headers.get("content-security-policy") ?? "", /default-src 'none'/);
     assert.equal(/<script src=|<link .*href="http/.test(html), false);

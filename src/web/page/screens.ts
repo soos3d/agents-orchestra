@@ -222,14 +222,14 @@ export const pageScreens = `
     $("mission-extras").style.display = home ? "none" : "";
 
     if (home) {
-      $("goal").textContent = "fable-orchestra";
+      $("goal").textContent = "Mission Control";
       $("bar").innerHTML = "";
       $("screen").innerHTML = renderHome();
       wire();
       return;
     }
 
-    $("goal").textContent = view.goal || "fable-orchestra";
+    $("goal").textContent = view.goal || "orchestra";
     $("bar").innerHTML = [
       "status <strong>" + esc(view.status) + "</strong>" + (view.paused ? " ⏸ paused" : ""),
       "round " + view.round,

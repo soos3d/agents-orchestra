@@ -21,7 +21,7 @@ export function shellHtml(): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>fable-orchestra</title>
+<title>Mission Control</title>
 <style>${pageStyle}</style>
 </head>
 <body>

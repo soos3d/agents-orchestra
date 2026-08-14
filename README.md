@@ -1,4 +1,4 @@
-# fable-orchestra
+# orchestra
 
 A local, resilient, **looping** orchestrator for **any kind of task** — not only coding.
 
@@ -51,13 +51,13 @@ npm i -g @openai/codex             && codex    # log in once, then quit
 Then the orchestrator itself:
 
 ```bash
-npm i -g fable-orchestra
+npm i -g @soos3d/orchestra
 ```
 
 Or from source, which is the same thing plus the tests:
 
 ```bash
-git clone https://github.com/soos3d/fable-orchestra.git && cd fable-orchestra
+git clone https://github.com/soos3d/orchestra.git && cd orchestra
 npm install
 npm run build
 npm link          # puts `orchestra` on your PATH
@@ -153,7 +153,7 @@ overnight survives a restart and is approved through the same code path an atten
 different repo without linking:
 
 ```bash
-cd /path/to/fable-orchestra
+cd /path/to/orchestra
 TARGET_REPO="$HOME/scratch/trial" npm run dev -- run "<goal>" --plan-only
 ```
 
