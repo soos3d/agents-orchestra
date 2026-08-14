@@ -11,7 +11,7 @@
 // `'unsafe-inline'`, and a page whose reducer is typechecked against the real event
 // union rather than being untyped JavaScript in a string.
 import { BUNDLE_ROUTE } from "./assets.js";
-import { pageStyle } from "./page/style.js";
+import { pageStyle } from "./style.js";
 
 export function shellHtml(): string {
   return `<!doctype html>

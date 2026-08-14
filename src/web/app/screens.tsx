@@ -348,8 +348,10 @@ function TaskCard({ task, onSelect }: { task: BoardTask; onSelect: (id: string) 
       ? `${Math.max(0, Math.round((Date.now() - Date.parse(task.startedAt)) / 60000))} min`
       : "";
 
+  // The status is a class as well as a mark, because the stylesheet is where "a
+  // running task is the only thing on the board that moves" is enforced.
   return (
-    <div class="task" onClick={() => onSelect(task.id)}>
+    <div class={`task task-${task.status}`} onClick={() => onSelect(task.id)}>
       <span class="id">{task.id}</span> {OUTCOME_MARK[task.status] ?? null}
       <div>{task.goal.length > 80 ? `${task.goal.slice(0, 77)}…` : task.goal}</div>
       <div class="meta">
