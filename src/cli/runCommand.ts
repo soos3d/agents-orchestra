@@ -8,7 +8,7 @@
 // explicit `--force` (§17: it must never become the habitual default), and a rejected
 // criterion exits non-zero so a pipeline notices.
 import path from "node:path";
-import { type Budget, type Spend } from "../domain/budget.js";
+import { spendPhase, type Budget, type Spend } from "../domain/budget.js";
 import { type Envelope } from "../domain/envelope.js";
 import { type Criterion, type PlannedTask } from "../domain/ledger.js";
 import { type Estimate } from "../domain/mission.js";
@@ -26,7 +26,7 @@ import { DEFAULT_TOOL_CLASSES } from "../workers/toolCatalogue.js";
 import { type ClientMessage } from "../web/protocol.js";
 import { startWebServer, type RunningServer } from "../web/server.js";
 import { createWebHuman, type WebHuman } from "../web/webHuman.js";
-import { executeMission, promotedAgents } from "./execute.js";
+import { executeMission, staffableRoles } from "./execute.js";
 import { renderCriteria, renderEstimate, renderPlan } from "./render.js";
 import { type Io } from "./main.js";
 
@@ -37,6 +37,11 @@ export interface RunOptions {
    *  one wins, because "same job, different month" is what a replay usually is. */
   goal: string;
   planOnly: boolean;
+  /** The human's own judgment that this job is small (UI plan: the compose checkbox,
+   *  `--quick` from a terminal). Skips the deep research call and asks the planner for
+   *  one task. A hint, never a permission: the outcome-spec gate is unchanged, and a
+   *  spec it rejects escalates to the research call that was skipped. */
+  quick: boolean;
   unattended: boolean;
   force: boolean;
   /** The saved mission to replay (§7). Scan and research run again regardless. */
@@ -93,7 +98,7 @@ export function parseRunArgs(argv: readonly string[]): ParsedRun {
   }
 
   const unknown = [...flags].find(
-    (flag) => !["--plan-only", "--unattended", "--force", "--no-web"].includes(flag),
+    (flag) => !["--plan-only", "--quick", "--unattended", "--force", "--no-web"].includes(flag),
   );
   if (unknown) return { ok: false, message: `Unknown flag '${unknown}'.` };
 
@@ -116,6 +121,7 @@ export function parseRunArgs(argv: readonly string[]): ParsedRun {
     options: {
       goal,
       planOnly: flags.has("--plan-only"),
+      quick: flags.has("--quick"),
       unattended,
       force: flags.has("--force"),
       web: !flags.has("--no-web"),
@@ -174,8 +180,10 @@ export interface RunSurface {
 export interface RunDeps {
   /** `onSpend` is where the measured portion of a mission's cost enters the log.
    *  The loop's own calls are the part actually billed, so they are recorded under
-   *  their own phase rather than folded into task spend (§9.5). */
-  createCalls(config: DiscoveredConfig, onSpend: (spend: Spend) => void): Calls;
+   *  their own phase rather than folded into task spend (§9.5) — and under *which*
+   *  call, since `createAgentCalls` knows and a single `"orchestration"` bucket made
+   *  the only question worth asking of the number unanswerable. */
+  createCalls(config: DiscoveredConfig, onSpend: (call: keyof Calls, spend: Spend) => void): Calls;
   /** Injected so a run is testable without a tty. Absent under `--unattended`, and
    *  absent means nobody is there. */
   human?: HumanPort;
@@ -232,12 +240,12 @@ export async function runMission(
     },
   };
 
-  const calls = deps.createCalls(config, (spend) =>
+  const calls = deps.createCalls(config, (call, spend) =>
     wired.emit({
       type: "spend_recorded",
       missionId,
       actor: "orchestrator",
-      phase: "orchestration",
+      phase: spendPhase(call),
       spend,
     }),
   );
@@ -256,6 +264,7 @@ export async function runMission(
       : defaultEnvelope(config, budget),
     budget,
     unattended: options.unattended,
+    quick: options.quick,
   });
 
   if (saved) {
@@ -340,7 +349,7 @@ export async function runMission(
       // at *this* root as well as `executeMission`'s, because `run` staffs its
       // approved plan inside `prepareMission` and `resume` staffs it afterwards. One
       // of the two wired is a feature switched off on the commoner path.
-      profiles: promotedAgents(config, (message) => io.err(message)),
+      roles: staffableRoles(config, (message: string) => io.err(message)),
       // What this machine can actually start (§7, defect 21). `run` staffs its
       // approved plan inside `prepareMission`, so the offer has to be here as well as
       // in the loop's replan — one of the two wired is a mission staffed against a
@@ -529,7 +538,7 @@ function printPlan(
     "",
     ...renderCriteria(criteria),
     ...renderPlan(plan),
-    ...renderEstimate(estimate, plan),
+    ...renderEstimate(estimate),
   ]) {
     io.out(line);
   }

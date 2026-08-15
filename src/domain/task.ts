@@ -29,10 +29,26 @@ export const transportRefSchema = z.object({
   model: z.string().optional(),
 });
 
-// Synthesized for THIS task at plan time (§7), never chosen from a fixed roster.
+// Authored for THIS task at plan time (§7, amended), optionally starting from a role
+// the roster already documents.
+//
+// §7 originally forbade a roster outright, on the argument that a fixed list caps the
+// system at the tasks its author anticipated. The argument holds; the prohibition did
+// not survive its cost, which was a full system prompt written from scratch for every
+// task to reach a decision a one-line description already makes. So `basedOn` names a
+// role from `src/agents/` and nothing about the ceiling moves: a spec is still checked
+// against the mission envelope, the transport registry, and the lease rule in
+// `loop/synthesize.ts` whether it named a role or invented one.
+//
+// `basedOn` is provenance rather than a pointer. By the time a spec is emitted,
+// `systemPrompt` already holds the composed text — the role's body plus this task's
+// addendum — so the log stays self-contained and nothing downstream resolves anything.
 export const agentSpecSchema = z.object({
   role: z.string().min(1),
   systemPrompt: z.string().min(1),
+  /** The roster role this spec started from, if any. Recorded so a mission can be read
+   *  back to the role that shaped it; never read by the runtime. */
+  basedOn: z.string().optional(),
   worker: workerKindSchema,
   transport: transportRefSchema,
   // Concrete tool names drawn from the catalogue, not class ids. Synthesis resolves a

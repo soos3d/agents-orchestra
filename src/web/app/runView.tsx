@@ -22,10 +22,12 @@
 //    only a running task, and a panel assembles only when it is created. Peripheral
 //    movement here means something changed; if it stops meaning that, it has to go.
 import { useEffect, useState } from "preact/hooks";
-import { type Artifact } from "../../domain/artifacts.js";
 import { type ClientMessage } from "../protocol.js";
 import { Contract } from "./contract.js";
 import { core, elapsed, panes, vitals, type PaneKey } from "./hud.js";
+import { taskOrrery } from "./orrery.js";
+import { TaskBrief, TaskDossier } from "./taskPanel.js";
+import { OrreryFigure } from "./orreryFigure.js";
 import { type BoardTask, type View } from "./state.js";
 
 type Send = (message: ClientMessage) => void;
@@ -242,7 +244,16 @@ function TaskCard({
       {OUTCOME_MARK[task.status] ? (
         <span class={MARK_CLASS[task.status]}>{OUTCOME_MARK[task.status]}</span>
       ) : null}
-      <div>{task.goal.length > 80 ? `${task.goal.slice(0, 77)}…` : task.goal}</div>
+      {/* Who is on it, before what it is. A synthesized goal opens with the worktree
+          path and the file list, so the first eighty characters of one card look like
+          the first eighty of every other — the role is the line that tells them apart. */}
+      {/* Optional, though the schema makes it required: this is the page's own fold,
+          and the rule there is that a projection shows what it has and never throws.
+          A card that crashes takes the whole board with it. */}
+      {task.agentSpec ? <div class="task-role">{task.agentSpec.role}</div> : null}
+      {/* Clamped in CSS rather than sliced, so the card shows whole words and the whole
+          string is still there to select. */}
+      <div class="task-goal">{task.goal}</div>
       <div class="meta">
         {task.worker}
         {/* The clock is its own component, so a second passing repaints these three
@@ -295,143 +306,6 @@ function Board({ view, onSelect }: { view: View; onSelect: (id: string) => void 
         );
       })}
     </div>
-  );
-}
-
-/** §4.2: the chain a human actually wants four hours in. Both edges already exist in
- *  the data model, so this is a lookup, not a feature. */
-function ledgerEntry(view: View, id: string): { label: string; text: string } | null {
-  const ledger = view.ledger;
-  if (!ledger) return null;
-
-  const tiers: readonly [string, readonly { id: string; text?: string; approach?: string }[]][] = [
-    ["fact", ledger.factsGiven],
-    ["fact", ledger.factsVerified],
-    ["to look up", ledger.factsToLookUp],
-    ["to derive", ledger.factsToDerive],
-    ["guess", ledger.guesses],
-    ["dead end", ledger.deadEnds],
-  ];
-
-  for (const [label, entries] of tiers) {
-    const hit = entries.find((entry) => entry.id === id);
-    if (hit) return { label, text: hit.text ?? hit.approach ?? "" };
-  }
-  return null;
-}
-
-const artifactLine = (artifact: Artifact): string => {
-  if (artifact.kind === "diff") {
-    return `diff · ${artifact.branch} · ${artifact.files.length} files +${artifact.insertions} −${artifact.deletions}`;
-  }
-  if (artifact.kind === "report") {
-    return `report · ${artifact.text.length > 120 ? `${artifact.text.slice(0, 117)}…` : artifact.text}`;
-  }
-  const caption = "summary" in artifact ? artifact.summary : "caption" in artifact ? artifact.caption : "";
-  return `${artifact.kind} · ${artifact.path}${caption ? ` · ${caption}` : ""}`;
-};
-
-function Why({
-  view,
-  send,
-  onSelect,
-}: {
-  view: View;
-  send: Send;
-  onSelect: (id: string | null) => void;
-}) {
-  const task = view.selected ? view.tasks.get(view.selected) : undefined;
-  if (!task) return null;
-
-  const produced = view.artifacts.filter((written) => written.taskId === task.id);
-  // Promotion is addressed by mission id, which only a serve dashboard has: a per-run
-  // server holds one mission and refuses the message, so the row is not offered there.
-  const missionId = view.watching;
-
-  return (
-    <>
-      <h2>Why · {task.id}</h2>
-      <div class="card">
-        <dl class="why">
-          <dt>goal</dt>
-          <dd>{task.goal}</dd>
-
-          {task.motivatedBy && task.motivatedBy.length > 0 ? (
-            <>
-              <dt>because</dt>
-              {task.motivatedBy.map((id) => {
-                const entry = ledgerEntry(view, id);
-                return (
-                  <dd key={id}>
-                    {id}
-                    {entry ? (
-                      <>
-                        {" "}
-                        <span class="quiet">{entry.label}</span> {entry.text}
-                      </>
-                    ) : null}
-                  </dd>
-                );
-              })}
-            </>
-          ) : null}
-
-          {task.satisfies && task.satisfies.length > 0 ? (
-            <>
-              <dt>serves</dt>
-              {task.satisfies.map((id) => {
-                const criterion = view.criteria.find((each) => each.id === id);
-                return (
-                  <dd key={id}>
-                    {id}
-                    {criterion ? `  ${criterion.statement}` : ""}
-                  </dd>
-                );
-              })}
-            </>
-          ) : null}
-
-          {task.dependsOn.length > 0 ? (
-            <>
-              <dt>after</dt>
-              <dd>{task.dependsOn.join(", ")}</dd>
-            </>
-          ) : null}
-
-          {produced.length > 0 ? (
-            <>
-              <dt>produced</dt>
-              {produced.map((written, index) => (
-                <dd key={index}>{artifactLine(written.artifact)}</dd>
-              ))}
-            </>
-          ) : null}
-        </dl>
-        {/* Promote this task's synthesized agent to procedural memory (§6, §7, U6).
-            Here rather than on the board, because a role worth keeping is one somebody
-            watched do the work — and this is the panel they were reading while it did.
-            Human-initiated by design: nothing in the loop sends this. */}
-        {missionId ? (
-          <div class="row">
-            <input class="promote-name" data-task={task.id} placeholder="keep this agent as…" />
-            <button
-              onClick={() => {
-                const box = document.querySelector<HTMLInputElement>(
-                  `input.promote-name[data-task="${task.id}"]`,
-                );
-                const name = box?.value.trim();
-                if (name) send({ kind: "promote", missionId, taskId: task.id, name });
-              }}
-            >
-              promote
-            </button>
-          </div>
-        ) : null}
-        <div class="row">
-          <button onClick={() => onSelect(null)}>close</button>
-        </div>
-      </div>
-    </>
   );
 }
 
@@ -517,6 +391,12 @@ function Timeline({ timeline }: { timeline: readonly string[] }) {
  * page painted amber, and it is in the same place every time.
  */
 export function RunView({ view, send, onSelect, pane, onPane, timeline }: RunProps) {
+  // The dossier pane exists only while a task is selected, so closing one from the
+  // dossier itself would otherwise leave the centre rail showing nothing at all. The
+  // board is where a task is picked, so the board is where it falls back to.
+  const shown: PaneKey =
+    pane === "task" && !(view.selected && view.tasks.has(view.selected)) ? "board" : pane;
+
   return (
     <div class="hud">
       <aside class="rail rail-left">
@@ -527,24 +407,48 @@ export function RunView({ view, send, onSelect, pane, onPane, timeline }: RunPro
       </aside>
 
       <section class="rail rail-main">
-        {pane === "board" ? <Board view={view} onSelect={onSelect} /> : null}
+        {shown === "board" ? <Board view={view} onSelect={onSelect} /> : null}
+        {/* One task, at the width of the board — which is what a two-thousand character
+            goal and a system prompt need, and what a 20rem rail could never give them. */}
+        {shown === "task" ? (
+          <div class="column">
+            <TaskDossier view={view} send={send} onSelect={onSelect} />
+          </div>
+        ) : null}
+        {/* The same tasks, as one object. Picking a node selects the task exactly as
+            clicking a card does, so the rail's card is about whichever of the two a
+            person used. */}
+        {shown === "map" ? (
+          <div class="map">
+            <OrreryFigure
+              drawing={taskOrrery(view)}
+              onPick={onSelect}
+              selected={view.selected}
+            />
+          </div>
+        ) : null}
         {/* The contract is prose and keeps a measure even in a rail that is wider than
             one. A criterion set a thousand pixels wide is a criterion nobody finishes,
             and this is the sentence a person reads before approving a payment. */}
-        {pane === "contract" ? (
+        {shown === "contract" ? (
           <div class="column">
             <Contract view={view} />
           </div>
         ) : null}
-        {pane === "timeline" ? <Timeline timeline={timeline} /> : null}
+        {shown === "timeline" ? <Timeline timeline={timeline} /> : null}
       </section>
 
       <aside class="rail rail-side">
         <Inbox view={view} send={send} />
-        <Why view={view} send={send} onSelect={onSelect} />
+        {/* The rail says which task is selected and what agent is on it; the dossier
+            pane holds everything that does not fit in a rail. Hidden while the dossier
+            is open — the same panel twice is the crowding U7 removed. */}
+        {shown !== "task" ? (
+          <TaskBrief view={view} onOpen={() => onPane("task")} onSelect={onSelect} />
+        ) : null}
         {/* The contract is a pane, so the criteria are one click away — except for the
             verdicts, which are the mission's score and belong in sight of the board. */}
-        {pane !== "contract" ? <Verdicts view={view} /> : null}
+        {shown !== "contract" ? <Verdicts view={view} /> : null}
       </aside>
     </div>
   );

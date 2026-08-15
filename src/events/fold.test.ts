@@ -34,7 +34,7 @@ const signedOff = (criteria = [aCriterion()]): EventInput[] => [
     criteria,
     guesses: [],
     outOfScope: [],
-    estimate: { taskCount: 1, tokens: 0, wallMs: 1000, expectedGates: 0 },
+    estimate: { taskCount: 1, wallMs: 1000, expectedGates: 0 },
   },
   { ...orchestrator, type: "signoff_granted", unattended: false },
 ];

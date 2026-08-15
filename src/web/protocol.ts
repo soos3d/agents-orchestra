@@ -115,6 +115,12 @@ export const clientMessageSchema = z.discriminatedUnion("kind", [
     // The CI flag, offered as a toggle because "show me what it would do" is the
     // question a person asks before their first real mission in a directory.
     planOnly: z.boolean().default(false),
+    // The human's own judgment that this job is small: skip the deep research call and
+    // ask the planner for one task rather than a decomposition. A boolean is safe to
+    // accept from a browser in a way a path is not, and it is a *hint* rather than a
+    // permission — `writeOutcomeSpec` still refuses an unverifiable spec, and a
+    // scan-derived spec that fails it escalates to the research call it skipped.
+    quick: z.boolean().default(false),
     // Deliberately no `unattended` field: skipping sign-off stays a typed CLI flag
     // (§17 — the habitual-default risk), and the compose screen never offers it.
   }),

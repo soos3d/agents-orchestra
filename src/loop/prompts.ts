@@ -21,6 +21,7 @@ const PROGRESS_WINDOW = 3;
 export function buildResearchInput(
   state: MissionState,
   depth: ResearchInput["depth"] = "deep",
+  rejected?: string,
 ): ResearchInput {
   const ledger = state.mission.ledger;
   const gaps = ledger.factsToLookUp.map((entry) => entry.text);
@@ -39,6 +40,14 @@ export function buildResearchInput(
   return {
     ...(known.length > 0 ? { known } : {}),
     ...(priorCriteria.length > 0 ? { priorCriteria } : {}),
+    // Absent on a first call, which is what keeps "a rejection happened" a fact rather
+    // than a field the model has to interpret the emptiness of.
+    ...(rejected === undefined ? {} : { rejected }),
+    // Derived rather than passed, so it cannot disagree with what `prepareMission`
+    // will actually do: the scan is the whole of a quick mission's research, and it
+    // has to be told, or it declines to write criteria and the gate escalates to the
+    // call the mission was trying to skip.
+    ...(depth === "scan" && state.mission.quick ? { solePass: true } : {}),
     question:
       gaps.length > 0
         ? `${state.mission.goal}\n\nStill open: ${gaps.join("; ")}`
@@ -56,6 +65,9 @@ export function buildPlanInput(state: MissionState, reason?: string): PlanInput 
     ledger: state.mission.ledger,
     envelope: state.mission.capabilityEnvelope,
     ...(reason === undefined ? {} : { reason }),
+    // Folded from `mission_created`, so a replan mid-mission and a resumed sign-off
+    // both plan the same shape the human asked for — not just the first call.
+    ...(state.mission.quick ? { scope: "quick" as const } : {}),
   };
 }
 

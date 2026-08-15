@@ -38,7 +38,22 @@ import {
   synthesizeTasks,
   UnavailableTransportError,
   UndeclaredLeaseError,
+  UnknownRoleError,
 } from "./synthesize.js";
+import { type OfferedRole } from "../agents/offer.js";
+
+/** Long enough that a body leaking into the index would be unmistakable in the
+ *  assertion that it does not. */
+const ROLE_BODY = "You reconcile invoices against ledger entries, line by line.";
+
+const aRole = (patch: Partial<OfferedRole> = {}): OfferedRole => ({
+  name: "invoice-reconciler",
+  description: "Reconciles invoices against ledger entries.",
+  worker: "code",
+  suggests: ["fs.read"],
+  body: ROLE_BODY,
+  ...patch,
+});
 
 function testStore(seed: readonly EventInput[]): MissionStore & { inputs: EventInput[] } {
   const inputs = [...seed];
@@ -80,38 +95,102 @@ describe("synthesizeTasks", () => {
     assert.deepEqual(seen[0]!.transports, ["cli", "acp"]);
   });
 
-  // Prior art, not a roster (§7). Passing them is the whole of the mechanism; what
-  // makes it safe is the next test — the returned spec is validated identically.
-  test("offers saved profiles to the model when it has any", async () => {
+  // The roster (§7, amended). Offering it is the whole of the saving; what makes it
+  // safe is the two tests after — the returned spec is validated identically, and a
+  // name that resolves to nothing is refused rather than degraded.
+  test("offers the roster as rendered lines, never as role objects", async () => {
     const store = testStore([missionCreated()]);
     const { calls, seen } = scriptedSynthesize([anAgentSpec()]);
-    const profile = anAgentSpec({ role: "invoice-reconciler" });
 
-    await synthesizeTasks({ ...deps(store, calls), profiles: [profile] }, [aPlannedTask()], 0);
+    await synthesizeTasks({ ...deps(store, calls), roles: [aRole()] }, [aPlannedTask()], 0);
 
-    assert.deepEqual(seen[0]!.profiles, [profile]);
+    // A string, because `describe()` JSON-dumps the input into the prompt and a list of
+    // roles would carry every body with it — which is the entire cost this avoids.
+    assert.equal(typeof seen[0]!.roster, "string");
+    assert.match(seen[0]!.roster ?? "", /invoice-reconciler/);
+    assert.ok(!(seen[0]!.roster ?? "").includes(ROLE_BODY));
   });
 
-  test("omits profiles entirely when there are none, rather than sending an empty list", async () => {
+  test("omits the roster entirely when there is none, rather than sending an empty list", async () => {
     const store = testStore([missionCreated()]);
     const { calls, seen } = scriptedSynthesize([anAgentSpec()]);
 
     await synthesizeTasks(deps(store, calls), [aPlannedTask()], 0);
 
-    assert.equal("profiles" in seen[0]!, false);
+    assert.equal("roster" in seen[0]!, false);
   });
 
-  // A profile is a hint and never a mandate: a spec that came back looking exactly
-  // like a saved one still meets every ceiling, or the library becomes a way to
-  // launder a capability past the envelope.
-  test("a profile does not exempt the spec it inspired from validation", async () => {
+  // The composition, and the reason it happens before the event is emitted: what the
+  // log carries has to be a complete prompt, or a mission stops being readable from
+  // its own log.
+  test("a named role's body becomes the system prompt, with the addendum after it", async () => {
+    const store = testStore([missionCreated()]);
+    const { calls } = scriptedSynthesize([
+      anAgentSpec({ basedOn: "invoice-reconciler", systemPrompt: "Only touch March." }),
+    ]);
+
+    await synthesizeTasks({ ...deps(store, calls), roles: [aRole()] }, [aPlannedTask()], 0);
+
+    const planned = store.inputs.at(-1) as { task: { agentSpec: { systemPrompt: string } } };
+    const prompt = planned.task.agentSpec.systemPrompt;
+    assert.ok(prompt.includes(ROLE_BODY));
+    assert.ok(prompt.indexOf(ROLE_BODY) < prompt.indexOf("Only touch March."));
+  });
+
+  test("a spec that named no role is emitted with its own prompt untouched", async () => {
+    const store = testStore([missionCreated()]);
+    const { calls } = scriptedSynthesize([anAgentSpec({ systemPrompt: "Written from scratch." })]);
+
+    await synthesizeTasks({ ...deps(store, calls), roles: [aRole()] }, [aPlannedTask()], 0);
+
+    const planned = store.inputs.at(-1) as { task: { agentSpec: { systemPrompt: string } } };
+    assert.equal(planned.task.agentSpec.systemPrompt, "Written from scratch.");
+  });
+
+  // The failure this refuses is quiet: the model writes a one-paragraph addendum
+  // *because* it expects a body to be attached, so passing an unresolvable name
+  // through ships that paragraph as the worker's entire instructions and nothing
+  // fails until the work comes back wrong.
+  test("a basedOn naming nothing is re-asked with the list of real names", async () => {
+    const store = testStore([missionCreated()]);
+    const { calls, seen } = scriptedSynthesize([
+      anAgentSpec({ basedOn: "invoice-reconcilor", systemPrompt: "Only March." }),
+      anAgentSpec({ basedOn: "invoice-reconciler", systemPrompt: "Only March." }),
+    ]);
+
+    await synthesizeTasks({ ...deps(store, calls), roles: [aRole()] }, [aPlannedTask()], 0);
+
+    assert.match(seen[1]!.rejected ?? "", /invoice-reconciler/);
+    assert.match(seen[1]!.rejected ?? "", /not a role in the roster/);
+  });
+
+  test("a basedOn that is still unknown after the retry parks the task", async () => {
+    const store = testStore([missionCreated()]);
+    const bogus = anAgentSpec({ basedOn: "nope", systemPrompt: "Only March." });
+    const { calls } = scriptedSynthesize([bogus, bogus]);
+
+    await assert.rejects(
+      synthesizeTasks({ ...deps(store, calls), roles: [aRole()] }, [aPlannedTask()], 0),
+      UnknownRoleError,
+    );
+  });
+
+  // A role is a hint and never a mandate: a spec that came back naming one still meets
+  // every ceiling, or the roster becomes a way to launder a capability past the
+  // envelope.
+  test("naming a role does not exempt the spec from validation", async () => {
     const store = testStore([missionCreated({ envelope: anEnvelope({ toolClasses: ["fs.read"] }) })]);
-    const outsized = anAgentSpec({ worker: "research", tools: ["Bash"], owns: undefined });
+    const outsized = anAgentSpec({
+      basedOn: "invoice-reconciler",
+      worker: "research",
+      tools: ["Bash"],
+      owns: undefined,
+    });
     const { calls } = scriptedSynthesize([outsized, outsized]);
 
     await assert.rejects(
       synthesizeTasks(
-        { ...deps(store, calls), profiles: [outsized] },
+        { ...deps(store, calls), roles: [aRole()] },
         [aPlannedTask({ worker: "research" })],
         0,
       ),

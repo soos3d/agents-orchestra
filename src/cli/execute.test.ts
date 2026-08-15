@@ -219,7 +219,7 @@ const planOnlyMission = (): EventInput[] => [
     criteria: [aCriterion()],
     guesses: [],
     outOfScope: [],
-    estimate: { taskCount: 1, tokens: 1000, wallMs: 60_000, expectedGates: 0 },
+    estimate: { taskCount: 1, wallMs: 60_000, expectedGates: 0 },
   },
   {
     ...orchestrator,
@@ -394,7 +394,7 @@ describe("executeMission", () => {
       });
 
       const store = testStore(planOnlyMission());
-      const seen: { profiles?: unknown }[] = [];
+      const seen: { roster?: unknown }[] = [];
       const calls: Calls = {
         research: async () => {
           throw new Error("resume does not research a mission that already has a plan");
@@ -437,7 +437,12 @@ describe("executeMission", () => {
       });
 
       assert.equal(seen.length > 0, true);
-      assert.deepEqual(seen[0]!.profiles, [anAgentSpec({ role: "invoice-reconciler" })]);
+      // Resume staffs through the same index `run` does: the shipped roster and the
+      // promoted profile, merged. One path wired and the other not is the shape of
+      // defects 12b, 23 and 24.
+      const roster = String(seen[0]!.roster ?? "");
+      assert.match(roster, /invoice-reconciler/);
+      assert.match(roster, /code-reviewer/);
     } finally {
       fs.rmSync(stateDir, { recursive: true, force: true });
     }

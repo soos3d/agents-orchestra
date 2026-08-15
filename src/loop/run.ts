@@ -9,10 +9,11 @@
 // built by folding the log, and everything between those calls is code. The counters,
 // the criteria freeze, the budget, the ready set, and the stall rule all live here,
 // and none of them is ever a model's judgment.
+import { type OfferedRole } from "../agents/offer.js";
 import { budgetExceeded, type Budget } from "../domain/budget.js";
 import { type Criterion } from "../domain/ledger.js";
 import { LIMITS, type Limits, type MissionStatus } from "../domain/mission.js";
-import { type AgentSpec, type Task, type WorkerKind } from "../domain/task.js";
+import { type Task, type WorkerKind } from "../domain/task.js";
 import { type MissionState } from "../events/fold.js";
 import { type EventInput } from "../events/schema.js";
 import { promotable, readyTasks, standstill } from "../scheduler/ready.js";
@@ -56,7 +57,7 @@ export interface LoopDeps {
   /** Agents a human promoted from earlier missions (§7), handed to synthesis as prior
    *  art. Loaded at the entry point rather than here, so `run` and `resume` get the
    *  same library — and validated on the way back like any other spec. */
-  profiles?: readonly AgentSpec[];
+  roles?: readonly OfferedRole[];
   /** The transports synthesis may pick on *this machine* (§7). Computed at the entry
    *  point from the discovered config, because what the build ships and what the
    *  machine can start are different lists — offering the second one is defect 21.

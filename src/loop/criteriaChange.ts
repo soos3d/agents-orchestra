@@ -74,7 +74,7 @@ export async function resolveCriteriaChange(
 
   const estimate =
     mission.estimate ??
-    estimatePlan({ plan: mission.ledger.plan, criteriaCount: mission.ledger.criteria.length });
+    estimatePlan({ plan: mission.ledger.plan });
 
   // A port that cannot answer rejects rather than deciding (`terminal.ts`'s
   // end-of-input rule), and a rejection here must leave the mission parked and

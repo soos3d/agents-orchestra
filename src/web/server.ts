@@ -21,6 +21,7 @@ import http from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import { type Event } from "../events/schema.js";
 import { BUNDLE_ROUTE, readBundle } from "./assets.js";
+import { FONT_ROUTE, fontPathFrom, readFont } from "./fonts.js";
 import { shellHtml } from "./shell.html.js";
 import {
   parseClientMessage,
@@ -156,6 +157,23 @@ export async function startWebServer(deps: WebServerDeps): Promise<RunningServer
       return;
     }
 
+    // The display face. Cached hard rather than `no-store` like the bundle: the bundle
+    // is rebuilt while somebody watches, and a typeface is not.
+    if (path === FONT_ROUTE) {
+      const font = readFont(import.meta.url);
+      if (!font) {
+        warn(`No display face at ${fontPathFrom(import.meta.url)} — the page falls back to a system face.`);
+        response.writeHead(404, { "content-type": "text/plain" }).end("No display face is installed.");
+        return;
+      }
+      response.writeHead(200, {
+        "content-type": "font/woff2",
+        "cache-control": "public, max-age=604800, immutable",
+      });
+      response.end(font);
+      return;
+    }
+
     if (path !== "/") {
       response.writeHead(404, { "content-type": "text/plain" }).end("No such page.");
       return;
@@ -169,8 +187,12 @@ export async function startWebServer(deps: WebServerDeps): Promise<RunningServer
       //
       // `script-src 'self'` rather than `'unsafe-inline'`: the page is a bundle now,
       // so the weaker directive the inline fragments needed is gone.
+      //
+      // `font-src 'self'` is the display face, served from this process. It is the
+      // narrowest grant that works and it is deliberately not `https:` — a font CDN
+      // inside an approval surface is a third party watching every sign-off.
       "content-security-policy":
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; connect-src 'self'",
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; font-src 'self'; connect-src 'self'",
     });
     response.end(html);
   });

@@ -246,7 +246,16 @@ export const initializeResultSchema = z.object({
 });
 export type InitializeResult = z.infer<typeof initializeResultSchema>;
 
-export const sessionNewResultSchema = z.object({ sessionId: z.string().min(1) });
+// `models` is optional and read rather than ignored: `AgentSpec.model` is never sent
+// over ACP, so this is the only place the client learns which model the adapter chose
+// for the turn. A mission whose log names a model that never ran cannot be priced, and
+// the two differ in practice — a task specced `claude-sonnet-4-5` ran on
+// `claude-opus-4-6` in the capture beside this file. Optional because the agent is
+// entitled not to say, and a missing field must not fail a session (§9.1 rule 4).
+export const sessionNewResultSchema = z.object({
+  sessionId: z.string().min(1),
+  models: z.object({ currentModelId: z.string().min(1).optional() }).partial().optional(),
+});
 export type SessionNewResult = z.infer<typeof sessionNewResultSchema>;
 
 // `stopReason` is a plain string on purpose. `end_turn` is the only value the captures

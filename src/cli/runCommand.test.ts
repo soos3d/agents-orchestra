@@ -10,6 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, test } from "node:test";
 import { type DiscoveredConfig } from "../config/discover.js";
+import { zeroSpend } from "../domain/budget.js";
 import { fold } from "../events/fold.js";
 import { type EventInput } from "../events/schema.js";
 import { scriptedCalls } from "../testing/fixtures.js";
@@ -135,7 +136,7 @@ describe("handleFromDashboard: permissions", () => {
         criteria: [aCriterion({ id: "c1" })],
         guesses: [],
         outOfScope: [],
-        estimate: { taskCount: 1, tokens: 0, wallMs: 1000, expectedGates: 0 },
+        estimate: { taskCount: 1, wallMs: 1000, expectedGates: 0 },
       },
       { ...orchestrator, type: "signoff_granted", unattended: false },
       {
@@ -175,7 +176,7 @@ describe("handleFromDashboard: permissions", () => {
         criteria: [aCriterion({ id: "c1" })],
         guesses: [],
         outOfScope: [],
-        estimate: { taskCount: 1, tokens: 0, wallMs: 1000, expectedGates: 0 },
+        estimate: { taskCount: 1, wallMs: 1000, expectedGates: 0 },
       },
       { ...orchestrator, type: "signoff_granted", unattended: false },
       {
@@ -240,7 +241,7 @@ describe("runMission under a surface", () => {
     // and the finally block still has to release.
     await assert.rejects(() =>
       runMission(
-        { goal: "wired?", planOnly: false, unattended: false, force: false, web: true, budgetMinutes: 5 },
+        { goal: "wired?", planOnly: false, quick: false, unattended: false, force: false, web: true, budgetMinutes: 5 },
         config,
         quietIo,
         { createCalls: () => scriptedCalls({}), surface },
@@ -279,7 +280,7 @@ describe("runMission under a surface", () => {
 
     await assert.rejects(() =>
       runMission(
-        { goal: "what would this take?", planOnly: true, unattended: false, force: false, web: true, budgetMinutes: 5 },
+        { goal: "what would this take?", planOnly: true, quick: false, unattended: false, force: false, web: true, budgetMinutes: 5 },
         config,
         quietIo,
         { createCalls: () => scriptedCalls({}), surface },
@@ -287,5 +288,61 @@ describe("runMission under a surface", () => {
     );
 
     assert.match(log[0] ?? "", /^register /, "a composed plan-only mission was given no surface");
+  });
+});
+
+// The failure mode under test: the decision point's name produced, passed, and then
+// dropped one layer above the log.
+//
+// `createAgentCalls` has always handed `onSpend` the call it just paid for, and both
+// composition roots threw it away — `main.ts` took it as `_call`, and this file wrote
+// the constant `"orchestration"`. Six calls, one line item, and "which call is
+// expensive?" unanswerable. `spendPhase` is unit-tested next to `Calls`; what nothing
+// covered is whether the wiring in between still carries the argument, which is the
+// `buildLoopDeps` lesson: an optional dependency can be built, tested, and reachable
+// through a parameter no entry point passes.
+describe("runMission spend attribution", () => {
+  test("records a decision point under its own phase, not one bucket", async () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "orchestra-spend-"));
+    const config: DiscoveredConfig = {
+      cwd: stateDir,
+      stateDir,
+      worktreeRoot: path.join(stateDir, "worktrees"),
+      agents: [],
+      orchestratorModel: "sonnet",
+      maxConcurrency: 4,
+    };
+
+    await assert.rejects(() =>
+      runMission(
+        { goal: "who spent it?", planOnly: true, quick: false, unattended: true, force: true, web: false, budgetMinutes: 5 },
+        config,
+        quietIo,
+        {
+          // Spends, then refuses — the shortest route that puts a `spend_recorded` on
+          // disk. The scan is the first decision point a mission reaches.
+          createCalls: (_config, onSpend) => ({
+            ...scriptedCalls({}),
+            research: async () => {
+              onSpend("research", { ...zeroSpend(), tokens: { measured: 1234, estimated: 0, unmeasured: 0 } });
+              throw new Error("stop here");
+            },
+          }),
+        },
+      ),
+    );
+
+    const missions = path.join(stateDir, "missions");
+    const [missionId] = fs.readdirSync(missions);
+    const events = fs
+      .readFileSync(path.join(missions, missionId!, "events.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { type: string; phase?: string; spend?: { tokens: { measured: number } } });
+
+    const recorded = events.find((event) => event.type === "spend_recorded");
+    assert.ok(recorded, "the mission spent measured tokens and recorded nothing");
+    assert.equal(recorded.phase, "call:research");
+    assert.equal(recorded.spend?.tokens.measured, 1234);
   });
 });

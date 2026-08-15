@@ -64,14 +64,16 @@ function callsFor(options: {
   research?: ResearchResult[];
   plan?: PlanResult[];
   intake?: IntakeQuestion[];
-}): Calls & { synthesized: number; planInputs: PlanInput[] } {
+}): Calls & { synthesized: number; planInputs: PlanInput[]; depths: string[] } {
   let researchIndex = 0;
   let planIndex = 0;
   const counters = { synthesized: 0 };
   const planInputs: PlanInput[] = [];
+  const depths: string[] = [];
 
   return {
     planInputs,
+    depths,
     get synthesized() {
       return counters.synthesized;
     },
@@ -80,6 +82,7 @@ function callsFor(options: {
     // first scripted research answer, and every test below that scripts a rejection
     // would be asserting against the wrong call.
     research: async (input) => {
+      depths.push(input.depth);
       if (input.depth === "scan") return options.scan ?? aScanResult();
       return options.research?.[researchIndex++] ?? aResearchResult();
     },
@@ -153,6 +156,57 @@ describe("prepareMission", () => {
     await prepareMission({ store, calls: callsFor({}) });
 
     assert.ok(store.state().mission.signedOffAt);
+  });
+
+  // The failure mode under test: a retry that is a blind re-roll.
+  //
+  // `plan` has always been told why its last answer was refused (`PlanInput.reason`)
+  // and `synthesize` has `rejected` for the same purpose — `research` alone re-ran on
+  // a byte-identical input, so the one call whose answer decides whether the mission
+  // can ever report success was the one asked to guess again. Context the system
+  // already paid for, discarded and re-derived.
+  describe("the outcome spec retry", () => {
+    test("tells research what was wrong with the criteria it just returned", async () => {
+      const store = testStore();
+      const inputs: unknown[] = [];
+      const calls = callsFor({
+        research: [
+          aResearchResult({ criteria: [{ id: "c1", statement: "it is good" }] }),
+          aResearchResult(),
+        ],
+      });
+      const recording: Calls = {
+        ...calls,
+        research: async (input) => {
+          inputs.push(input);
+          return calls.research(input);
+        },
+      };
+
+      const result = await prepareMission({ store, calls: recording, planOnly: true });
+
+      assert.equal(result.ok, true);
+      const retry = inputs.at(-1) as { rejected?: string };
+      assert.ok(retry.rejected, "the retry was asked the same question with no idea what failed");
+      assert.match(retry.rejected, /it is good/);
+    });
+
+    test("the first call is not told about a rejection that has not happened", async () => {
+      const store = testStore();
+      const inputs: unknown[] = [];
+      const calls = callsFor({});
+      const recording: Calls = {
+        ...calls,
+        research: async (input) => {
+          inputs.push(input);
+          return calls.research(input);
+        },
+      };
+
+      await prepareMission({ store, calls: recording, planOnly: true });
+
+      assert.equal((inputs.at(-1) as { rejected?: string }).rejected, undefined);
+    });
   });
 
   describe("the outcome spec gate", () => {
@@ -532,6 +586,187 @@ describe("prepareMission", () => {
       assert.ok(types(store).includes("signoff_requested"));
       assert.equal(types(store).includes("signoff_granted"), false);
       assert.equal(store.state().mission.status, "specifying");
+    });
+  });
+
+  // The failure mode under test: a small job paying for a deep research pass it did
+  // not need, and a plan that decomposes a one-line script into four tasks.
+  //
+  // `quick` is the human's own judgment at compose time, and it is a *hint* — every
+  // guarantee below it is unchanged. The gate that makes that safe is the one already
+  // here: `writeOutcomeSpec` refuses a criterion nothing can evaluate, whatever depth
+  // produced it, and a scan-derived spec it refuses escalates to the deep call the
+  // mission skipped. So a box checked on a job that was not small costs one research
+  // call, not a mission.
+  //
+  // The other half is what a skipped stage does to the page. `briefing.ts` marks the
+  // research row done on `view.brief !== ""`, so a quick mission still emits
+  // `research_completed` — carrying the scan's brief, which was previously discarded.
+  // Without that the row pulses forever above stages that have already finished.
+  describe("a quick mission", () => {
+    const quickStore = () => testStore([missionCreated({ quick: true } as Partial<EventInput>)]);
+
+    test("skips the deep research call and runs the scan only", async () => {
+      const store = quickStore();
+      const calls = callsFor({ scan: aScanResult({ brief: "One file, one function.", criteria: [aCriterion()] }) });
+
+      const result = await prepareMission({ store, calls, planOnly: true });
+
+      assert.equal(result.ok, true);
+      assert.deepEqual(calls.depths, ["scan"], "a quick mission paid for a deep research call");
+    });
+
+    test("still writes a brief, so the briefing's research row can finish", async () => {
+      const store = quickStore();
+      const calls = callsFor({ scan: aScanResult({ brief: "One file, one function.", criteria: [aCriterion()] }) });
+
+      await prepareMission({ store, calls, planOnly: true });
+
+      assert.equal(store.state().brief, "One file, one function.");
+    });
+
+    test("takes its outcome spec from the scan rather than inventing one", async () => {
+      const store = quickStore();
+      // Same id as the default, so the planned task still satisfies it — the statement
+      // is what distinguishes the scan's criterion from the deep call's.
+      const scanCriterion = aCriterion({ statement: "rotate.sh exits 0 on an empty directory" });
+      const calls = callsFor({ scan: aScanResult({ brief: "small", criteria: [scanCriterion] }) });
+
+      const result = await prepareMission({ store, calls, planOnly: true });
+
+      assert.ok(result.ok);
+      assert.equal(
+        result.ok && result.criteria[0]?.statement,
+        "rotate.sh exits 0 on an empty directory",
+      );
+    });
+
+    test("escalates to the deep call when the scan's spec is refused", async () => {
+      // The box was checked on a job that was not small. The gate catches it, and the
+      // retry is the research call the mission skipped rather than a second scan —
+      // which is what makes a wrong checkbox cost one call instead of a mission.
+      const store = quickStore();
+      const calls = callsFor({
+        scan: aScanResult({ brief: "small", criteria: [{ id: "c1", statement: "it is good" }] }),
+        research: [aResearchResult()],
+      });
+
+      const result = await prepareMission({ store, calls, planOnly: true });
+
+      assert.equal(result.ok, true);
+      assert.deepEqual(calls.depths, ["scan", "deep"]);
+      assert.ok(types(store).includes("outcome_spec_rejected"));
+    });
+
+    test("tells the planner the job is small", async () => {
+      const store = quickStore();
+      const calls = callsFor({ scan: aScanResult({ brief: "small", criteria: [aCriterion()] }) });
+
+      await prepareMission({ store, calls, planOnly: true });
+
+      assert.equal(calls.planInputs[0]?.scope, "quick");
+    });
+
+    // The hole the human-checkbox design opened, and the reason it is not obvious: the
+    // scan runs *before* intake and the deep call runs after (§2b's ordering). Reusing
+    // the scan's criteria therefore means the outcome spec was written by a call that
+    // never saw the human's answers — so a quick mission that asked "calendar or
+    // fiscal?" and was told "fiscal" would be judged against criteria written before
+    // anyone knew. Whichever way `quick` is decided, that has to be closed in code.
+    test("runs the deep call anyway when intake produced answers", async () => {
+      const store = quickStore();
+      const calls = callsFor({
+        scan: aScanResult({ brief: "small", criteria: [aCriterion()] }),
+        intake: [anIntakeQuestion({ id: "q1", question: "Calendar or fiscal?" })],
+      });
+
+      await prepareMission({
+        store,
+        calls,
+        planOnly: true,
+        human: {
+          askIntake: async () => [{ questionId: "q1", answer: "fiscal" }],
+          awaitSignoff: async () => ({ kind: "approve" }),
+        },
+      });
+
+      assert.deepEqual(
+        calls.depths,
+        ["scan", "deep"],
+        "the spec was written before the human's answer existed",
+      );
+    });
+
+    test("a question nobody answered does not force the deep call", async () => {
+      // `--unattended` asks and gets nothing back. There are no answers the scan could
+      // have missed, so there is nothing to re-research.
+      const store = quickStore();
+      const calls = callsFor({
+        scan: aScanResult({ brief: "small", criteria: [aCriterion()] }),
+        intake: [anIntakeQuestion({ id: "q1", question: "Calendar or fiscal?" })],
+      });
+
+      await prepareMission({ store, calls, planOnly: true, unattended: true });
+
+      assert.deepEqual(calls.depths, ["scan"]);
+    });
+
+    test("buys back the research it skipped when the human sends the plan back", async () => {
+      // The human is contradicting their own checkbox: they said small, and the plan
+      // they were shown says otherwise. Replanning over scan-depth findings would
+      // answer that with the same thin ground twice.
+      const store = quickStore();
+      const calls = callsFor({ scan: aScanResult({ brief: "small", criteria: [aCriterion()] }) });
+      let asked = 0;
+      const human: HumanPort = {
+        askIntake: async () => [],
+        awaitSignoff: async () =>
+          asked++ === 0 ? { kind: "revise", feedback: "this needs the migration too" } : { kind: "approve" },
+      };
+
+      await prepareMission({ store, calls, human });
+
+      assert.deepEqual(calls.depths, ["scan", "deep"]);
+    });
+
+    test("a second send-back does not buy a third research call", async () => {
+      const store = quickStore();
+      const calls = callsFor({ scan: aScanResult({ brief: "small", criteria: [aCriterion()] }) });
+      let asked = 0;
+      const human: HumanPort = {
+        askIntake: async () => [],
+        awaitSignoff: async () =>
+          asked++ < 2 ? { kind: "revise", feedback: "still not right" } : { kind: "approve" },
+      };
+
+      await prepareMission({ store, calls, human });
+
+      assert.deepEqual(calls.depths, ["scan", "deep"]);
+    });
+
+    test("an ordinary mission sent back replans without re-researching", async () => {
+      const store = testStore();
+      const calls = callsFor({});
+      let asked = 0;
+      const human: HumanPort = {
+        askIntake: async () => [],
+        awaitSignoff: async () =>
+          asked++ === 0 ? { kind: "revise", feedback: "narrower please" } : { kind: "approve" },
+      };
+
+      await prepareMission({ store, calls, human });
+
+      assert.deepEqual(calls.depths, ["scan", "deep"], "an ordinary revision paid for research");
+    });
+
+    test("an ordinary mission is untouched — deep research, no scope", async () => {
+      const store = testStore();
+      const calls = callsFor({});
+
+      await prepareMission({ store, calls, planOnly: true });
+
+      assert.deepEqual(calls.depths, ["scan", "deep"]);
+      assert.equal(calls.planInputs[0]?.scope, undefined);
     });
   });
 });

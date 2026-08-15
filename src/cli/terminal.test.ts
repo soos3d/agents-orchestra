@@ -44,7 +44,7 @@ const aPresentation = (patch: Partial<SignoffPresentation> = {}): SignoffPresent
   outOfScope: ["fixing mismatches"],
   envelope: anEnvelope(),
   plan: [aPlannedTask()],
-  estimate: { taskCount: 1, tokens: 120_000, wallMs: 35 * 60_000, expectedGates: 2 },
+  estimate: { taskCount: 1, wallMs: 35 * 60_000, expectedGates: 2 },
   ...patch,
 });
 
@@ -101,7 +101,10 @@ describe("the terminal sign-off", () => {
     assert.match(output, /GUESSES/);
     assert.match(output, /June means the calendar month/);
     assert.match(output, /GET \/health returns 200/);
-    assert.match(output, /~120k tokens measured, 1 CLI runs unmeasured/);
+    assert.match(output, /ESTIMATE  1 tasks · ~35 min · 2 gates/);
+    // The estimate names shape and wall-clock and no token figure at all
+    // (`loop/estimate.ts`). This assertion used to demand one.
+    assert.doesNotMatch(output, /tokens/);
     assert.match(output, /OUT OF SCOPE/);
   });
 });

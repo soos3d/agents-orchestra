@@ -156,7 +156,7 @@ function criteriaVital(view: View): Vital {
 
 /** The centre rail's contents. Everything that is not the board is one click away, and
  *  this is that click as data. */
-export type PaneKey = "board" | "contract" | "timeline";
+export type PaneKey = "board" | "map" | "task" | "contract" | "timeline";
 
 export interface Pane {
   key: PaneKey;
@@ -174,6 +174,16 @@ export function panes(view: View): readonly Pane[] {
       label: "board",
       badge: view.tasks.size > 0 ? `${live}/${view.tasks.size}` : "",
     },
+    // The same tasks as a figure rather than as five columns: what the board cannot
+    // do is be glanced at. It carries no badge of its own — it would be the board's,
+    // twice, and a rail of counters that agree teaches the eye to skip all of them.
+    { key: "map", label: "map", badge: "" },
+    // Only once there is one. A tab that is empty whenever nothing is selected is a
+    // tab that teaches the eye it is usually empty; the board is how a task gets
+    // picked, and this appears when one has been.
+    ...(view.selected && view.tasks.has(view.selected)
+      ? [{ key: "task" as const, label: "task", badge: view.selected }]
+      : []),
     {
       key: "contract",
       label: "contract",

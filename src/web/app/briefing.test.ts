@@ -164,7 +164,7 @@ describe("briefing", () => {
         criteria: [criterion("c1"), criterion("c2")],
         guesses: [{ id: "g1", text: "the ledger is authoritative", confidence: "low" } as never],
         plan: [task("t1"), task("t2")],
-        estimate: { taskCount: 2, tokens: 1000, wallMs: 21 * 60_000, expectedGates: 0 },
+        estimate: { taskCount: 2, wallMs: 21 * 60_000, expectedGates: 0 },
       }),
     );
 

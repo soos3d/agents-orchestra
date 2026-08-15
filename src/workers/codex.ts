@@ -21,7 +21,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { run } from "../runtime/sh.js";
-import { DEFAULT_WORKER_TIMEOUT_MS, type CliWorkerOptions } from "./claudeCode.js";
+import {
+  DEFAULT_WORKER_TIMEOUT_MS,
+  type CliOutcome,
+  type CliWorkerOptions,
+} from "./claudeCode.js";
 
 /** The exact command line, so the flags are assertable without spawning anything. */
 export function codexArgs(task: string, model: string, outFile: string): string[] {
@@ -41,11 +45,18 @@ export function codexArgs(task: string, model: string, outFile: string): string[
   ];
 }
 
+/**
+ * Always `{ text }` and never a token count, which is the honest answer rather than a
+ * missing feature (§9.5). This transport scrapes the final message out of
+ * `--output-last-message`; the JSONL event stream that would carry usage is `--json`,
+ * which the header above explains is deliberately not adopted while this path is the
+ * fallback. `spendOf` therefore books an unmeasured dispatch, which is true.
+ */
 export async function runCodex(
   task: string,
   worktree: string,
   options: CliWorkerOptions,
-): Promise<string> {
+): Promise<CliOutcome> {
   const outFile = path.join(os.tmpdir(), `codex-${process.pid}-${outFileCounter++}.txt`);
 
   const result = await run(
@@ -60,14 +71,14 @@ export async function runCodex(
 
   try {
     const message = fs.readFileSync(outFile, "utf8").trim();
-    if (message) return message;
+    if (message) return { text: message };
   } catch {
     /* the file is only written on a clean finish; fall through to the streams */
   } finally {
     fs.rmSync(outFile, { force: true });
   }
 
-  return result.stdout || result.stderr || `codex exited with code ${result.code}`;
+  return { text: result.stdout || result.stderr || `codex exited with code ${result.code}` };
 }
 
 // `Date.now()` collided when two workers started in the same millisecond, which is

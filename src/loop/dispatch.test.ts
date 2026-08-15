@@ -115,12 +115,13 @@ describe("dispatch", () => {
     });
   });
 
-  test("a transport that reports usage records it as measured", async () => {
+  test("a transport that reports usage records it as measured, by kind", async () => {
     events = [];
     const measured: WorkerTransport = async () => ({
       raw: JSON.stringify(aReport()),
       elapsedMs: 10,
-      measuredTokens: 4200,
+      usage: { input: 3800, output: 400, cacheRead: 288446, cacheWrite: 34455 },
+      ranOn: "claude-opus-4-6",
     });
 
     await dispatch(
@@ -129,8 +130,38 @@ describe("dispatch", () => {
     );
 
     const spend = events.find((event) => event.type === "spend_recorded");
-    assert.equal(spend && "spend" in spend && spend.spend.tokens.measured, 4200);
-    assert.equal(spend && "spend" in spend && spend.spend.tokens.unmeasured, 0);
+    assert.ok(spend && "spend" in spend);
+    assert.equal(spend.spend.tokens.measured, 4200);
+    assert.equal(spend.spend.tokens.unmeasured, 0);
+    // The kinds are why this event exists at all now: input, output and cached input
+    // are priced 5x and 10x apart, so the total above cannot be turned back into money.
+    assert.equal(spend.spend.tokens.cacheRead, 288446);
+    assert.equal(spend.spend.tokens.cacheWrite, 34455);
+    // And what produced the cost. `AgentSpec.model` is never sent over ACP, so the
+    // model the spend is priced against has to be the one the transport reports.
+    assert.equal("model" in spend ? spend.model : undefined, "claude-opus-4-6");
+  });
+
+  test("a transport reporting a floor keeps it out of the measured total", async () => {
+    events = [];
+    const floored: WorkerTransport = async () => ({
+      raw: JSON.stringify(aReport()),
+      elapsedMs: 10,
+      usage: { input: 12, output: 71 },
+      outputIsFloor: true,
+    });
+
+    await dispatch(
+      aCodeTask({ branch: "feat/floored", owns: ["src/floored.ts"] }),
+      deps({ transport: floored }),
+    );
+
+    const spend = events.find((event) => event.type === "spend_recorded");
+    assert.ok(spend && "spend" in spend);
+    // The session log's output figures are snapshots, not totals (`acp/usage.ts`).
+    // Counting them as measured would dress an unknown up as an answer.
+    assert.equal(spend.spend.tokens.measured, 12);
+    assert.equal(spend.spend.tokens.estimated, 71);
   });
 
   // The Phase 1 milestone that was waiting on a dispatcher to assert it.

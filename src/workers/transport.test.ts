@@ -30,7 +30,7 @@ function fakeCli(answer: string) {
     options: { model: string; timeoutMs?: number },
   ) => {
     seen.push({ prompt, cwd, model: options.model, ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}) });
-    return answer;
+    return { text: answer };
   };
   return { run, seen };
 }

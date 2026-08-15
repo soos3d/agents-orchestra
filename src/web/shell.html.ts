@@ -11,6 +11,7 @@
 // `'unsafe-inline'`, and a page whose reducer is typechecked against the real event
 // union rather than being untyped JavaScript in a string.
 import { BUNDLE_ROUTE } from "./assets.js";
+import { FONT_ROUTE } from "./fonts.js";
 import { pageStyle } from "./style.js";
 
 export function shellHtml(): string {
@@ -20,6 +21,7 @@ export function shellHtml(): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Mission Control</title>
+<link rel="preload" href="${FONT_ROUTE}" as="font" type="font/woff2" crossorigin>
 <style>${pageStyle}</style>
 </head>
 <body>

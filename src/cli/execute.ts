@@ -29,7 +29,7 @@ import { presentAndSignOff } from "../loop/prepare.js";
 import { runLoop, type LoopDeps, type LoopResult, type MissionStore } from "../loop/run.js";
 import { createCriterionChecker, createVerifier } from "../loop/verify.js";
 import { type Lease } from "../scheduler/leases.js";
-import { type AgentSpec, type Task } from "../domain/task.js";
+import { type Task } from "../domain/task.js";
 import { routeTransport } from "../workers/router.js";
 import { createAcpTransport } from "../workers/acp/transport.js";
 import { createPermissionPort, type PermissionPort } from "../workers/acp/permissionPort.js";
@@ -37,6 +37,8 @@ import { availableTransports } from "../workers/availability.js";
 import { createCliReformatter, createCliTransport } from "../workers/transport.js";
 import { artifactRoot, loreDir, type DiscoveredConfig } from "../config/discover.js";
 import { loadProfiles } from "../memory/profiles.js";
+import { offeredRoles, type OfferedRole } from "../agents/offer.js";
+import { loadRoster, localRosterDir, rosterDir } from "../agents/roster.js";
 import { recordLearnings } from "../memory/writeBack.js";
 import { type Io } from "./main.js";
 
@@ -189,7 +191,7 @@ export async function executeMission(deps: ExecuteDeps): Promise<ExecuteResult> 
       // Sign-off is where the approved plan is staffed, so the profiles have to be
       // here as well as in the loop's replan — wiring only one of the two call sites
       // is how a feature ends up switched off on the path most missions take.
-      profiles: promotedAgents(deps.config, (message) => deps.io.err(message)),
+      roles: staffableRoles(deps.config, (message: string) => deps.io.err(message)),
       // And the machine's transports, for the same reason (§7, defect 21): this is
       // where a resumed `--plan-only` mission is staffed, so a mission approved here
       // against the built list would be staffed with a transport nothing can start.
@@ -311,22 +313,28 @@ async function settleCriteriaChange(
 }
 
 /**
- * Procedural memory as synthesis sees it (§6, §7): the agents a human promoted from
- * earlier missions, as specs.
+ * Every role synthesis may staff a task from (§6, §7): the roster that ships with the
+ * package, the machine's own additions, and the agents a human promoted from earlier
+ * missions — merged, and last source winning on a name collision.
  *
  * Exported because a mission is staffed in two places — at sign-off, and again on
  * every replan — and both entry points have to load them or the feature is finished
  * and switched off on whichever path was missed. That is the shape of defects 12b, 23,
- * and 24, three times over.
+ * and 24, three times over, and it is why `execute.test.ts` and `main.test.ts` each
+ * assert the roles reach the call rather than only asserting this function works.
  *
- * A profile nobody can parse is skipped with a warning rather than raising: these are
- * hints, and losing one must never cost a mission that would otherwise run.
+ * An entry nobody can parse is skipped with a warning rather than raising: losing one
+ * role must never cost a mission that would otherwise run, and the bundled roster is
+ * asserted non-empty by its own test rather than at runtime here.
  */
-export function promotedAgents(
+export function staffableRoles(
   config: Pick<DiscoveredConfig, "stateDir">,
   onWarn?: (message: string) => void,
-): AgentSpec[] {
-  return loadProfiles(config.stateDir, onWarn).map((profile) => profile.spec);
+): OfferedRole[] {
+  return offeredRoles(
+    loadRoster([rosterDir(), localRosterDir(config.stateDir)], onWarn),
+    loadProfiles(config.stateDir, onWarn),
+  );
 }
 
 /** The runtime a mission needs to actually do work: worktrees, a merge queue, a
@@ -399,7 +407,7 @@ export async function buildLoopDeps(
   // above, and found the same way, on a mission that actually ran.
   const reformat = createCliReformatter({ cwd: repo ?? config.cwd });
 
-  const profiles = promotedAgents(config, onWarn);
+  const roles = staffableRoles(config, onWarn);
 
   // Where every task's outputs and every criterion's verdict land (P2). Derived from
   // the mission on the log rather than passed in, so `run` and `resume` cannot disagree
@@ -411,7 +419,7 @@ export async function buildLoopDeps(
     calls,
     cwd: repo ?? config.cwd,
     artifactRoot: root,
-    ...(profiles.length > 0 ? { profiles } : {}),
+    ...(roles.length > 0 ? { roles } : {}),
     // The replan's half of the honest offer (§7). Passed always, including empty: an
     // omitted list would fall back to everything the build ships, which is the exact
     // claim this is here to stop making.

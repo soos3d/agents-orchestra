@@ -51,6 +51,15 @@ const missionLifecycle = [
     envelope: envelopeSchema,
     budget: budgetSchema,
     unattended: z.boolean(),
+    // The human's own judgment, at compose time, that this job is small: skip the deep
+    // research call and plan one task rather than a decomposition. It belongs on the
+    // mission rather than in a runtime option because `orchestra resume` rebuilds
+    // everything it knows from the log — a flag held only in process memory would
+    // silently change a mission's shape when it was carried on the next morning.
+    //
+    // Optional so a log written before this field replays unchanged, which is what
+    // the committed receipt in `src/testing/receipts/` asserts.
+    quick: z.boolean().optional(),
   }),
   withBase({
     type: z.literal("mission_status"),
@@ -74,6 +83,11 @@ const missionLifecycle = [
     type: z.literal("research_completed"),
     brief: z.string(),
     findings: z.array(findingSchema),
+    // Which pass produced this. A `quick` mission (the compose checkbox) skips the
+    // deep call and keeps the scan's own answer, so the event still carries a brief —
+    // the briefing's research row finishes on that — while saying plainly that the
+    // ground was covered once and lightly. Optional so an older log replays unchanged.
+    depth: z.enum(["scan", "deep"]).optional(),
     spend: spendSchema,
   }),
 ] as const;
@@ -277,7 +291,16 @@ const humanChannel = [
 ] as const;
 
 const runtime = [
-  withBase({ type: z.literal("spend_recorded"), phase: z.string(), spend: spendSchema }),
+  // `model` is what actually produced this spend, when the transport says — which is
+  // not always what the spec asked for: `AgentSpec.model` is never sent over ACP, so a
+  // task planned for one model can run on another. Optional because most transports do
+  // not say, and a cost cannot be priced against a model nobody recorded.
+  withBase({
+    type: z.literal("spend_recorded"),
+    phase: z.string(),
+    spend: spendSchema,
+    model: z.string().min(1).optional(),
+  }),
   withBase({
     type: z.literal("budget_exceeded"),
     scope: z.enum(["task", "mission"]),

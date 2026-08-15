@@ -240,6 +240,22 @@ describe("the compose card", () => {
       />,
     );
 
+  // The `quick` half of the research/plan optimization is worth nothing if the box is
+  // not on the page — the whole design rests on the human declaring a small job rather
+  // than a model guessing at one, so this card is where the feature exists or does not.
+  // `--unattended` is still absent by design (§17); a cost toggle is not that.
+  test("offers the quick toggle, and still never offers unattended", () => {
+    const html = drawHome({
+      list: [workspace("ws-1", "/Users/dev/ledger")],
+      chosen: "ws-1",
+      defaultId: "ws-1",
+    });
+
+    assert.ok(html.includes("compose-quick"), "the quick toggle is not on the compose card");
+    assert.ok(html.includes("quick"), "the quick toggle has no label a person can read");
+    assert.equal(html.includes("unattended"), false, "the compose card offered --unattended");
+  });
+
   test("names the directory the mission will run in", () => {
     const html = drawHome({
       list: [workspace("ws-1", "/Users/dev/ledger")],
@@ -422,6 +438,95 @@ describe("the health panel", () => {
     const html = render(<Home view={viewWith({ missions: [] })} send={noop} onChoose={noop} />);
 
     assert.ok(!html.includes("This machine"));
+  });
+});
+
+// The redesign's own rule, and the one it is easiest to break by tidying: nothing was
+// *removed* from home, it was ranked. A control that a person needs once — adding a
+// directory, keeping a mission under a name, reading the whole doctor report — is
+// folded, and folded is not gone. Every assertion here is about a thing still being on
+// the page after being demoted.
+describe("home, ranked", () => {
+  const workspace = (id: string, dir: string) => ({ id, path: dir, addedAt: "2026-08-14T00:00:00.000Z" });
+
+  const drawHome = (patch: Partial<View>): string =>
+    render(<Home view={viewWith(patch)} send={noop} onChoose={noop} />);
+
+  test("a workspace is a button, so it can be chosen without a mouse", () => {
+    const html = drawHome({
+      workspaces: {
+        ...emptyView().workspaces,
+        list: [workspace("ws-1", "/Users/dev/ledger")],
+        chosen: "ws-1",
+        defaultId: "ws-1",
+      },
+    });
+
+    // The row used to be a div with an onClick, which no keyboard reaches.
+    assert.match(html, /<button[^>]*class="ws[^"]*"/);
+    assert.ok(html.includes('aria-pressed="true"'), "the chosen row does not say it is chosen");
+    // The path is shortened for the rail, so the whole of it has to survive somewhere.
+    assert.ok(html.includes('title="/Users/dev/ledger"'));
+    assert.ok(html.includes("ledger"));
+  });
+
+  test("adding a directory is folded away, and the field is still there", () => {
+    const html = drawHome({
+      workspaces: { ...emptyView().workspaces, list: [workspace("ws-1", "/Users/dev/ledger")], defaultId: "ws-1" },
+    });
+
+    assert.ok(html.includes("<details"), "the add flow is not folded");
+    assert.ok(html.includes("another directory"));
+    assert.ok(html.includes('id="workspace-path"'), "the directory field was dropped rather than folded");
+  });
+
+  test("the doctor report is summarised, and opens by itself when it is bad news", () => {
+    const ready = drawHome({
+      missions: [],
+      health: { ready: true, checks: [{ name: "node", level: "ok", detail: "v22.4.0" }], transports: ["cli"] },
+    });
+    const broken = drawHome({
+      missions: [],
+      health: {
+        ready: false,
+        checks: [{ name: "workers", level: "fail", detail: "no coding agent on PATH", fix: "npm i -g x" }],
+        transports: [],
+      },
+    });
+
+    assert.ok(ready.includes("✓ ready"), "a healthy machine does not say so in one line");
+    assert.ok(ready.includes("1 checks") || ready.includes("checks"));
+    // Folded when there is nothing to do about it; open when there is.
+    assert.equal(/<details[^>]*open/.test(ready), false, "the whole report is open on a healthy machine");
+    assert.ok(/<details[^>]*open/.test(broken), "a machine that cannot dispatch hides why behind a click");
+    assert.ok(broken.includes("npm i -g x"), "the fix was folded out of existence");
+  });
+
+  test("keeping a mission is folded, and forgetting one is not", () => {
+    const html = drawHome({ missions: [{ id: "m-1", goal: "reconcile june", status: "blocked" }] });
+
+    assert.ok(html.includes("save"), "the save control vanished with the row it was in");
+    assert.ok(html.includes("forget"));
+    assert.ok(html.includes("watch"));
+  });
+
+  test("the field draws one node per mission, each naming what it is", () => {
+    const html = drawHome({
+      missions: [
+        { id: "20260815T142549Z-reconcile-june", goal: "reconcile june", status: "executing" },
+        { id: "20260814T090000Z-calculator", goal: "make a calculator", status: "complete" },
+      ],
+      workspaces: {
+        ...emptyView().workspaces,
+        live: { "ws-1": "20260815T142549Z-reconcile-june" },
+      },
+    });
+
+    const nodes = html.match(/class="orb /g) ?? [];
+    assert.equal(nodes.length, 2, "the mission field does not have one node per mission");
+    // A node is a control and carries the mission's own words, not a coordinate.
+    assert.ok(html.includes('aria-label="reconcile june · executing"'));
+    assert.ok(html.includes("1 running"), "the core does not say what is in flight");
   });
 });
 

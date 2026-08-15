@@ -25,6 +25,12 @@
 // goes back to the planner, and a capability the envelope does not grant goes to a
 // human, because widening an envelope is a human action and there is no code path that
 // does it.
+import {
+  composeSystemPrompt,
+  resolveRole,
+  rosterIndex,
+  type OfferedRole,
+} from "../agents/offer.js";
 import { describeViolations, violations, type Envelope } from "../domain/envelope.js";
 import { type PlannedTask } from "../domain/ledger.js";
 import { type AgentSpec, type WorkerKind } from "../domain/task.js";
@@ -40,10 +46,12 @@ export interface SynthesizeDeps {
   calls: Pick<Calls, "synthesize">;
   /** Overridable so a test can assert the rejection without shipping a transport. */
   transports?: readonly string[];
-  /** Roles a human promoted from earlier missions (§7), offered to the call as prior
-   *  art. They change what the model is *shown* and nothing about what it is allowed
-   *  to return: every check below runs on the answer either way. */
-  profiles?: readonly AgentSpec[];
+  /** The roles this mission may staff from (§7, amended): the documented roster plus
+   *  anything a human promoted, already merged by `agents/offer.ts`. They change what
+   *  the model is *shown* and nothing about what it is allowed to return — every check
+   *  below runs on the answer either way. Absent is a mission that staffs from scratch,
+   *  which is the behaviour every mission had before the roster existed. */
+  roles?: readonly OfferedRole[];
   now?: () => string;
 }
 
@@ -159,6 +167,29 @@ export class ArtifactEscapeError extends SynthesisError {
         `directory directly, or plan the task as 'code' if it needs to change the repo.`,
     );
     this.name = "ArtifactEscapeError";
+  }
+}
+
+/**
+ * A synthesized agent that started from a role the roster does not have.
+ *
+ * A planning-level failure like the lease, and refused rather than degraded for a
+ * reason specific to how `basedOn` works: the model writes only the task-specific
+ * addendum when it names a role, so accepting an unresolvable name would hand a worker
+ * a paragraph where a system prompt should be — and it would run, badly, with nothing
+ * failing. That is worse than parking, because the mission would spend a dispatch and a
+ * verification to find out.
+ */
+export class UnknownRoleError extends SynthesisError {
+  constructor(taskId: string, requested: string) {
+    super(
+      taskId,
+      `Task '${taskId}' was staffed from a role called '${requested}', twice, which is ` +
+        `not in the roster. Add it as a file under the roster directory, or let the ` +
+        `task be staffed from scratch — a spec with no 'basedOn' and a full system ` +
+        `prompt is always allowed.`,
+    );
+    this.name = "UnknownRoleError";
   }
 }
 
@@ -285,7 +316,7 @@ export async function synthesizeTasks(
 /** What was wrong with a spec: the sentence the model gets on its retry, the string
  *  the event and the error record, and which of the three failures it was. */
 interface SpecProblem {
-  kind: "transport" | "capability" | "lease" | "artifact" | "outputPath";
+  kind: "transport" | "capability" | "lease" | "artifact" | "outputPath" | "basedOn";
   requested: string;
   retry: string;
 }
@@ -301,6 +332,8 @@ async function staff(
   transports: readonly string[],
 ): Promise<AgentSpec> {
   const catalogue = resolveClasses(envelope.toolClasses);
+  const roles = deps.roles ?? [];
+  const index = rosterIndex(roles);
 
   const request = (rejected?: string) =>
     deps.calls.synthesize({
@@ -308,21 +341,51 @@ async function staff(
       envelope,
       toolCatalogue: catalogue,
       transports: [...transports],
-      // Omitted rather than sent empty: a prompt carrying "profiles: []" spends
-      // context telling the model about a library that does not exist.
-      ...(deps.profiles && deps.profiles.length > 0 ? { profiles: [...deps.profiles] } : {}),
+      // Omitted rather than sent empty: a prompt carrying "roster: []" spends context
+      // telling the model about a library that does not exist.
+      ...(index === "" ? {} : { roster: index }),
       ...(rejected ? { rejected } : {}),
     });
 
   const first = await request();
-  const firstProblem = inspect(first, task, envelope, transports, catalogue);
-  if (!firstProblem) return first;
+  const firstProblem = inspect(first, task, envelope, transports, catalogue, roles);
+  if (!firstProblem) return attach(first, roles);
 
   const second = await request(firstProblem.retry);
-  const problem = inspect(second, task, envelope, transports, catalogue);
-  if (!problem) return second;
+  const problem = inspect(second, task, envelope, transports, catalogue, roles);
+  if (!problem) return attach(second, roles);
 
   throw raise(deps, task, envelope, problem, transports);
+}
+
+/**
+ * Replaces a `basedOn` spec's addendum with the composed prompt, once it has passed
+ * every check.
+ *
+ * This is where the roster stops being a reference and becomes text, and it happens
+ * *here* — before `task_planned` is emitted — rather than at dispatch, so the event log
+ * carries a complete system prompt exactly as it did when every prompt was authored
+ * from scratch. Nothing downstream resolves a role: `workers/prompt.ts`, `fold`, replay
+ * and the committed receipt are all untouched by the roster's existence, and a mission
+ * is still entirely readable from its own log.
+ *
+ * `inspect` has already refused an unresolvable name, so a miss here is impossible
+ * rather than tolerated — but returning the spec unchanged would ship a one-paragraph
+ * addendum as an entire worker prompt, which is the one outcome worth being loud about.
+ */
+function attach(spec: AgentSpec, roles: readonly OfferedRole[]): AgentSpec {
+  if (spec.basedOn === undefined) return spec;
+
+  const role = resolveRole(roles, spec.basedOn);
+  if (!role) {
+    throw new Error(
+      `Role '${spec.basedOn}' passed validation and then did not resolve. This is a ` +
+        `bug in synthesize.ts, not in the roster: inspect() and attach() are reading ` +
+        `different role lists.`,
+    );
+  }
+
+  return { ...spec, systemPrompt: composeSystemPrompt(role.body, spec.systemPrompt) };
 }
 
 /** Every check a spec has to pass, in the order that makes the retry most useful:
@@ -335,6 +398,7 @@ function inspect(
   envelope: Envelope,
   transports: readonly string[],
   catalogue: readonly string[],
+  roles: readonly OfferedRole[],
 ): SpecProblem | undefined {
   if (!transports.includes(spec.transport.id)) {
     return {
@@ -343,6 +407,25 @@ function inspect(
       retry:
         `The '${spec.transport.id}' transport is not built. Choose one of: ` +
         `${transports.join(", ")}.`,
+    };
+  }
+
+  // A `basedOn` naming nothing is the one failure where the *rest* of the spec can be
+  // perfect and the worker still gets a prompt nobody wrote: the model has written a
+  // short addendum on the assumption that a role's body is coming, and no body is. So
+  // it is refused rather than passed through, and the retry quotes the list — a
+  // near-miss on a name is the likely mistake and it is cheap to correct.
+  if (spec.basedOn !== undefined && !resolveRole(roles, spec.basedOn)) {
+    return {
+      kind: "basedOn",
+      requested: spec.basedOn,
+      retry:
+        `'${spec.basedOn}' is not a role in the roster, so there is no system prompt to ` +
+        `attach to it and what you wrote would be the worker's entire instructions. ` +
+        (roles.length > 0
+          ? `Use one of these exact names: ${roles.map((role) => role.name).join(", ")}. `
+          : `No roster is available on this mission. `) +
+        `Or leave 'basedOn' out and write a complete 'systemPrompt' from scratch.`,
     };
   }
 
@@ -469,6 +552,7 @@ function raise(
     return new UnavailableTransportError(task.id, problem.requested, transports);
   }
   if (problem.kind === "lease") return new UndeclaredLeaseError(task.id);
+  if (problem.kind === "basedOn") return new UnknownRoleError(task.id, problem.requested);
   if (problem.kind === "outputPath") {
     return new ArtifactEscapeError(task.id, problem.requested);
   }

@@ -8,6 +8,8 @@ import { doctor, formatReport } from "../config/doctor.js";
 import { ensureGitignored, ensurePrivateDir, forgetMission } from "../config/hygiene.js";
 import { createEventLog } from "../events/log.js";
 import { fold } from "../events/fold.js";
+import { missionMetrics } from "../events/metrics.js";
+import { renderMetrics } from "./render.js";
 import { createAgentCalls } from "../loop/agentCalls.js";
 import { type HumanPort } from "../loop/human.js";
 import { resilientCalls, type ResilientCallsDeps } from "../loop/resilience.js";
@@ -39,15 +41,20 @@ const USAGE = `orchestra — a looping orchestrator for any kind of task
   orchestra promote <missionId> <taskId> --as <name>
                                    keep a task's synthesized agent as a profile later
                                    missions are offered as prior art
+  orchestra metrics <missionId>    what it cost: per decision point, per task
   orchestra run "<goal>"           start a mission
   orchestra serve [--port <n>]     a dashboard that outlives missions: list, watch,
                                    answer, and compose them from the page
 
   run flags
     --plan-only        research, spec, plan, estimate — then stop. Nothing dispatched.
+    --quick            a small job: one light research pass, planned as one task
     --budget <minutes> wall-clock ceiling for the mission (default 240)
     --saved <name>     replay a saved mission. Scan and research run again.
-    --unattended       skip sign-off. Requires --saved or --force.`;
+    --unattended       skip sign-off. Requires --saved or --force.
+
+  metrics flags
+    --json             the same figures as JSON, for diffing two runs`;
 
 /** Applied on every run, never once at init: the line somebody deleted is the case
  *  this exists for (§17). */
@@ -70,6 +77,26 @@ function assertHygiene(config: DiscoveredConfig, io: Io): void {
  * makes is a message rather than a stack trace, because both of them — a name that is
  * a path, a mission nobody signed off — are things a human typed.
  */
+/**
+ * What a finished mission cost (§9.5), folded on demand.
+ *
+ * Read from the log rather than from a projection file, deliberately: a third atomic
+ * write on every event would pay, all mission long, for a question nobody asks until
+ * the mission is over. `--json` is the form that matters while developing — the point
+ * of collecting any of this is diffing two runs of the same goal.
+ */
+function metrics(missionId: string, asJson: boolean, config: DiscoveredConfig, io: Io): number {
+  const events = createEventLog(missionDir(config.stateDir, missionId)).read();
+  if (events.length === 0) {
+    io.err(`No mission '${missionId}' under ${config.stateDir}.`);
+    return 1;
+  }
+
+  const figures = missionMetrics(fold(events));
+  io.out(asJson ? JSON.stringify(figures, null, 2) : renderMetrics(figures).join("\n"));
+  return 0;
+}
+
 function save(missionId: string, name: string, config: DiscoveredConfig, io: Io): number {
   const events = createEventLog(missionDir(config.stateDir, missionId)).read();
   if (events.length === 0) {
@@ -173,7 +200,7 @@ export async function main(
     resilientCalls(
       deps.createCalls
         ? deps.createCalls(discovered, onSpend)
-        : createAgentCalls({ config: discovered, onSpend: (_call, spend) => onSpend(spend) }),
+        : createAgentCalls({ config: discovered, onSpend }),
       { onWarn: (message) => io.err(message), ...deps.resilience },
     );
 
@@ -226,6 +253,15 @@ export async function main(
         return 1;
       }
       return promote(missionId, taskId, name, config, io);
+    }
+
+    case "metrics": {
+      const [missionId] = rest;
+      if (!missionId || missionId.startsWith("--")) {
+        io.err("Usage: orchestra metrics <missionId> [--json]");
+        return 1;
+      }
+      return metrics(missionId, rest.includes("--json"), config, io);
     }
 
     case "resume": {

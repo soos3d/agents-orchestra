@@ -10,6 +10,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { aCodeTask, anAgentSpec } from "../testing/fixtures.js";
+import { type CliOutcome } from "./claudeCode.js";
 import { workerPrompt } from "./prompt.js";
 import { createCliTransport } from "./transport.js";
 
@@ -18,9 +19,9 @@ function fakeRunners() {
   const seen: { prompt: string; cwd: string; cli: "claude" | "codex" }[] = [];
   const make =
     (cli: "claude" | "codex") =>
-    async (prompt: string, cwd: string): Promise<string> => {
+    async (prompt: string, cwd: string): Promise<CliOutcome> => {
       seen.push({ prompt, cwd, cli });
-      return "{}";
+      return { text: "{}" };
     };
   return { runners: { claude: make("claude"), codex: make("codex") }, seen };
 }

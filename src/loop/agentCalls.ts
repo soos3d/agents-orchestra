@@ -32,7 +32,7 @@ import path from "node:path";
 import { z } from "zod";
 import { type DiscoveredConfig } from "../config/discover.js";
 import { evidenceSchema } from "../domain/artifacts.js";
-import { type Spend } from "../domain/budget.js";
+import { tokensFrom, type Spend } from "../domain/budget.js";
 import {
   criterionSchema,
   findingSchema,
@@ -378,6 +378,19 @@ Every criterion needs a \`check\` that will actually produce an answer: a comman
 run, or a rubric for a judge to grade artifacts against. A criterion nothing can
 evaluate means the mission can never legitimately report success, and it is rejected.
 
+A \`depth\` of \`scan\` is normally a first cheap look, and the deep pass that follows is
+what writes the outcome spec. **\`solePass: true\` means there is no deep pass.** A human
+looked at this job and said it is small, so this call is the whole of the mission's
+research: return the criteria, with a real check on each, exactly as a deep pass would.
+Returning findings and no criteria there does not save the mission anything — it fails
+the gate and buys the deep call you were skipping.
+
+If the input carries \`rejected\`, this is your one retry and that field is the gate's
+verdict on the criteria you just returned, quoted back. Fix what it names rather than
+starting over: keep every criterion it did not object to, and rewrite the ones it did
+so they carry a check that will actually run. Returning the same shape again ends the
+mission.
+
 Each entry in \`criteria\` has this shape. It is spelled out here because the return
 schema below types \`criteria\` as an open array on purpose — that is what lets an
 uncheckable criterion reach the gate that rejects it, rather than being silently
@@ -425,6 +438,14 @@ rejected before anything runs.
 
 The ledger's dead ends are approaches already shown to fail. Do not propose them
 again.
+
+When the input carries \`scope: "quick"\`, a human has looked at this job and said it
+is small — a script, a flag, a single well-understood change. Plan it as **one task**
+unless that is genuinely impossible, and say why in the goal if you must use more.
+Splitting a small job across tasks does not make it safer: each task pays for its own
+agent, its own worktree, and its own verification round, and the dependencies between
+them are what turn ten minutes of work into an afternoon. Fold what would have been
+setup, implementation, and a test into the single task that does all three.
 
 A task whose goal is to *change files in the repository* is \`code\`, whatever else it
 is also doing. Only a \`code\` task gets a worktree, a file lease, a commit, and a
@@ -487,11 +508,25 @@ the tools read-only, rather than granting \`Write\` and letting it try.
 a spec that names an absolute path, or one that climbs out with \`..\`, is refused at
 validation and costs the task a retry. Leave it out to write to the directory itself.
 
-Anything under \`profiles\` is an agent a human kept from an earlier mission — prior
-art, not a roster. Adapt one where it fits this task, or ignore them all and write
-something new; nothing here is preferred for being saved, and a profile's tools,
-transport, and lease are checked against *this* mission's envelope like any other, so
-copying one across does not carry its capabilities with it.
+\`roster\` lists documented roles, one per line, as
+\`name (worker) [suggested capability classes]: description\`. **Prefer naming one.**
+Set \`basedOn\` to the role's exact name and the full system prompt for that role — which
+you are not shown, and which is longer than anything you would write here — is attached
+for you. Then \`systemPrompt\` is only what this *particular* task needs on top of it:
+the specific files, the specific constraint, the specific thing to be careful of.
+Usually a short paragraph. Do not restate the role, and do not repeat what the role
+already covers.
+
+Pick by description and by worker kind. If no role is a reasonable fit, leave
+\`basedOn\` out and write a complete \`systemPrompt\` from scratch as you otherwise
+would — that is a normal answer, not a failure. What is not allowed is a \`basedOn\`
+naming something not on the list: it is refused, costs the task a retry, and the short
+addendum you wrote would have been the worker's entire prompt.
+
+Naming a role grants nothing. The capability classes in brackets are a hint about the
+shape of the work, not a grant — \`tools\` still comes from \`toolCatalogue\`, and the
+transport, the lease, and the envelope are checked exactly as they are for a spec that
+named no role at all.
 
 A \`command\` check runs as a program with arguments, not through a shell: no pipes,
 no redirects, no \`&&\`, no \`$()\`, no glob expansion, and no shell operators inside a
@@ -681,15 +716,28 @@ function failedResult(message: { subtype: string; num_turns?: number }): Error {
   );
 }
 
-function spendOf(usage: { input_tokens?: number; output_tokens?: number }, ms: number): Spend {
+/** The SDK reports four numbers and this used to keep one. Input and output are priced
+ *  differently and cache is priced differently again, so the sum of the first two is a
+ *  figure nobody can turn back into money — which is what "how much did this mission
+ *  cost?" needs. All four are carried through; `measured` still means input + output. */
+function spendOf(
+  usage: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_creation_input_tokens?: number;
+    cache_read_input_tokens?: number;
+  },
+  ms: number,
+): Spend {
   return {
     // Measured, and the portion a mission is actually billed for: the CLI workers
     // ride an existing subscription and the orchestrator does not (§9.5).
-    tokens: {
-      measured: (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0),
-      estimated: 0,
-      unmeasured: 0,
-    },
+    tokens: tokensFrom({
+      input: usage.input_tokens,
+      output: usage.output_tokens,
+      cacheWrite: usage.cache_creation_input_tokens,
+      cacheRead: usage.cache_read_input_tokens,
+    }),
     wallMs: ms,
     dispatches: 1,
   };

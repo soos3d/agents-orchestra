@@ -47,7 +47,7 @@ const reopened = (): EventInput[] => [
     criteria: [aCriterion({ id: "c1" })],
     guesses: [],
     outOfScope: [],
-    estimate: { taskCount: 1, tokens: 1000, wallMs: 60_000, expectedGates: 0 },
+    estimate: { taskCount: 1, wallMs: 60_000, expectedGates: 0 },
   },
   {
     ...orchestrator,

@@ -22,6 +22,7 @@ import { writeProjections } from "../events/projections.js";
 import { pruneOrphanWorktrees } from "../git/worktree.js";
 import { hasCommitsSince } from "../git/repo.js";
 import { isCodeTask, type Task } from "../domain/task.js";
+import { spendPhase } from "../domain/budget.js";
 import { anyOf, type HumanPort } from "../loop/human.js";
 import { createFileStore } from "../loop/store.js";
 import { type MissionStore } from "../loop/run.js";
@@ -137,12 +138,12 @@ export async function resumeMission(
       // approvable rather than merely still on disk.
       ...(human ? { human } : {}),
       calls: () =>
-        deps.createCalls(config, (spend) =>
+        deps.createCalls(config, (call, spend) =>
           wired.emit({
             type: "spend_recorded",
             missionId,
             actor: "orchestrator",
-            phase: "orchestration",
+            phase: spendPhase(call),
             spend,
           }),
         ),

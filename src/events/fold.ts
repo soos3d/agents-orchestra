@@ -127,12 +127,17 @@ function patchCriterion(state: MissionState, id: string, patch: Partial<Criterio
   };
 }
 
-function recordSpend(state: MissionState, phase: string, spend: Spend): void {
+function recordSpend(state: MissionState, phase: string, spend: Spend, model?: string): void {
   const previous = state.mission.spendByPhase[phase] ?? zeroSpend();
   state.mission = {
     ...state.mission,
     spend: addSpend(state.mission.spend, spend),
     spendByPhase: { ...state.mission.spendByPhase, [phase]: addSpend(previous, spend) },
+    // Last writer wins: a retried task's later attempt is what the phase now reflects,
+    // and a transport that stopped reporting must not erase what an earlier one said.
+    ...(model === undefined
+      ? {}
+      : { modelByPhase: { ...state.mission.modelByPhase, [phase]: model } }),
   };
 }
 
@@ -494,7 +499,7 @@ const handlers: Handlers = {
   envelope_violation: noop, // surfaces as a question; the question event carries it
 
   // ── runtime ────────────────────────────────────────────────────────
-  spend_recorded: (state, event) => recordSpend(state, event.phase, event.spend),
+  spend_recorded: (state, event) => recordSpend(state, event.phase, event.spend, event.model),
   budget_exceeded: (state, event) => {
     if (event.scope !== "mission") return;
     openInbox(state, {
@@ -539,8 +544,12 @@ function seed(event: Extract<Event, { type: "mission_created" }>): MissionState 
       budget: event.budget,
       spend: zeroSpend(),
       spendByPhase: {},
+      modelByPhase: {},
       extensions: 0,
       unattended: event.unattended,
+      // Absent on any log written before the flag existed, and `false` is the honest
+      // reading of that: those missions all ran the full research pass.
+      quick: event.quick ?? false,
       createdAt: event.at,
       updatedAt: event.at,
     },

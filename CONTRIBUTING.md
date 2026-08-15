@@ -45,6 +45,23 @@ Two files, in order: `src/events/schema.ts` (the discriminated union), then `src
 error by design). Add a `fold.test.ts` case for the transition. There is an `/add-event` skill in
 `.claude/skills/` if you are working with Claude Code.
 
+## Adding a roster role
+
+One markdown file under `agents/`, with `name`, `description`, `worker`, and `suggests` in the
+frontmatter and the role's system prompt as the body. Nothing else to wire — `loadRoster` reads the
+directory.
+
+Two constraints are enforced by the suite rather than by review, because the index is paid for on
+**every** synthesize call of every mission: a description over 160 characters is refused at parse,
+and `agents/offer.test.ts` fails if the whole rendered index passes 4,000. Raising either is almost
+always the wrong fix — the collection these were drawn from has an index of ~15.8k tokens, which is
+more than an entire quick mission spends.
+
+Write the role and nothing else. Do not restate the file-lease rule, the artifact directory, the
+report format, or how a `command` check is run: those live in `SYNTHESIZE_PROMPT` and
+`workers/prompt.ts`, and a second copy in eighteen files is eighteen chances to drift. Keep it
+stack-agnostic — a role runs in whatever repository the mission is pointed at.
+
 ## The one thing the suite cannot check for you
 
 `src/loop/agentCalls.ts` is the file the fixture harness substitutes for, so a green suite says

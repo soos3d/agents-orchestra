@@ -34,6 +34,11 @@ Workers also run over **ACP** — a pinned adapter per target, a real permission
 `--dangerously-skip-permissions` — and a real mission has gone from brief to `complete`
 uninterrupted on it: six synthesized agents, five real merges, nine criteria met with evidence.
 
+Two things since exist to make a mission cheaper rather than more capable. `--quick` skips the deep
+research call on a job you already understand, halving a plan-only run. And synthesis now starts
+from a **roster** of eighteen documented roles instead of authoring a system prompt from scratch
+for every task — it reads one line per role, never the bodies.
+
 What is not built: computer use and its approval gates, and the concrete phone carrier for the
 inbox. Smaller things are started and named rather than half-wired — killing a single task,
 resuming a parked mission from the server rather than the CLI, the artifact retention sweep, and
@@ -104,6 +109,28 @@ non-zero if any criterion was rejected for having no way to check it.
 Intake asks only what the scan made answerable. Press Enter to skip a question; the answer becomes a
 labelled guess on the sign-off screen instead.
 
+### 1b. When the job is small, say so
+
+Most of that cost is the deep `research` call and a planner told to decompose. A mission you already
+understand needs neither:
+
+```bash
+orchestra run "fix the off-by-one in parseRange" --quick --plan-only
+```
+
+`--quick` keeps the scan's own brief and criteria instead of throwing them away and researching
+again, and it asks the planner for one task rather than a decomposition. Measured on the same goal:
+**8,194 tokens and 1m53s, against 15,921 and 3m35s** for the standard path.
+
+It is a hint and never a permission. The outcome-spec gate is unchanged, and a scan-derived spec
+that fails it escalates to the deep call the mission skipped — so ticking the box on a job that was
+not small costs one call, not a run. Two other things buy the deep call back, both structural: an
+**answered intake question**, because the scan runs before intake and its criteria would predate the
+answer; and the **first send-back at sign-off**, because rejecting a quick plan contradicts your own
+checkbox, and replanning over scan-depth findings would answer that with the same thin ground twice.
+
+The compose card in the dashboard has the same thing as a checkbox.
+
 ### 2. The full run
 
 Drop the flag:
@@ -125,6 +152,7 @@ in at any time without blocking the loop, and panic stops dispatch immediately.
 | | |
 |---|---|
 | `--plan-only` | scan, intake, research, spec, plan, estimate — then stop. Nothing runs. |
+| `--quick` | skip the deep research call and plan one task. A hint, not a permission — see above. |
 | `--budget <minutes>` | wall-clock ceiling for the mission. Default 240. |
 | `--unattended` | skip sign-off. Requires `--saved` or `--force`, and is never written to config. |
 | `--saved <name>` | replay a saved mission — goal, envelope, criteria skeleton. Scan and research still re-run. |
@@ -138,10 +166,23 @@ unmeasured rather than showing one confident number that omits most of the spend
 ### The other commands
 
 ```bash
-orchestra resume <missionId>     # replay the log, reconcile orphans, carry on
-orchestra forget <missionId>     # delete everything a mission wrote
-orchestra doctor                 # what is installed, authed, and missing
+orchestra serve                            # the dashboard that outlives missions
+orchestra resume <missionId>               # replay the log, reconcile orphans, carry on
+orchestra forget <missionId>               # delete everything a mission wrote
+orchestra save <missionId> --as <name>     # keep the mission to replay with --saved
+orchestra promote <missionId> <taskId> --as <name>   # keep the agent as a role
+orchestra metrics <missionId> [--json]     # what each decision point cost
+orchestra doctor                           # what is installed, authed, and missing
 ```
+
+`orchestra serve` is the only command a normal run needs: compose a mission, watch any of them,
+answer a parked one, resume, save, promote, and a `doctor` panel are all on the page. One composed
+mission per workspace, and a workspace is a directory that was probed rather than one that was
+declared.
+
+`metrics --json` is the form that matters while tuning, because the point of collecting any of it is
+diffing two runs of the same goal. Spend is attributed per decision point — `call:research`,
+`call:plan` — rather than lumped into one "orchestration" figure.
 
 `resume` is not a repair tool, it is the normal way back in. A mission left at its sign-off screen
 overnight survives a restart and is approved through the same code path an attended run uses. A
@@ -186,16 +227,64 @@ seam; a canned `events.jsonl` plus scripted answers drives every path above it.
   tools from a catalogue the mission's envelope resolves to. A spec that reaches outside the
   envelope, names a transport that is not built, or declines to declare its file lease is refused at
   validation, not at dispatch.
+- **The roster** (`src/agents/`, `agents/`) — eighteen documented roles synthesis may start from
+  instead of writing a system prompt from scratch every time. See below.
 - **Isolation** (`src/git/`) — worktrees pinned to an explicit base sha, a serialized merge queue
   that asserts its base and aborts cleanly on conflict.
 - **Resilience** (`src/runtime/`) — orphan reconciliation, graceful shutdown that prints the resume
   command, ring-buffered subprocess output, SIGTERM → SIGKILL escalation.
 
+## The agent roster
+
+Synthesis used to author a full system prompt for every task. Eighteen documented roles now ship
+under `agents/` — ten `code`, four `review`, four `research` — and a spec may start from one:
+
+```
+- code-reviewer (review) [fs.read]: Reviews a change for correctness, security and
+  maintainability, ranked by severity, with a concrete failure scenario for each finding.
+- minimal-change-engineer (code) [fs.read fs.write shell.run]: Surgical fixer for a known
+  defect: reproduce, fix at the root, change as little as possible, prove it with a test.
+```
+
+**The orchestrator never reads a role's body.** It is shown that index and nothing else — 18 lines,
+about 820 tokens — and answers with `basedOn: "code-reviewer"` plus a short paragraph saying what
+*this* task needs. The role's ~30-line body is read from disk and composed into the spec before the
+event is written, so the log still carries a complete prompt: `fold`, replay, and the committed
+receipt are untouched by the roster's existence, and a mission stays readable from its own log.
+
+Naming a role grants nothing. The capability classes in brackets are a hint about the shape of the
+work; `tools`, the transport, and the file lease are still the model's own answer and are still
+checked against the mission's envelope. Writing a spec from scratch remains a normal answer — the
+roster is a starting point, not the set of things the system can do.
+
+Add your own as markdown under `.orchestra/agents/`, where they shadow a shipped role of the same
+name:
+
+```markdown
+---
+name: migration-writer
+description: Writes reversible schema migrations and the backfill that goes with them.
+worker: code
+suggests: fs.read, fs.write, shell.run
+---
+
+You write database migrations...
+```
+
+`orchestra promote <missionId> <taskId> --as <name>` keeps an agent that worked as a role, and
+promoted roles join the same index.
+
+Two limits are enforced rather than advised, because the index is paid for on **every** synthesize
+call of every mission: a description is capped at 160 characters by the schema, and the whole
+rendered index at 4,000 by a test that fails if a nineteenth entry pushes it over. The roles are
+derived from [agency-agents](https://github.com/msitarzewski/agency-agents) (MIT, attributed in
+`NOTICE`) and substantially rewritten.
+
 ## Develop
 
 ```bash
 npm run build     # tsc → dist/, then the dashboard bundle → dist/web/app.js
-npm test          # 960 tests, ~80s
+npm test          # 1191 tests, ~95s
 npm run typecheck
 npm run dev -- doctor
 ```
@@ -215,6 +304,11 @@ harness substitutes for, so a green suite says nothing about what a model actual
 defects hid there behind 331 passing tests until the first real run. If you change a prompt, a
 schema, or a decision point's input, do one real `--plan-only` run against a scratch directory
 before believing it.
+
+That applies to the roster too, and to its whole reason for existing. The suite proves a role is
+offered, resolved, and composed; it cannot tell you the arrangement saves anything. Run the same
+goal twice — once with `agents/` moved aside — and diff `call:synthesize` in
+`orchestra metrics --json`.
 
 ## A note on `.orchestra/`
 

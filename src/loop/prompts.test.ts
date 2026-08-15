@@ -37,6 +37,31 @@ describe("buildResearchInput", () => {
   // A saved mission's criteria are a skeleton to converge on, never a result to
   // reuse (§7): the replay re-runs research, and this is how it knows what last
   // month's contract looked like without being handed the outcome.
+  // Observed on a real run (2026-08-15): the scan on a quick mission returned findings
+  // and no criteria — reasonably, since it had been told it was a scan — so
+  // `writeOutcomeSpec` refused `(empty)` and the mission escalated to the deep call it
+  // was trying to skip. Quick cost two research calls and saved nothing. The scan has
+  // to know when its own answer is the whole of the mission's research.
+  describe("the scan on a quick mission", () => {
+    test("is told it is the only research pass there will be", () => {
+      const state = aMissionState({ mission: aMission({ quick: true }) });
+
+      assert.equal(buildResearchInput(state, "scan").solePass, true);
+    });
+
+    test("says nothing of the sort on an ordinary mission", () => {
+      assert.equal(buildResearchInput(aMissionState(), "scan").solePass, undefined);
+    });
+
+    test("says nothing of the sort on the deep pass, quick or not", () => {
+      // On a quick mission the deep call only runs as an escalation, and by then it is
+      // emphatically not the sole pass.
+      const state = aMissionState({ mission: aMission({ quick: true }) });
+
+      assert.equal(buildResearchInput(state, "deep").solePass, undefined);
+    });
+  });
+
   describe("a saved mission's criteria skeleton", () => {
     test("carries the statements, and nothing a previous run concluded", () => {
       const state = aMissionState({

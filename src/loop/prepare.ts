@@ -13,6 +13,7 @@
 // Asked over what the scan found, they can name the two test commands the repo has.
 // So: scan (silent, cheap, never blocks), then intake, then research over what is
 // still open, then the spec, then sign-off.
+import { type OfferedRole } from "../agents/offer.js";
 import { zeroSpend } from "../domain/budget.js";
 import {
   type Criterion,
@@ -22,7 +23,6 @@ import {
   type PlannedTask,
 } from "../domain/ledger.js";
 import { type Estimate } from "../domain/mission.js";
-import { type AgentSpec } from "../domain/task.js";
 import { type EventInput } from "../events/schema.js";
 import { type Recall } from "../memory/lore.js";
 import { recallToLedger } from "../memory/recall.js";
@@ -58,10 +58,10 @@ export interface PrepareDeps {
   /** Procedural memory (§6, §7): agents a human promoted from earlier missions, handed
    *  to synthesis as prior art. Bound at the composition root like `recall`, and for
    *  the same reason — prepare never touches disk. */
-  profiles?: readonly AgentSpec[];
+  roles?: readonly OfferedRole[];
   /** The transports synthesis may pick on this machine (§7), narrowed from what the
    *  build ships by what was probed on PATH. Bound at the composition root like
-   *  `recall` and `profiles`, and for the same reason: prepare probes nothing. */
+   *  `recall` and `roles`, and for the same reason: prepare probes nothing. */
   transports?: readonly string[];
   /** Absent means nobody is there, which is what `--unattended` amounts to. */
   human?: HumanPort;
@@ -134,8 +134,50 @@ export async function prepareMission(deps: PrepareDeps): Promise<PrepareResult> 
   }
 
   move("researching", "intake complete");
-  const research = await deps.calls.research(buildResearchInput(deps.store.state()));
-  emit({ ...base, type: "research_completed", brief: research.brief, findings: research.findings, spend: zeroSpend() });
+
+  // The human's own judgment at compose time that this job is small (the compose
+  // checkbox, `--quick`). Read from the fold rather than taken as a parameter, which
+  // is what makes it survive a resume: a mission carried on the next morning keeps the
+  // shape it was started with, and no caller has to remember to pass it twice.
+  //
+  // What it buys is this call. The scan (§2b) already ran, already returned a brief
+  // and criteria, and both were being discarded — so on a small job the deep pass is a
+  // second research call over ground the first one covered. What it does *not* buy is
+  // any relaxation of the gate below.
+  // …with one exception, and it is structural rather than cautious. The scan runs
+  // *before* intake and the deep call after (§2b's ordering, which is what makes the
+  // questions specific). So reusing the scan's criteria means the outcome spec was
+  // written by a call that never saw the human's answers — a mission asked "calendar
+  // or fiscal?" and told "fiscal" would be judged against criteria settled before
+  // anyone knew. An answered question is exactly the evidence that the job had
+  // something in it worth researching, so it buys the deep call back.
+  //
+  // Answers, not questions: `--unattended` asks and is told nothing, and there is no
+  // answer there for the scan to have missed.
+  const answered = given.length > 0;
+  const quick = deps.store.state().mission.quick && !answered;
+
+  if (deps.store.state().mission.quick && answered) {
+    deps.onWarn?.(
+      "This mission was composed as quick, but intake was answered — researching in " +
+        "full so the outcome spec is written knowing the answers.",
+    );
+  }
+
+  // On a quick mission this is the scan's own answer, kept instead of thrown away.
+  // The event is emitted either way, and carries a brief either way, because
+  // `briefing.ts` marks the research stage done on `view.brief !== ""` — a quick
+  // mission that emitted nothing here would leave that row pulsing above stages that
+  // had already finished.
+  let research = quick ? scan : await deps.calls.research(buildResearchInput(deps.store.state()));
+  emit({
+    ...base,
+    type: "research_completed",
+    brief: research.brief,
+    findings: research.findings,
+    depth: quick ? ("scan" as const) : ("deep" as const),
+    spend: zeroSpend(),
+  });
 
   move("specifying", "research complete");
 
@@ -147,10 +189,20 @@ export async function prepareMission(deps: PrepareDeps): Promise<PrepareResult> 
 
   if (!spec.ok) {
     emit({ ...base, type: "outcome_spec_rejected", rejected: spec.rejected });
-    const second = await deps.calls.research(buildResearchInput(deps.store.state()));
+
+    // The retry is the deep call in both cases, and on a quick mission that is the
+    // escalation: the checkbox said the job was small and the outcome spec says
+    // otherwise, so the mission buys back the research it skipped rather than asking
+    // the scan the same question twice. A wrong checkbox costs one call, not a run.
+    const second = await deps.calls.research(
+      buildResearchInput(deps.store.state(), "deep", describeRejections(spec.rejected)),
+    );
     spec = writeOutcomeSpec(second.criteria ?? []);
     guesses = second.guesses ?? guesses;
     outOfScope = second.outOfScope ?? outOfScope;
+    // The deep answer replaces the scan's for everything downstream — the findings it
+    // appends to the ledger below, and the brief the sign-off screen shows.
+    if (quick) research = second;
 
     if (!spec.ok) {
       emit({ ...base, type: "outcome_spec_rejected", rejected: spec.rejected });
@@ -185,7 +237,7 @@ export async function prepareMission(deps: PrepareDeps): Promise<PrepareResult> 
   const planned = await planWithOneRetry(deps);
   if ("message" in planned) return { ok: false, reason: planned.message };
 
-  const estimate = estimatePlan({ plan: planned.tasks, criteriaCount: spec.criteria.length });
+  const estimate = estimatePlan({ plan: planned.tasks });
   emit({
     ...base,
     type: "ledger_revised",
@@ -222,7 +274,7 @@ export interface PresentDeps {
   human: HumanPort;
   /** Prior art for synthesis (§7) — sign-off is where the approved plan is staffed,
    *  so this path needs them as much as the replan inside the loop does. */
-  profiles?: readonly AgentSpec[];
+  roles?: readonly OfferedRole[];
   /** And the machine's transports for the same reason: sign-off staffs the approved
    *  plan, so an offer wired only into the loop is wired into the wrong half. */
   transports?: readonly string[];
@@ -265,7 +317,7 @@ export async function presentAndSignOff(deps: PresentDeps): Promise<SignoffOutco
     const { mission } = state;
     const estimate =
       mission.estimate ??
-      estimatePlan({ plan: mission.ledger.plan, criteriaCount: mission.ledger.criteria.length });
+      estimatePlan({ plan: mission.ledger.plan });
 
     const decision = await deps.human.awaitSignoff({
       missionId: mission.id,
@@ -307,13 +359,42 @@ export async function presentAndSignOff(deps: PresentDeps): Promise<SignoffOutco
 
     move("specifying", "revising the plan on feedback");
 
+    // A quick mission sent back is the human contradicting their own checkbox: they
+    // said the job was small and the plan they were shown says otherwise. Replanning
+    // over scan-depth findings would answer that with the same thin ground twice, so
+    // the first revision buys back the research the mission skipped.
+    //
+    // Findings only, deliberately. The criteria are still unfrozen here (sign-off has
+    // not happened), but the objection was to the *plan* — rewriting the contract
+    // under a human who was complaining about the work is not what they asked for.
+    //
+    // `revision === 0` rather than a folded flag: it is the first send-back that is
+    // worth a call, and a mission resumed at its own sign-off starting the count again
+    // costs one research call, which is the right side of that trade to be wrong on.
+    if (revision === 0 && mission.quick) {
+      const deep = await deps.calls.research(buildResearchInput(deps.store.state()));
+      const ledger = deps.store.state().mission.ledger;
+      const at = (deps.now ?? (() => new Date().toISOString()))();
+      emit({
+        ...base,
+        type: "research_completed",
+        brief: deep.brief,
+        findings: deep.findings,
+        depth: "deep",
+        spend: zeroSpend(),
+      });
+      emit({
+        ...base,
+        type: "ledger_revised",
+        ledger: { ...ledger, factsVerified: appendFacts(ledger.factsVerified, deep.findings, at) },
+        reason: "research",
+      });
+    }
+
     const replanned = await planWithOneRetry(deps, decision.feedback);
     if ("message" in replanned) return { ok: false, reason: replanned.message };
 
-    const revised = estimatePlan({
-      plan: replanned.tasks,
-      criteriaCount: mission.ledger.criteria.length,
-    });
+    const revised = estimatePlan({ plan: replanned.tasks });
 
     emit({
       ...base,
@@ -340,7 +421,7 @@ export async function presentAndSignOff(deps: PresentDeps): Promise<SignoffOutco
 export interface SignoffDeps {
   store: MissionStore;
   calls: Pick<Calls, "synthesize">;
-  profiles?: readonly AgentSpec[];
+  roles?: readonly OfferedRole[];
   transports?: readonly string[];
   unattended?: boolean;
   now?: () => string;
@@ -436,6 +517,16 @@ async function planWithOneRetry(
  * what is still open, but it is not forbidden from confirming something the scan
  * found, and the same claim twice is noise in every prompt built afterwards.
  */
+/**
+ * The refusals, as one line each, for the retry to answer.
+ *
+ * Quoted rather than summarized: `SpecRejection.criterion` is the statement the model
+ * itself wrote, so naming it back is what lets the retry tell which of five criteria
+ * is the problem — the same reason `validatePlan`'s message quotes the offending edge.
+ */
+const describeRejections = (rejected: readonly SpecRejection[]): string =>
+  rejected.map((entry) => `"${entry.criterion}" — ${entry.reason}`).join("\n");
+
 export function appendFacts(
   existing: readonly Fact[],
   findings: readonly Finding[],

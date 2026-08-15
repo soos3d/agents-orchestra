@@ -23,6 +23,7 @@ import { fakeAcpAgent, type FakeAcpAgentOptions } from "../../testing/acpAgent.j
 import { aBudget, aCodeTask, anAgentSpec } from "../../testing/fixtures.js";
 import { type PermissionRequest } from "./permissions.js";
 import { type AcpLaunch } from "./registry.js";
+import { sessionLogPath } from "./usage.js";
 import {
   acpToolName,
   containedPath,
@@ -77,6 +78,10 @@ function transportFor(
 
 const REPORT = JSON.stringify({ outcome: "completed", summary: "did it" });
 
+/** What the scripted agent answers `session/new` with — the id its usage would be
+ *  filed under, so a test can plant a log where the transport will look for it. */
+const SCRIPTED_SESSION_ID = "e638581a-6861-40a8-8840-9f6e27ea0858";
+
 describe("the acp transport", () => {
   test("runs a session and returns the assembled final message", async () => {
     const cwd = tmpDir();
@@ -88,9 +93,89 @@ describe("the acp transport", () => {
     // Streamed as three chunks by the agent; the report is only parseable once joined.
     assert.equal(run.raw, REPORT);
     assert.ok(run.elapsedMs >= 0);
-    // No frame in any capture carries usage, so the field stays absent — never a
-    // confident 0, which is what `Spend.tokens.unmeasured` exists to refuse (§9.5).
-    assert.equal(run.measuredTokens, undefined);
+  });
+
+  // No frame carries usage (`protocol.ts`), so what a dispatch cost is read afterwards
+  // from the agent's own session log — and every one of these three outcomes is a
+  // different claim about how much the number can be trusted (§9.5, `usage.ts`).
+  describe("what the dispatch cost", () => {
+    /** The agent's session log, where `usage.ts` expects to find it. */
+    function writeSessionLog(home: string, cwd: string, lines: readonly unknown[]): void {
+      const file = sessionLogPath(home, cwd, SCRIPTED_SESSION_ID);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, lines.map((line) => JSON.stringify(line)).join("\n"));
+    }
+
+    test("reads the agent's own books when it kept them", async () => {
+      const cwd = tmpDir();
+      const home = tmpDir();
+      writeSessionLog(home, cwd, [
+        {
+          type: "assistant",
+          message: {
+            id: "msg_1",
+            model: "claude-opus-4-6",
+            usage: {
+              input_tokens: 12,
+              output_tokens: 900,
+              cache_read_input_tokens: 288446,
+              cache_creation_input_tokens: 34455,
+            },
+          },
+        },
+      ]);
+
+      const run = await transportFor({ scenario: "happy", finalText: REPORT }, { home })({
+        task: anAcpTask(),
+        cwd,
+      });
+
+      // The number this whole change exists for: the dispatch used to be reported as
+      // unmeasured while reading a quarter of a million cached tokens.
+      assert.deepEqual(run.usage, {
+        input: 12,
+        output: 900,
+        cacheRead: 288446,
+        cacheWrite: 34455,
+      });
+      assert.equal(run.outputIsFloor, undefined, "a final output count was called a floor");
+      // `AgentSpec.model` is never sent over ACP, so what actually ran is the adapter's
+      // choice and has to be recorded rather than assumed.
+      assert.equal(run.ranOn, "claude-opus-4-6");
+    });
+
+    test("marks a session log's output as a floor when it only holds snapshots", async () => {
+      const cwd = tmpDir();
+      const home = tmpDir();
+      writeSessionLog(home, cwd, [
+        { type: "assistant", message: { id: "msg_1", usage: { input_tokens: 3, output_tokens: 2 } } },
+      ]);
+
+      const run = await transportFor({ scenario: "happy", finalText: REPORT }, { home })({
+        task: anAcpTask(),
+        cwd,
+      });
+
+      assert.equal(run.outputIsFloor, true);
+    });
+
+    test("estimates from the wire when there is no log, and says so", async () => {
+      const warnings: string[] = [];
+      const run = await transportFor(
+        { scenario: "happy", finalText: REPORT },
+        { home: tmpDir(), onWarn: (message) => warnings.push(message) },
+      )({ task: anAcpTask(), cwd: tmpDir() });
+
+      // An estimate is a floor with a known direction, and it must never be presented
+      // as a measurement — the flag is what keeps it out of `measured`.
+      assert.ok((run.usage?.output ?? 0) > 0);
+      assert.equal(run.outputIsFloor, true);
+      assert.equal(run.usage?.cacheRead, undefined, "the wire cannot see cached input");
+      assert.ok(
+        warnings.some((message) => message.includes("estimated")),
+        "the fallback happened silently",
+      );
+    });
   });
 
   // Real missions came back with "Unterminated string in JSON" worker reports, and a
@@ -332,8 +417,11 @@ describe("the acp transport", () => {
     // The agent asked for a capability this client does not implement and was told so in
     // JSON-RPC rather than left waiting — the code it echoes back is METHOD_NOT_FOUND.
     assert.equal(run.raw, "code -32601");
-    assert.equal(warnings.length, 1);
-    assert.match(warnings[0], /thinking_out_loud/);
+    // One warning about the drift, and exactly one: the accounting pass warns for its
+    // own reasons (no session log for a scripted agent), so the count is taken over
+    // the warnings this test is about rather than over all of them.
+    const drift = warnings.filter((message) => message.includes("thinking_out_loud"));
+    assert.equal(drift.length, 1);
   });
 });
 

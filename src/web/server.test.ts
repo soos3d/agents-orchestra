@@ -375,6 +375,22 @@ describe("the server", () => {
     assert.equal(/<script src=|<link .*href="http/.test(html), false);
   });
 
+  // The display face is the one binary this process serves, and it is served for a
+  // reason: the alternative is a font CDN, which is a third party inside a surface
+  // where someone approves work. So the route has to exist and the policy has to allow
+  // exactly it.
+  test("serves the display face itself, and permits no other origin to", async () => {
+    const server = await serve(someEvents(1));
+
+    const page = await fetch(server.url);
+    assert.match(page.headers.get("content-security-policy") ?? "", /font-src 'self'/);
+
+    const font = await fetch(`${server.url}/display.woff2`);
+    assert.equal(font.status, 200, "the page preloads a font this server does not serve");
+    assert.equal(font.headers.get("content-type"), "font/woff2");
+    assert.ok((await font.arrayBuffer()).byteLength > 0);
+  });
+
   test("replays the whole log on connect", async () => {
     const server = await serve(someEvents(3));
     const client = await open(server.url);

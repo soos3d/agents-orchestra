@@ -107,7 +107,12 @@ function App() {
   if (home) {
     return (
       <>
-        <h1>Mission Control</h1>
+        {/* The wordmark, and the page's one large piece of the display face. The
+            accent is on the second word because this page is the control and the
+            missions are what it is over. */}
+        <h1 class="mark">
+          Mission <span>Control</span>
+        </h1>
         <div class="bar" />
         {problem ? <div class="card warn">{problem}</div> : null}
         {note ? <div class="card">{note}</div> : null}

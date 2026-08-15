@@ -7,7 +7,7 @@ Note: you have a handoff file in .claude/handoff.md. it should update you on the
 ## What this is
 
 A single-process looping orchestrator: given a mission goal it researches, writes an outcome
-spec, plans tasks, synthesizes a purpose-built agent per task, runs them in parallel git
+spec, plans tasks, staffs each one with an agent (from the roster or written fresh), runs them in parallel git
 worktrees, verifies, and re-plans each round. One npm package, one `orchestra` bin, no services
 and no database — setup simplicity is a hard constraint, not a cleanup item.
 
@@ -18,7 +18,29 @@ dashboard on loopback (`--no-web` turns it off), and `orchestra serve` is the se
 missions: list, watch, compose, answer, pause, forget — **one composed mission per workspace**, and
 the per-run server is untouched (`runMission` takes an optional `RunSurface` and never closes a
 server it did not open). Other commands: `doctor`, `resume <missionId>`, `forget <missionId>`,
-`save <missionId> --as <name>`, `promote <missionId> <taskId> --as <name>`, `help`.
+`save <missionId> --as <name>`, `promote <missionId> <taskId> --as <name>`,
+`metrics <missionId> [--json]`, `help`.
+
+**A mission can be declared *quick* by the human who composes it** — the compose-card checkbox, or
+`--quick` from a terminal. It skips the deep `research` call and keeps the scan's own brief and
+criteria (which were previously computed and thrown away), and it tells the planner to produce one
+task rather than a decomposition (`PlanInput.scope`). It is a hint and never a permission: the
+outcome-spec gate is unchanged, and a scan-derived spec that `writeOutcomeSpec` refuses escalates to
+the deep call the mission skipped — so a box ticked on a job that was not small costs one call, not
+a run. Two other things buy the deep call back, and both are structural rather than cautious: an
+**answered intake question**, because the scan runs *before* intake and its criteria would predate
+the answer; and the **first send-back at sign-off**, because a human rejecting a quick plan is
+contradicting their own checkbox and replanning over scan-depth findings answers that with the same
+thin ground twice. Measured on the same goal (2026-08-15, `--plan-only`): 8,194 tokens and 1m53s
+quick against 15,921 and 3m35s standard.
+
+**The scan has to be told when it is the only research pass** (`ResearchInput.solePass`, derived in
+`buildResearchInput` from `depth === "scan" && mission.quick`). Without it the scan returns findings
+and no criteria — reasonably, since it has been told it is a scan and on an ordinary mission the
+deep call writes the spec — so `writeOutcomeSpec` refuses `(empty)` and the mission escalates to the
+call it was skipping. Observed on a real run before the field existed: quick cost two research calls
+and saved nothing. This is the `agentCalls.ts` blind spot in its usual shape — a green suite said
+nothing, and one real `--plan-only` run said everything.
 
 **Phase 7 added `src/workers/acp/`** — ACP as a worker transport (§12): `protocol.ts` (the JSON-RPC
 frames as zod schemas), `registry.ts` (the pinned adapter launch per target — exact versions, and
@@ -53,6 +75,27 @@ offered to synthesis as hints that still pass full validation). Recall, write-ba
 (`memory/writeBack.ts`), and profile loading are optional deps wired in `runCommand.ts` and
 `buildLoopDeps` — each has a composition-root test, which is the defect-12b lesson applied. Replays
 of a saved mission re-run scan and research; `--unattended` requires `--saved` or `--force`.
+
+**`src/agents/` is the roster, and it amends §7 rather than extending it.** §7 said an agent is
+synthesized per task and "never chosen from a fixed roster", on the argument that a fixed list caps
+the system at what its author anticipated. The argument holds; the conclusion was overturned
+deliberately, because it bought that generality with a full system prompt authored from scratch for
+every task to reach a decision a one-line description already makes. `roster.ts` loads markdown
+entries from the shipped `agents/` directory and `<stateDir>/agents/`; `offer.ts` merges them with
+promoted profiles into one index and composes the final prompt. Eighteen roles ship, derived from
+`msitarzewski/agency-agents` (MIT, attributed in `NOTICE`) and substantially rewritten.
+
+**The saving is the split between what the orchestrator reads and what the worker reads.** The call
+is shown index lines only — 3,279 chars, ~820 tokens for all eighteen — and answers with
+`basedOn: "<name>"` plus a short addendum. The ~30-line body is never in that call's context; it is
+read from disk and folded into `systemPrompt` by `attach()` *before* `task_planned` is emitted. Two
+consequences, both load-bearing: the event log still carries a complete prompt, so `fold`, replay
+and `receipt.test.ts` are untouched by the roster's existence; and editing a roster file changes
+future missions and no past one. `SynthesizeInput.roster` is a **rendered string** and not a list,
+because `describe()` JSON-dumps its input into the prompt — passing role objects would carry every
+body with them, which is the whole cost this avoids. **Whether it actually saves tokens is not
+something the suite can tell you**: run the same goal with and without a roster and diff
+`call:synthesize` in `orchestra metrics --json`.
 
 `src/loop/calls.ts` is still the seam: the model calls (`research`, `intake`, `plan`, `synthesize`,
 `progress`, `judge`) as an interface, implemented for real in `loop/agentCalls.ts` and scripted in
@@ -102,7 +145,7 @@ under Apache-2.0 — `LICENSE`, `NOTICE`, `CONTRIBUTING.md`, `.github/workflows/
 ## Commands
 
 ```
-npm test          # node:test via tsx over src/**/*.test.ts(x) — the whole suite, ~80s
+npm test          # node:test via tsx over src/**/*.test.ts(x) — 1,191 tests, ~95s
 npm run typecheck # tsc --noEmit (includes tests and the dashboard; build config excludes both)
 npm run build     # tsc -p tsconfig.build.json → dist/, then esbuild → dist/web/app.js
 npm run build:web # just the dashboard bundle; add `-- --watch` while working on it
@@ -186,6 +229,45 @@ folded state — which is what makes the whole loop assertable against a canned 
   native client and is allowed, while the literal string `"null"` is a sandboxed iframe on a hostile
   page and is not; and loopback hosts match exactly and by port, because
   `127.0.0.1.evil.example` ends with a loopback literal.
+- **Ambience and state are two motion vocabularies, and the split is what keeps glow meaning
+  something.** The page is a deep field now — bloom behind the panels, threads between orrery
+  nodes, a 90-second drift on `body::before` and on the outer orbit. None of that is caused by an
+  event, so all of it is desaturated and slow, deliberately below the rate at which movement reads
+  as news. What state keeps for itself is the other half: full-strength `--live`, the 3.4s scan
+  across a running task, the 2.2s pulse, the turning sweep. **If something idle ever moves as fast
+  or as brightly as something running, the glow has stopped meaning anything** — that is a
+  regression however good it looks. `prefers-reduced-motion` stops all of it, ambient included.
+- **The display face is served by this process, and `assets/` has to ship.** `web/fonts.ts` mirrors
+  `assets.ts`: `FONT_ROUTE` is the request path *and* the URL in the `@font-face`, which cannot be
+  interpolated because `style.test.ts` allows no `${}` that is not a token — so the literal is
+  asserted against the constant instead. The CSP gained `font-src 'self'` and nothing wider: a font
+  CDN is a third party inside a surface where a human approves work. Chakra Petch is OFL, vendored
+  as the Latin subset (10 kB) with its licence, attributed in `NOTICE`, and `package.json` `files`
+  carries `assets` — a missing font is not an error, it is a page that silently renders in the
+  fallback stack, which is why `fonts.test.ts` asserts the file is really there.
+- **The orrery says two things and only two** (`web/app/orrery.ts`): **angle is plan order** and
+  **radius is lifecycle**. A task that starts running must not move sideways or the eye loses the
+  node it was watching; work falls inward as it settles, so "nearly done" is a shape rather than a
+  count. Geometry is pure and tested for the reason `hud.ts` is — a node on the wrong ring still
+  looks like a dashboard. Two feeds, one geometry: home has no task list (it folds no mission's
+  log), so there the nodes are *missions* and the core is `homeCore`; under a mission they are
+  tasks and the core is `hud.ts`'s. The SVG carries `role="group"`, not `role="img"` — ARIA treats
+  everything inside an `img` as presentational, and every node is a button.
+- **A task has more to say than a rail can hold, so it says it in two sizes.** A synthesized
+  `goal` is a two-thousand-character specification and `agentSpec.systemPrompt` is several times
+  that; both used to be absent or dumped unclamped into the 20rem side rail. `taskPanel.tsx` splits
+  them: `TaskBrief` is the rail's card (role, transport, model, four clamped lines of goal, a way
+  in) and `TaskDossier` is a centre pane at the width of the board, with the prompt folded.
+  Selecting a task deliberately does **not** move the pane — clicking a board card would otherwise
+  replace the board, which U7 says must stay. The pane falls back to the board when the selection
+  is cleared, since `panes()` only offers `task` while one exists. Which facts the sheet shows is
+  `dossier.ts`, pure and tested, and it inverts the HUD's zero rule on purpose: an absent optional
+  draws no row, but an **empty capability is a fact** — no tools, or a code task whose lease is
+  empty (defect 23), is drawn and says what the emptiness means.
+- **Home is a rail and a deck, and nothing on it was deleted — it was ranked.** The rare controls
+  (add a directory, save a mission, the nine-row `doctor` report) are behind `<details>`, and
+  `screens.test.tsx` asserts each one is still rendered, because folded and gone look identical in
+  a diff. The report opens by itself when the machine is not ready.
 - **`src/web/style.ts` is a template literal, and a backtick in it is a parse error several lines
   later.** Naming `tokens.ts` or `briefing()` in a CSS comment the way every other comment here does
   breaks the build, and it reads as a broken edit rather than a stray character — it cost four
@@ -262,6 +344,31 @@ folded state — which is what makes the whole loop assertable against a canned 
   untestable. **The cost is that `withSchema` renders it as an unconstrained array**, so the model
   is told nothing about a criterion by the derived schema — `RESEARCH_PROMPT` spells out
   `criterionSchema` and the `VerifySpec` union by hand. Change one and change the other.
+- **A `basedOn` naming nothing is refused, never degraded.** When synthesis names a role it writes
+  only the task-specific addendum — a paragraph — *because* it expects a body to be attached. So
+  passing an unresolvable name through would hand a worker that paragraph as its entire system
+  prompt, and nothing would fail until the work came back wrong. `inspect` re-asks once quoting the
+  real names (a near-miss is the likely mistake), then `UnknownRoleError` parks the task.
+  `attach()` throws on a miss rather than returning the spec unchanged, and that throw is
+  unreachable by construction — it fires only if `inspect` and `attach` are reading different role
+  lists.
+- **The roster index is a recurring cost, so it is capped by a test rather than by review.**
+  `DESCRIPTION_BUDGET` (160 chars) is enforced in the schema at parse; `ROSTER_INDEX_BUDGET` (4,000)
+  is asserted against the shipped roster in `agents/offer.test.ts`, so a nineteenth entry that
+  pushes it over fails the suite. The number this replaces is why: the full source collection's
+  index is ~15.8k tokens, against ~8.2k for an entire `--quick --plan-only` mission. Raising the
+  budget is almost always the wrong fix.
+- **A roster entry contributes a system prompt and nothing else.** A promoted profile carries a
+  whole validated `AgentSpec` — transport, tools, a lease — and `offeredRoles` deliberately drops
+  all of it, keeping only `spec.systemPrompt` as the body. Those capabilities were checked against
+  the envelope of the mission that promoted them, and this mission's may be narrower; letting them
+  ride in on a name would be a capability grant made by a model, which is exactly the ceiling §7
+  exists to hold. The `suggests` classes in the index are a hint about the shape of the work and
+  are never a grant.
+- **`src/loop/prepare.ts` contains a literal NUL byte and is not corrupt.** It is a `\x00`
+  separator inside a composite-key template literal around line 538, and it is in the initial
+  commit. `rg` reports "binary file matches" and silently skips it, so a ripgrep search for a
+  symbol that lives in this file returns nothing at all. Use `grep -a`.
 - **`agentCalls.ts` is the one file the fixture harness cannot cover**, since it is the thing the
   harness substitutes for. Five defects hid there behind 331 green tests until the first real-model
   run, and a sixth (25) behind 461. Anything the model *receives* — SDK options, prompt text, a
@@ -278,6 +385,71 @@ folded state — which is what makes the whole loop assertable against a canned 
   ships is not what a machine can run**, so every composition root passes
   `availableTransports(config)` rather than the constant; a `transports` list left off a `Deps`
   falls back to the whole registry, which is the optional-dependency footgun again.
+- **Spend is attributed per decision point, and `phase` holds two vocabularies.** `spend_recorded`
+  carries `phase`; `dispatch` writes the task's id there and the orchestrator writes
+  `spendPhase(call)` — `call:research`, `call:plan`. Both live in `domain/budget.ts` rather than
+  beside `Calls`, because `events/metrics.ts` reads them and `events/` never imports `loop/`;
+  `CALL_NAMES` is kept exhaustive against `keyof Calls` by a total-record assertion in
+  `loop/calls.test.ts`. `isCallPhase` is membership in the known set and deliberately not a prefix
+  match — a task id comes out of a model-written plan and nothing forbids one starting with `call:`.
+  Before this, all six calls were written as the constant `"orchestration"` and "which call is
+  expensive?" had no answer.
+- **The sign-off estimate predicts no tokens, and that is the fix rather than a gap.** It used to:
+  four hand-authored per-call constants in `loop/estimate.ts` (`plan` 8k, `synthesize` 4k, `progress`
+  3k, `judge` 6k) summed and rendered as "~45k tokens measured". Prompt caching had already made the
+  quantity meaningless — on a real run `input` was a flat **2 tokens per call**, so `measured`
+  (`input + output`) stopped tracking the work while actual movement ran an order of magnitude
+  above it: **45,000 predicted, 11,662 measured, 470,767 moved**, and the judge calls charged 6,000
+  apiece were the largest line at 68,366 of cache for two of them. Recalibrating the coefficients
+  would have kept the same undefined quantity and made it look trustworthy, so the number was
+  withdrawn instead. `Estimate` is now `taskCount` / `wallMs` / `expectedGates`; `estimateSchema` is
+  not strict, so a log written before this still folds and its `tokens` is dropped on replay. Cost is
+  `orchestra metrics`, after the run, folded from `spend_recorded`. Restoring a prediction means
+  first deciding **which of the four kinds it is of** and deriving coefficients from committed logs —
+  and the receipt in `src/testing/receipts/` cannot do that, because it records every spend as
+  `phase: "orchestration"` with no kinds at all.
+- **Tokens are counted on two axes and both are load-bearing.** *How well a number is known* is
+  `measured` / `estimated` / `unmeasured` (§9.5); *what kind of token it is* is
+  `input` / `output` / `cacheRead` / `cacheWrite`, all optional on `Spend.tokens` because absent
+  and zero are different claims. `measured` stays `input + output` — it is what `budgetExceeded`
+  compares against and what every log written before the split means — so cache is reported
+  beside it, never folded into it. The kinds are what make a mission chargeable: input, output
+  and cached input are priced 5× and 10× apart, and on a real run the cache was 470,767 tokens
+  against 11,662 measured. Producers use `tokensFrom` (`domain/budget.ts`); a transport that
+  reports an output figure it knows to be a floor passes `estimatedOutput`, which keeps it out of
+  `measured` and turns `pricedFully` false.
+- **An ACP dispatch's cost is read from the agent's own session log, because the wire has none.**
+  `workers/acp/usage.ts` opens `~/.claude/projects/<cwd-slug>/<sessionId>.jsonl` — the id is the
+  one `session/new` already returns — and three things about that file are captured rather than
+  documented. **One API response writes several lines** (text, then tool call) each repeating the
+  same `usage`, so the reader dedupes by `message.id`; summing lines doubles the session.
+  **On the ACP path `output_tokens` is the `message_start` snapshot**, so input and cache are
+  exact and output is a floor — hence `confidence` and the `≥` in the report. And **the slug is
+  one dash per non-alphanumeric character, not per run**: a worktree path has `/` and `.`
+  adjacent, and collapsing runs found the log for a mission run from a home directory while
+  silently missing it for every `code` task. That last one is the `agentCalls.ts` lesson again —
+  the fixture test passed, and the first live run found it in thirty seconds. No log means a wire
+  estimate into `estimated`; neither means the dispatch stays unmeasured as before.
+- **`AgentSpec.model` is never sent over ACP, so `spend_recorded.model` records what actually
+  ran.** The adapter picks its own model: a task specced `sonnet` ran on `claude-opus-4-6`, which
+  is a 5× pricing error in a log that looked precise. `metrics` prints the mismatch under the task
+  rather than only the spec's choice. Making the adapter honour the spec is a separate change and
+  needs a live capture of the selection call.
+- **`claude -p --output-format json` reports usage and this repo used to discard it**, reading
+  `.result` and nothing else. `parseClaudeCodeResult` keeps it, and the rule it exists to hold is
+  §9.5's: absent usage stays **absent**, never `0`, because `spendOf` counts a transport that
+  reports nothing as one *unmeasured* dispatch and a confident zero makes a mission that cost real
+  money read as free. It keeps all four kinds, not their sum. `codex` is still honestly unmeasured
+  — it is scraped from `--output-last-message` — and ACP frames still carry none, which is why that
+  path reads the agent's session log after the turn instead.
+- **`orchestra metrics` folds the log on demand and is deliberately not a projection.** A third
+  atomic write on every event would pay all mission long for a question nobody asks until the
+  mission is over. `--json` is the form that matters while tuning: the point of collecting any of it
+  is diffing two runs of the same goal. It also reports phases it does not recognise (an old log's
+  `"orchestration"`) rather than dropping them, but skips phases that recorded nothing at all —
+  `prepare.ts` emits `scan_completed` and `research_completed` with a hardcoded `zeroSpend()`, so
+  every mission carries `scan` and `research` phases that are zero by construction and would
+  otherwise invite the reader to conclude the scan was free.
 - **The ACP transcripts in `src/testing/acp-transcripts/` are executable fixtures**, not notes:
   `workers/acp/protocol.test.ts` parses the real captured frames, so a schema that drifts from what
   an adapter sends fails the suite. Adapter versions are pinned exact in `acp/registry.ts` — bump

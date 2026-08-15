@@ -55,7 +55,6 @@ export function Criteria({ criteria }: { criteria: readonly Criterion[] }) {
  */
 export function Contract({ view }: { view: View }) {
   const estimate = view.estimate;
-  const cli = view.plan.filter((task) => task.worker === "code").length;
 
   return (
     <>
@@ -108,7 +107,6 @@ export function Contract({ view }: { view: View }) {
           <div class="card mono">
             {estimate.taskCount} tasks · ~{Math.round(estimate.wallMs / 60000)} min ·{" "}
             {estimate.expectedGates} gates
-            <br />~{Math.round(estimate.tokens / 1000)}k tokens measured, {cli} CLI runs unmeasured
           </div>
         </>
       ) : null}

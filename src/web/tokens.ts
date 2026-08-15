@@ -12,6 +12,13 @@
 // Roles, darkest ground to brightest ink. Every text colour is checked against every
 // surface it is actually used on; ordering here is the hierarchy on the page.
 export const tokens = {
+  /* the field: what is behind everything, and the one place the page is not teal.
+     A near-black ground with a single cyan accent is the look every dark dashboard
+     defaults into. The bloom fades from `deep` — blue-violet — into `abyss`, so the
+     instruments read as cyan *on* something rather than as the only colour present. */
+  abyss: "#03050b",
+  deep: "#0a0d1e",
+
   /* grounds — blue-biased rather than neutral; a pure grey reads as unchosen */
   void: "#070a0e",
   sink: "#0a0f14",
@@ -22,18 +29,28 @@ export const tokens = {
   runBg: "#0c1820",
   hover: "#111b23",
 
-  /* hairlines — never carry text, so they are exempt from the contrast rule */
+  /* hairlines and light — never carry text, so they are exempt from the contrast rule.
+     `thread` draws an edge between two orrery nodes and `bloom` is the halo around a
+     panel or a core; both are ambience, which is why they are desaturated and why
+     neither is allowed to reach the strength of `live`. */
   line: "#1c2a35",
   line2: "#2a3d4c",
   liveD: "#1c6d7a",
   attnD: "#6b4f18",
   failD: "#6d2429",
+  thread: "#1b3a52",
+  bloom: "#2a6f8c",
 
   /* ink */
   ink: "#cfe3ee",
   ink2: "#93aabb",
   dim: "#8299aa",
   faint: "#74899b",
+
+  /* the hottest point of the core, and nothing else. It is brighter than `ink` on
+     purpose — the core is the one thing on the page allowed to look like a light
+     source rather than like a surface. */
+  core: "#eaf9fd",
 
   /* the one accent, and the semantics kept off it */
   live: "#4fd6e8",
@@ -46,6 +63,8 @@ export type TokenName = keyof typeof tokens;
 
 /** Every surface a person reads text on. */
 export const SURFACES = [
+  "abyss",
+  "deep",
   "void",
   "sink",
   "panel",
@@ -58,6 +77,7 @@ export const SURFACES = [
 /** Every colour used to draw text or a meaningful mark. `faint` is in here on purpose:
  *  it sets criterion ids and the `check ▸ …` line, which are content, not chrome. */
 export const TEXT_COLOURS = [
+  "core",
   "ink",
   "ink2",
   "dim",

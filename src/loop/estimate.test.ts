@@ -23,7 +23,7 @@ const task = (
 
 describe("estimatePlan", () => {
   test("counts the tasks", () => {
-    const estimate = estimatePlan({ plan: [task("t1"), task("t2")], criteriaCount: 1 });
+    const estimate = estimatePlan({ plan: [task("t1"), task("t2")] });
 
     assert.equal(estimate.taskCount, 2);
   });
@@ -31,13 +31,13 @@ describe("estimatePlan", () => {
   test("takes the critical path, not the sum, when tasks fan out", () => {
     const plan = [task("t1"), task("t2"), task("t3")];
 
-    assert.equal(estimatePlan({ plan, criteriaCount: 1 }).wallMs, 60_000);
+    assert.equal(estimatePlan({ plan }).wallMs, 60_000);
   });
 
   test("adds up a chain", () => {
     const plan = [task("t1"), task("t2", ["t1"]), task("t3", ["t2"])];
 
-    assert.equal(estimatePlan({ plan, criteriaCount: 1 }).wallMs, 180_000);
+    assert.equal(estimatePlan({ plan }).wallMs, 180_000);
   });
 
   test("takes the longest branch when two chains converge", () => {
@@ -47,35 +47,28 @@ describe("estimatePlan", () => {
       task("t3", ["t1", "t2"], { estimatedWallMs: 5_000 }),
     ];
 
-    assert.equal(estimatePlan({ plan, criteriaCount: 1 }).wallMs, 95_000);
+    assert.equal(estimatePlan({ plan }).wallMs, 95_000);
   });
 
   test("an empty plan costs no wall-clock", () => {
-    assert.equal(estimatePlan({ plan: [], criteriaCount: 0 }).wallMs, 0);
+    assert.equal(estimatePlan({ plan: [] }).wallMs, 0);
   });
 
-  // The measured portion (§9.5): the loop's own calls are what a mission is billed
-  // for, so an estimate that omits them is worse than no estimate.
-  test("counts the in-process decision points, and they grow with the plan", () => {
-    const one = estimatePlan({ plan: [task("t1")], criteriaCount: 1 });
-    const two = estimatePlan({ plan: [task("t1"), task("t2")], criteriaCount: 1 });
+  // The estimate predicts no token figure, and the two tests this replaces asserted
+  // that it did — that hand-authored per-call constants grew with the plan and with
+  // the criteria count. They passed while the number they guarded was wrong by 40×,
+  // because growing in the right direction is not the same as being of any quantity.
+  // A silent reintroduction is what this asserts against.
+  test("predicts no token figure at all", () => {
+    const estimate = estimatePlan({ plan: [task("t1"), task("t2")] });
 
-    assert.ok(one.tokens > 0);
-    assert.ok(two.tokens > one.tokens, `${two.tokens} should exceed ${one.tokens}`);
-  });
-
-  test("each criterion adds a judge call", () => {
-    const plan = [task("t1")];
-    const one = estimatePlan({ plan, criteriaCount: 1 });
-    const three = estimatePlan({ plan, criteriaCount: 3 });
-
-    assert.ok(three.tokens > one.tokens);
+    assert.deepEqual(Object.keys(estimate).sort(), ["expectedGates", "taskCount", "wallMs"]);
   });
 
   test("expects one gate per computer task and none for code", () => {
     const plan = [task("t1"), task("t2", [], { worker: "computer" })];
 
-    assert.equal(estimatePlan({ plan, criteriaCount: 1 }).expectedGates, 1);
+    assert.equal(estimatePlan({ plan }).expectedGates, 1);
   });
 
   // validatePlan rejects a cycle before this runs; this is what stops a bug there
@@ -83,6 +76,6 @@ describe("estimatePlan", () => {
   test("terminates on a cycle rather than recursing forever", () => {
     const plan = [task("t1", ["t2"]), task("t2", ["t1"])];
 
-    assert.ok(estimatePlan({ plan, criteriaCount: 1 }).wallMs >= 0);
+    assert.ok(estimatePlan({ plan }).wallMs >= 0);
   });
 });

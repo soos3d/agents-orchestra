@@ -49,6 +49,28 @@ export interface ResearchInput {
    * last month's answer to this month's question.
    */
   priorCriteria?: { statement: string }[];
+  /**
+   * True when this call is the *only* research the mission will get — the scan on a
+   * mission a human composed as quick.
+   *
+   * Without it the scan is asked for criteria and reasonably declines: it has been
+   * told it is a scan, and on an ordinary mission the deep call is what writes the
+   * outcome spec. Observed on a real run (2026-08-15): the scan returned no criteria,
+   * `writeOutcomeSpec` refused `(empty)`, and the mission escalated to the deep call —
+   * so quick cost two research calls instead of one and saved nothing. The field is
+   * what makes the scan's own answer load-bearing on the run where it is.
+   */
+  solePass?: boolean;
+  /**
+   * Present only on the one retry, quoting what `writeOutcomeSpec` refused and why.
+   *
+   * `plan` has had `reason` and `synthesize` has had `rejected` since Phase 2, and
+   * `research` re-ran on a byte-identical input — so the call whose answer decides
+   * whether the mission can ever legitimately report success was the one asked to
+   * guess again. The rejection is context the system already paid for; discarding it
+   * and re-deriving it is how a retry becomes a coin flip.
+   */
+  rejected?: string;
 }
 
 export interface ResearchResult {
@@ -100,6 +122,17 @@ export interface PlanInput {
   envelope: Envelope;
   /** Present on a replan; absent on the first plan. */
   reason?: string;
+  /**
+   * Present when a human ticked `quick` at compose time: a small job, to be planned as
+   * one task rather than decomposed.
+   *
+   * Deliberately not enforced by a task-count cap in `validatePlan`. Task count is a
+   * cost preference rather than a safety invariant, and a cap would fail a mission
+   * outright over a mis-ticked box — while the human already sees `estimate.taskCount`
+   * at sign-off, which is the cheaper place to catch it. Revisit if real runs show the
+   * planner ignoring this.
+   */
+  scope?: "quick";
 }
 
 export interface PlanResult {
@@ -128,16 +161,22 @@ export interface SynthesizeInput {
    */
   transports: string[];
   /**
-   * Agents a human kept from earlier missions (§6, §7) — prior art, never a roster.
+   * The roles this mission may staff from, already rendered to one line each by
+   * `agents/offer.ts` — the documented roster plus anything a human has promoted
+   * (§6, §7).
    *
-   * The whole point of synthesizing per task is that a fixed list caps the system at
-   * the tasks its author anticipated, so these are offered to be adapted or ignored
-   * rather than selected from. What comes back is validated exactly as an unprompted
-   * spec is: the envelope, the transport registry, and the lease rule all still apply,
-   * and a saved agent whose capabilities this mission's envelope does not grant is
-   * refused like any other. Absent when nothing has been promoted.
+   * A **rendered string** rather than a list of objects, and that is the whole
+   * mechanism rather than a formatting choice. `describe()` JSON-dumps whatever it is
+   * given straight into the prompt, so a list of role objects would carry every role's
+   * body — some six hundred lines — into a call that needs to read eighteen
+   * descriptions. Rendering at the seam makes the expensive half unreachable from
+   * here by construction.
+   *
+   * What comes back is validated exactly as an unprompted spec is: the envelope, the
+   * transport registry, and the lease rule all still apply, and naming a role grants
+   * nothing. Absent when the roster is empty or switched off.
    */
-  profiles?: AgentSpec[];
+  roster?: string;
   /** Present only on the one retry, quoting what was wrong with the last spec. */
   rejected?: string;
 }

@@ -3,7 +3,7 @@
 // quietly make the ceiling unreachable.
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { addBudget, addSpend, budgetExceeded, zeroSpend } from "./budget.js";
+import { addBudget, addSpend, budgetExceeded, isEmptyUsage, tokensFrom, zeroSpend } from "./budget.js";
 
 const spend = (patch: { wallMs?: number; measured?: number; dispatches?: number } = {}) => ({
   ...zeroSpend(),
@@ -52,6 +52,63 @@ describe("budget", () => {
       tokens: { measured: 7, estimated: 3, unmeasured: 4 },
       wallMs: 30,
       dispatches: 2,
+    });
+  });
+
+  // The kinds are the second axis: how well a number is known (measured / estimated /
+  // unmeasured) and what kind of token it is. Conflating them is what made a mission's
+  // cost underivable from its own log.
+  describe("token kinds", () => {
+    test("measured stays input + output, so every existing reader keeps working", () => {
+      const tokens = tokensFrom({ input: 1200, output: 340, cacheRead: 288446, cacheWrite: 34455 });
+
+      // Cache is reported beside the total and deliberately not folded into it: this
+      // number is what `budgetExceeded` compares a ceiling against, and every log
+      // written before the split means it this way.
+      assert.equal(tokens.measured, 1540);
+      assert.equal(tokens.cacheRead, 288446);
+      assert.equal(tokens.cacheWrite, 34455);
+    });
+
+    test("a floor output is estimated, never measured", () => {
+      const tokens = tokensFrom({ input: 12, output: 71 }, { estimatedOutput: true });
+
+      // The one source that knows its output figure is a snapshot rather than a total
+      // (`workers/acp/usage.ts`). Counting it as measured would make an unknown look
+      // like an answer.
+      assert.equal(tokens.measured, 12);
+      assert.equal(tokens.estimated, 71);
+      assert.equal(tokens.output, 71, "the kind is still reported, only not as measured");
+    });
+
+    test("a kind nobody reported stays absent rather than becoming zero", () => {
+      const tokens = tokensFrom({ output: 340 });
+
+      assert.equal(tokens.input, undefined);
+      assert.equal(tokens.cacheRead, undefined);
+      assert.equal(isEmptyUsage({}), true);
+      assert.equal(isEmptyUsage({ output: 0 }), false, "a reported zero is a report");
+    });
+
+    test("adding absent to absent is still absent", () => {
+      // Summing an unreported field as zero would turn "this transport does not say"
+      // into "this transport says none" the moment two spends were added.
+      const total = addSpend(
+        { tokens: { measured: 5, estimated: 0, unmeasured: 0 }, wallMs: 1, dispatches: 1 },
+        { tokens: { measured: 5, estimated: 0, unmeasured: 0 }, wallMs: 1, dispatches: 1 },
+      );
+
+      assert.equal(total.tokens.input, undefined);
+    });
+
+    test("adding a reported kind to an unreported one keeps the report", () => {
+      const total = addSpend(
+        { tokens: { measured: 5, estimated: 0, unmeasured: 0 }, wallMs: 1, dispatches: 1 },
+        { tokens: { measured: 5, estimated: 0, unmeasured: 0, input: 4, cacheRead: 90 }, wallMs: 1, dispatches: 1 },
+      );
+
+      assert.equal(total.tokens.input, 4);
+      assert.equal(total.tokens.cacheRead, 90);
     });
   });
 

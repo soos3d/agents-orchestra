@@ -174,7 +174,7 @@ describe("the panes", () => {
   test("say nothing at all before there is anything to count", () => {
     assert.deepEqual(
       panes(emptyView()).map((pane) => pane.badge),
-      ["", "", ""],
+      ["", "", "", ""],
     );
   });
 });

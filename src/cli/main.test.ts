@@ -123,7 +123,7 @@ describe("orchestra", () => {
         criteria: [aCriterion()],
         guesses: [],
         outOfScope: [],
-        estimate: { taskCount: 1, tokens: 0, wallMs: 1000, expectedGates: 0 },
+        estimate: { taskCount: 1, wallMs: 1000, expectedGates: 0 },
       },
       { ...orchestrator, type: "signoff_granted", unattended: false },
     ];
@@ -559,14 +559,14 @@ describe("orchestra", () => {
     // not the other leaves the feature switched off on the path most missions take
     // (defects 12b, 23, 24). The scripted synthesizer names a transport that does not
     // exist, so the mission parks after recording its input rather than dispatching.
-    test("a promoted profile reaches the synthesize call on a fresh run", async () => {
+    test("the roster and a promoted profile both reach the synthesize call on a fresh run", async () => {
       saveProfile(stateDir, {
         name: "invoice-reconciler",
         spec: anAgentSpec({ role: "invoice-reconciler" }),
         promotedFrom: { missionId: "m0", taskId: "t7" },
         promotedAt: "2026-08-01T10:00:00.000Z",
       });
-      const seen: { profiles?: unknown }[] = [];
+      const seen: { roster?: unknown }[] = [];
       const calls: Calls = {
         ...createCalls(),
         synthesize: async (input) => {
@@ -585,7 +585,12 @@ describe("orchestra", () => {
       );
 
       assert.equal(code, 1);
-      assert.deepEqual(seen[0]?.profiles, [anAgentSpec({ role: "invoice-reconciler" })]);
+      // Both sources reach the one index: the shipped roster and the promoted profile,
+      // whose `role` is the sentence it is described by. Either one missing is the
+      // feature switched off at a composition root (defects 12b, 23, 24).
+      const roster = String(seen[0]?.roster ?? "");
+      assert.match(roster, /invoice-reconciler/);
+      assert.match(roster, /code-reviewer/);
     });
 
     test("--unattended --force still starts without a saved mission", async () => {
@@ -614,13 +619,17 @@ describe("orchestra", () => {
         assert.match(output, /nothing dispatched/);
       });
 
-      // The unmeasured half is shown rather than hidden (§9.5).
-      test("splits measured from unmeasured in the estimate", async () => {
+      // This test used to assert the opposite — that the estimate split measured tokens
+      // from unmeasured CLI runs (§9.5). Both halves are gone: the measured half was
+      // hand-authored constants predicting a quantity prompt caching had already made
+      // meaningless, and the unmeasured count only existed to qualify it
+      // (`loop/estimate.ts`). Cost is reported by `orchestra metrics` from the log.
+      test("quotes no token figure in the estimate", async () => {
         const io = capture();
 
         await main(["run", "add a /health endpoint", "--plan-only"], io, { createCalls });
 
-        assert.match(io.lines.join("\n"), /tokens measured, \d+ CLI runs unmeasured/);
+        assert.doesNotMatch(io.lines.join("\n"), /tokens/);
       });
 
       test("writes a resumable mission log", async () => {

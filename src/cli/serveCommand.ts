@@ -327,6 +327,7 @@ export async function serve(
       const runOptions: RunOptions = {
         goal: message.goal,
         planOnly: message.planOnly,
+        quick: message.quick,
         unattended: false,
         force: false,
         web: true,

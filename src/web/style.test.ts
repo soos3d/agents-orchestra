@@ -18,6 +18,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, test } from "node:test";
+import { FONT_ROUTE } from "./fonts.js";
 import { pageStyle } from "./style.js";
 import { tokens } from "./tokens.js";
 
@@ -64,5 +65,22 @@ describe("the stylesheet source", () => {
     // drops the declaration and the page loses a colour rather than an element.
     assert.equal(pageStyle.includes("undefined"), false);
     assert.equal(/--[a-z0-9-]+:\s*;/.test(pageStyle), false, "a custom property is declared empty");
+  });
+
+  // The one thing in here that cannot be interpolated and still has to agree with a
+  // constant: the rule above forbids any ${} that is not a token, so the @font-face
+  // carries the route as a literal. If FONT_ROUTE moves, the page silently renders in
+  // the fallback face — which looks like a design choice rather than a broken URL.
+  test("loads the display face from the route the server actually serves", () => {
+    assert.ok(
+      pageStyle.includes(`url("${FONT_ROUTE}")`),
+      `the @font-face does not point at ${FONT_ROUTE} — the display face will not load`,
+    );
+  });
+
+  // The page fetches nothing from anywhere: `default-src 'none'` says so and this is
+  // the surface that would quietly break it, since a font CDN is one paste away.
+  test("references no external origin", () => {
+    assert.equal(/url\(\s*["']?https?:/.test(pageStyle), false);
   });
 });

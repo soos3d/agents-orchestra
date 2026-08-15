@@ -89,10 +89,14 @@ Carry over only what the message above actually supports: use "failed" or "parti
 for \`outcome\` if it does not claim the work was finished, and empty arrays where it
 says nothing. Do not invent artifacts, claims, or a summary the worker did not give.`;
 
-    return (options.run ?? runClaudeCode)(prompt, options.cwd, {
+    // `.text` only: restating one object is not the mission's work, and folding its
+    // tokens into the task's figure would price a parse failure as part of the task
+    // that suffered it. It rides the subscription either way (§9.5).
+    const outcome = await (options.run ?? runClaudeCode)(prompt, options.cwd, {
       model: options.model ?? REFORMAT_MODEL,
       timeoutMs: options.timeoutMs ?? REFORMAT_TIMEOUT_MS,
     });
+    return outcome.text;
   };
 }
 
@@ -130,14 +134,21 @@ export function createCliTransport(options: CliTransportOptions = {}): WorkerTra
     const run = transport.target === "codex" ? runners.codex : runners.claude;
 
     const startedAt = Date.now();
-    const raw = await run(prompt, cwd, {
+    const outcome = await run(prompt, cwd, {
       model: transport.model ?? model,
       timeoutMs: options.timeoutMs ?? task.budget.wallMs,
       ...(signal ? { signal } : {}),
     });
 
-    // No token count: a subscription CLI does not report one, which is exactly why
-    // `Spend.tokens.unmeasured` exists (§9.5). Reporting a confident 0 would be worse.
-    return { raw, elapsedMs: Date.now() - startedAt };
+    // The usage is carried when the CLI reported it and omitted when it did not,
+    // which is a per-target answer rather than a per-transport one: `claude
+    // --output-format json` says, `codex` is scraped from a last-message file and
+    // cannot. Omitting is what makes `spendOf` count an unmeasured dispatch instead
+    // of booking a confident zero (§9.5).
+    return {
+      raw: outcome.text,
+      elapsedMs: Date.now() - startedAt,
+      ...(outcome.usage === undefined ? {} : { usage: outcome.usage }),
+    };
   };
 }

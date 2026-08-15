@@ -28,7 +28,7 @@
 import { taskArtifactDir } from "../config/discover.js";
 import { ensurePrivateDir } from "../config/hygiene.js";
 import { type Artifact } from "../domain/artifacts.js";
-import { type Spend } from "../domain/budget.js";
+import { tokensFrom, type Spend, type TokenUsage } from "../domain/budget.js";
 import { isCodeTask, type Task, type TaskStatus } from "../domain/task.js";
 import { type Event, type EventInput } from "../events/schema.js";
 import { commitWorktree } from "../git/commit.js";
@@ -46,8 +46,18 @@ export interface WorkerRun {
   raw: string;
   elapsedMs: number;
   /** Present only for transports that report usage (§9.5). Its absence is the whole
-   *  reason `Spend.tokens.unmeasured` exists. */
-  measuredTokens?: number;
+   *  reason `Spend.tokens.unmeasured` exists. Four numbers rather than one, because
+   *  input, output and cached input are priced differently and a total cannot be
+   *  taken apart afterwards. */
+  usage?: TokenUsage;
+  /** Set when the usage came from a source that knows its output figure is a floor —
+   *  a session log read after the turn (§9.5). It moves the output count into
+   *  `estimated`, so a number is never trusted further than its source. */
+  outputIsFloor?: boolean;
+  /** The model the transport reports actually having run, when it says. `AgentSpec`
+   *  records what was *asked for*, and on ACP the two can differ — the adapter picks
+   *  its own model and the log would otherwise name one that never ran. */
+  ranOn?: string;
 }
 
 export type WorkerTransport = (input: {
@@ -393,7 +403,16 @@ function createSession(task: Task, deps: DispatchDeps): Session {
 
     emit({ type: "worker_report", report });
     for (const artifact of report.artifacts) emit({ type: "artifact_written", artifact });
-    emit({ type: "spend_recorded", phase: task.id, spend: spendOf(run) });
+    // What it cost, and what produced the cost. The model is recorded rather than
+    // assumed from the spec because the two differ on ACP — the adapter picks its own
+    // and a mission priced against the spec's would be priced against a model that
+    // never ran (a task specced `sonnet` was observed running on `opus`, a 5x error).
+    emit({
+      type: "spend_recorded",
+      phase: task.id,
+      spend: spendOf(run),
+      ...(run.ranOn === undefined ? {} : { model: run.ranOn }),
+    });
 
     if (report.outcome === "blocked") {
       await cleanup();
@@ -444,13 +463,16 @@ const ACTORS: Partial<Record<EventInput["type"], EventInput["actor"]>> = {
 
 function spendOf(run: WorkerRun): Spend {
   return {
-    tokens: {
-      measured: run.measuredTokens ?? 0,
-      estimated: 0,
-      // A transport that reports nothing counts as one unmeasured dispatch, which is
-      // what stops a CLI-only mission from reading as ~0 tokens (§9.5).
-      unmeasured: run.measuredTokens === undefined ? 1 : 0,
-    },
+    tokens:
+      run.usage === undefined
+        ? {
+            measured: 0,
+            estimated: 0,
+            // A transport that reports nothing counts as one unmeasured dispatch,
+            // which is what stops a CLI-only mission from reading as ~0 tokens (§9.5).
+            unmeasured: 1,
+          }
+        : tokensFrom(run.usage, { estimatedOutput: run.outputIsFloor === true }),
     wallMs: run.elapsedMs,
     dispatches: 1,
   };

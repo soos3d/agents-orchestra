@@ -29,9 +29,16 @@
 // same reason `queryOptions` is one: a decision taken inside a socket handler is a
 // decision nothing can assert (defect 18).
 //
-// No usage, ever. Not one captured frame carries a token count, so `measuredTokens` stays
-// absent and this transport's spend lands in §9.5's unmeasured column beside the CLI's.
+// **No usage on the wire, so it is read from the agent's own books afterwards.** Not one
+// captured frame carries a token count, and for a long time that left every ACP dispatch
+// in §9.5's unmeasured column — which hid the largest number in the mission: one dispatch
+// measured after the fact had read 288,446 cached tokens against an orchestrator total of
+// 19,415. `usage.ts` reads the session log the agent writes for the `sessionId` this
+// transport already holds; when there is no such file the wire is estimated instead, and
+// when neither is possible the dispatch stays unmeasured exactly as before. Which of the
+// three happened is recorded, because a number is worth no more than its source.
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { type Task } from "../../domain/task.js";
@@ -39,6 +46,7 @@ import { type WorkerRun, type WorkerTransport } from "../../loop/dispatch.js";
 import { spawnDuplex, type DuplexExit, type DuplexProcess } from "../../runtime/duplex.js";
 import { workerPrompt } from "../prompt.js";
 import { decidePermission, type PermissionRequest } from "./permissions.js";
+import { estimateFromWire, readSessionUsage, sessionLogPath } from "./usage.js";
 import {
   classifyFrame,
   fsReadTextFileParamsSchema,
@@ -91,6 +99,10 @@ export interface AcpTransportDeps {
   /** Injected so a test drives a scripted agent instead of an `npx` download, and so the
    *  registry stays a pure lookup with a test of its own. */
   resolveAgent?(target: string): AcpLaunch | undefined;
+  /** Where the agent keeps its own session logs, which is where this transport's token
+   *  counts come from (§9.5, `usage.ts`). Injected for the same reason `resolveAgent`
+   *  is: a test must be able to point it at a fixture rather than at the real home. */
+  home?: string;
   clientInfo?: ClientInfo;
 }
 
@@ -136,7 +148,7 @@ export function createAcpTransport(deps: AcpTransportDeps): WorkerTransport {
     });
 
     try {
-      const raw = await runSession({
+      const session = await runSession({
         proc,
         task,
         cwd,
@@ -145,7 +157,12 @@ export function createAcpTransport(deps: AcpTransportDeps): WorkerTransport {
         onWarn,
         requestPermission: deps.requestPermission,
       });
-      return { raw, elapsedMs: Date.now() - startedAt };
+
+      return {
+        raw: session.raw,
+        elapsedMs: Date.now() - startedAt,
+        ...accountFor(session, cwd, deps.home ?? os.homedir(), onWarn),
+      };
     } finally {
       // Nothing else will: the turn ended, the process has no reason to, and an agent
       // that outlives its mission is the orphan `duplex.ts` was written to prevent.
@@ -165,6 +182,20 @@ interface SessionInput {
   readonly requestPermission: AcpTransportDeps["requestPermission"];
 }
 
+/** What a finished turn leaves behind: what the agent said, and the two facts needed to
+ *  account for it afterwards. */
+interface SessionOutcome {
+  raw: string;
+  /** The agent's id for the session — and the name of the file it wrote its own usage
+   *  to, which is the only place an ACP dispatch's cost exists. */
+  sessionId: string;
+  /** What the adapter says it ran, when it says. Never what the spec asked for. */
+  ranOn?: string;
+  /** Everything that crossed the connection, in characters, for the wire estimate that
+   *  stands in when no session log can be found. */
+  characters: number;
+}
+
 /**
  * Handshake, session, one turn — and the assembled text of what the agent said.
  *
@@ -172,16 +203,72 @@ interface SessionInput {
  * capture ends `end_turn` exactly like the approved one, so a turn's ending says nothing
  * about whether the work happened; the `WorkerReport` in the text does (§4.1).
  */
-async function runSession(input: SessionInput): Promise<string> {
+async function runSession(input: SessionInput): Promise<SessionOutcome> {
   const client = createClient(input);
 
   parseInitializeResult(await client.request((id) => initializeRequest(id, input.clientInfo)));
-  const { sessionId } = parseSessionNewResult(await client.request((id) => sessionNewRequest(id, input.cwd)));
+  const opened = parseSessionNewResult(await client.request((id) => sessionNewRequest(id, input.cwd)));
+  const prompt = workerPrompt(input.task, input.artifactDir);
   parseSessionPromptResult(
-    await client.request((id) => sessionPromptRequest(id, sessionId, workerPrompt(input.task, input.artifactDir))),
+    await client.request((id) => sessionPromptRequest(id, opened.sessionId, prompt)),
   );
 
-  return client.text();
+  const raw = client.text();
+  const ranOn = opened.models?.currentModelId;
+
+  return {
+    raw,
+    sessionId: opened.sessionId,
+    ...(ranOn === undefined ? {} : { ranOn }),
+    characters: prompt.length + raw.length,
+  };
+}
+
+/**
+ * What the dispatch cost, from the best source available (§9.5).
+ *
+ * Three outcomes and they are ranked, not interchangeable: the agent's own session log
+ * is the API's accounting and is exact for input and cache; the wire is an estimate that
+ * counts the conversation rather than the context, and is a floor with a known
+ * direction; and no reading at all leaves the dispatch unmeasured, which is where every
+ * ACP dispatch used to land.
+ *
+ * Every failure here is swallowed into the next rank down. This runs *after* the work is
+ * done — a missing accounting file must never be the reason a finished dispatch fails.
+ */
+function accountFor(
+  session: SessionOutcome,
+  cwd: string,
+  home: string,
+  onWarn: (message: string) => void,
+): Pick<WorkerRun, "usage" | "outputIsFloor" | "ranOn"> {
+  const ran = session.ranOn === undefined ? {} : { ranOn: session.ranOn };
+
+  const logPath = sessionLogPath(home, cwd, session.sessionId);
+  let text: string | undefined;
+  try {
+    text = fs.readFileSync(logPath, "utf8");
+  } catch {
+    text = undefined;
+  }
+
+  const reading = text === undefined ? null : readSessionUsage(text);
+  if (reading) {
+    return {
+      usage: reading.usage,
+      ...(reading.confidence === "floor" ? { outputIsFloor: true } : {}),
+      // The log's model beats the handshake's: it is what each API call actually
+      // reported, rather than what the adapter said it would use.
+      ...(reading.model === undefined ? ran : { ranOn: reading.model }),
+    };
+  }
+
+  onWarn(
+    `No session log at ${logPath}, so this dispatch's tokens are estimated from what ` +
+      `crossed the connection — a floor, since a session is billed for its context on ` +
+      `every turn. Reported under 'estimated', never 'measured'.`,
+  );
+  return { usage: estimateFromWire(session.characters), outputIsFloor: true, ...ran };
 }
 
 interface Client {

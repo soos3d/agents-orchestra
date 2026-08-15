@@ -21,9 +21,13 @@ export const missionStatusSchema = z.enum([
 
 // Arithmetic over the plan, not another model call. Shown at sign-off, because
 // approve-or-revise is not a real decision without it.
+//
+// There is no token figure here on purpose — see `loop/estimate.ts` for why the one
+// that used to be was withdrawn rather than recalibrated. Logs written before that
+// still carry `tokens`; this schema is not strict, so the field is dropped on replay
+// and an older mission folds unchanged.
 export const estimateSchema = z.object({
   taskCount: z.number().int().nonnegative(),
-  tokens: z.number().int().nonnegative(), // in-process work only — see §9.5
   wallMs: z.number().int().nonnegative(), // critical path through the DAG
   expectedGates: z.number().int().nonnegative(),
 });
@@ -41,11 +45,19 @@ export const missionSchema = z.object({
   budget: budgetSchema,
   spend: spendSchema,
   spendByPhase: z.record(z.string(), spendSchema),
+  /** Phase → the model that actually produced its spend, where the transport said so.
+   *  Separate from `AgentSpec.model`, which records what was *asked for*: ACP never
+   *  sends the spec's model, so the two differ and only this one can be priced. */
+  modelByPhase: z.record(z.string(), z.string()).default({}),
   extensions: z.number().int().nonnegative(),
   estimate: estimateSchema.optional(),
   // Criteria are frozen from this moment (§3).
   signedOffAt: z.string().optional(),
   unattended: z.boolean(),
+  /** The human said at compose time that this job is small: one light research pass
+   *  and a plan of one task rather than a decomposition. Folded from `mission_created`
+   *  so a resumed mission keeps the shape it was started with. */
+  quick: z.boolean(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
