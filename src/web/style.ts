@@ -260,6 +260,47 @@ export const pageStyle = `
   .task-done:hover, .task-cancelled:hover { opacity: 1; }
   .task-failed, .task-conflicted { box-shadow: inset 0 0 0 1px var(--fail-d); }
 
+  /* ── the briefing (UI plan U5) ───────────────────────────── */
+
+  /* A trail, drawn as a rail with a mark per stage. It only appends, so nothing here
+     reflows when a stage lands and the approve button below never moves under a
+     pointer that was already travelling toward it. */
+  .briefing {
+    list-style: none;
+    margin: .2rem 0 1.1rem;
+    padding: 0 0 0 .1rem;
+  }
+
+  .stage {
+    display: grid;
+    grid-template-columns: 1.2rem minmax(0, auto) minmax(0, 1fr);
+    gap: 0 .7rem;
+    align-items: baseline;
+    padding: .3rem 0;
+    line-height: 1.5;
+  }
+
+  .stage-mark { font-family: var(--mono); font-size: .85em; color: var(--faint); }
+  .stage-label { color: var(--ink-2); }
+  .stage-detail {
+    font: 11px/1.6 var(--mono);
+    letter-spacing: .04em;
+    color: var(--faint);
+    overflow-wrap: anywhere;
+  }
+
+  .stage-done .stage-mark { color: var(--met); }
+  .stage-waiting { opacity: .42; }
+
+  /* Glow is state, here as on the board: the stage in flight is the only row that
+     moves, and briefing() guarantees there is exactly one of it. */
+  .stage-running .stage-mark { color: var(--live); animation: pulse 2.2s ease-in-out infinite; }
+  .stage-running .stage-label { color: var(--ink); }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: .35; }
+  }
+
   /* ── the why panel ───────────────────────────────────────── */
 
   .why dt {

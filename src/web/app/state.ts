@@ -81,6 +81,14 @@ export interface View {
 
   goal: string;
   status: string;
+  /** The scan reported, whatever it found. Separate from `findings > 0` because a
+   *  scan that turned up nothing is a finished stage, not a missing one (U5). */
+  scanned: boolean;
+  findings: number;
+  /** Counted rather than derived from `questions`, which empties as answers land —
+   *  the briefing has to be able to say "3 asked, 3 answered" after the fact. */
+  intakeAsked: number;
+  intakeAnswered: number;
   brief: string;
   outOfScope: readonly string[];
   criteria: readonly Criterion[];
@@ -116,6 +124,10 @@ export const emptyWorkspaces = (): WorkspaceView => ({
 export const emptyMission = (): Omit<View, "missions" | "watching" | "workspaces"> => ({
   goal: "",
   status: "",
+  scanned: false,
+  findings: 0,
+  intakeAsked: 0,
+  intakeAnswered: 0,
   brief: "",
   outOfScope: [],
   criteria: [],
@@ -173,6 +185,11 @@ export function apply(view: View, event: Event): View {
       return { ...view, goal: event.goal };
     case "mission_status":
       return { ...view, status: event.to };
+    // Kept as a count and a flag rather than the findings themselves: the briefing
+    // reports that the step happened and how much it turned up, and the claims
+    // themselves belong to the brief the research call writes (U5).
+    case "scan_completed":
+      return { ...view, scanned: true, findings: event.findings.length };
     case "round_started":
       return { ...view, round: event.round };
     case "stall_detected":
@@ -242,6 +259,7 @@ export function apply(view: View, event: Event): View {
     case "intake_question":
       return {
         ...view,
+        intakeAsked: view.intakeAsked + 1,
         inbox: withEntry(view.inbox, event.questionId, { kind: "intake", text: event.question }),
         questions: view.questions.concat([
           { id: event.questionId, question: event.question, ...(event.options ? { options: event.options } : {}) },
@@ -250,6 +268,7 @@ export function apply(view: View, event: Event): View {
     case "intake_answered":
       return {
         ...view,
+        intakeAnswered: view.intakeAnswered + 1,
         inbox: without(view.inbox, event.questionId),
         questions: view.questions.filter((question) => question.id !== event.questionId),
       };

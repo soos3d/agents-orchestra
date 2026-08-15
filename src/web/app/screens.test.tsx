@@ -117,6 +117,100 @@ describe("screen priority", () => {
   });
 });
 
+// UI plan U5. The failure mode this replaces: several minutes of blank page between
+// "start mission" and a plan, while a scan, an intake and a research call all happen
+// and none of them is drawn. The failure mode it could *introduce* is worse — a
+// briefing that makes sign-off feel like a formality — so what is asserted here is
+// mostly the second one.
+describe("the briefing", () => {
+  test("shows what the mission is doing while it is still preparing", () => {
+    const html = draw({ status: "researching", scanned: true, findings: 4 });
+
+    assert.ok(html.includes("scan the ground"));
+    assert.ok(html.includes("4 findings"), "the scan result is not reported");
+    assert.ok(html.includes("research"));
+    assert.ok(!html.includes("approve"), "an approve button before there is anything to approve");
+  });
+
+  test("the intake screen keeps the trail, because intake is a stage of it", () => {
+    const html = draw({
+      status: "intake",
+      scanned: true,
+      intakeAsked: 1,
+      questions: [{ id: "q1", question: "Which ledger is authoritative?" }],
+    });
+
+    assert.ok(html.includes("Which ledger is authoritative?"));
+    assert.ok(html.includes("scan the ground"), "the trail vanished at the first question");
+  });
+
+  // The one mitigation the plan names for "a briefing that animates must never make
+  // sign-off feel like a formality": the sign-off screen appends. Everything a person
+  // read while the mission was specifying is still there, in the same order, and the
+  // buttons arrive underneath it rather than in place of it.
+  test("sign-off appends to what was already on screen rather than replacing it", () => {
+    const specifying = {
+      status: "specifying",
+      scanned: true,
+      brief: "the June ledger lives in Xero",
+      criteria: [criterion("c1")],
+    } as Partial<View>;
+
+    const before = draw(specifying);
+    const after = draw({ ...specifying, status: "awaiting_signoff" });
+
+    assert.ok(before.includes("the June ledger lives in Xero"));
+    assert.ok(after.includes("the June ledger lives in Xero"), "the brief was dropped at sign-off");
+    assert.ok(after.includes("c1 holds"), "the criteria were dropped at sign-off");
+    assert.ok(after.indexOf("approve") > after.indexOf("c1 holds"), "approve sits above the contract");
+  });
+
+  test("guesses are above the plan, where they cannot be scrolled past", () => {
+    const html = draw({
+      status: "awaiting_signoff",
+      criteria: [criterion("c1")],
+      guesses: [{ id: "g1", text: "the ledger is authoritative", confidence: "low" } as never],
+      plan: [
+        { id: "t1", goal: "pull the ledger", worker: "code", dependsOn: [] } as never,
+      ],
+    });
+
+    assert.ok(
+      html.indexOf("the ledger is authoritative") < html.indexOf("pull the ledger"),
+      "a guess is buried under the plan",
+    );
+  });
+
+  // A criteria change arrives long after preparing is over, and a trail of finished
+  // stages above it would frame a contract change as a routine step.
+  test("a mid-mission criteria change carries no trail", () => {
+    const html = draw({
+      status: "awaiting_signoff",
+      scanned: true,
+      pendingChange: {
+        reasoning: "the second source turned out not to exist",
+        diff: [{ op: "remove", criterionId: "c3", reason: "unmeetable as written" }],
+      } as View["pendingChange"],
+    });
+
+    assert.ok(html.includes("A replan wants to change the contract"));
+    assert.ok(!html.includes("scan the ground"));
+  });
+
+  test("is over once the mission is executing — the board is the better answer", () => {
+    const html = draw({
+      status: "executing",
+      scanned: true,
+      tasks: new Map([
+        ["t1", { id: "t1", goal: "pull the ledger", worker: "code", status: "running", dependsOn: [] } as never],
+      ]),
+    });
+
+    assert.ok(!html.includes("scan the ground"));
+    assert.ok(html.includes("running (1)"));
+  });
+});
+
 // UI plan U4. The failure mode: a compose card that looks the same whichever
 // directory it is aimed at. A person about to spend four hours of model time has to
 // be able to read where it lands, and the discovery result is the only honest way to

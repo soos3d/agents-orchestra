@@ -181,6 +181,19 @@ folded state — which is what makes the whole loop assertable against a canned 
   native client and is allowed, while the literal string `"null"` is a sandboxed iframe on a hostile
   page and is not; and loopback hosts match exactly and by port, because
   `127.0.0.1.evil.example` ends with a loopback literal.
+- **`src/web/style.ts` is a template literal, and a backtick in it is a parse error several lines
+  later.** Naming `tokens.ts` or `briefing()` in a CSS comment the way every other comment here does
+  breaks the build, and it reads as a broken edit rather than a stray character — it cost four
+  debugging detours before `web/style.test.ts` was written to trip on it. That test also refuses any
+  interpolation that is not a `tokens.ts` value.
+- **The briefing is evidence, never elapsed time** (UI plan U5, `web/app/briefing.ts`). Two facts
+  about the log shape it and neither is guessable: `outcome_spec_written` carries the estimate, so
+  it cannot be emitted until *after* the plan — the criteria reach the ledger first, in the
+  `reason: "spec"` revision, and that is what the spec stage is done on. And two stages share the
+  `specifying` status, which is why "running" is the first unfinished stage rather than a match on
+  the status. The sign-off screen is the waiting screen plus one row of buttons (one `Contract`
+  component), so the approve button appends under a contract that was already read rather than
+  arriving where a reflex click lands.
 - **A workspace is a directory that was probed, never one that was declared** (UI plan U4,
   `config/workspaces.ts`). `discoverConfig` is per workspace now rather than per process, and three
   rules are structural rather than conventional. The id is a hash of the **real path**, so two

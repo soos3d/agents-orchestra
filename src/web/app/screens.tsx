@@ -19,6 +19,7 @@ import { type WorkspaceProbe } from "../../config/workspaces.js";
 import { type Artifact } from "../../domain/artifacts.js";
 import { type Criterion } from "../../domain/ledger.js";
 import { type ClientMessage } from "../protocol.js";
+import { briefing, isPreparing } from "./briefing.js";
 import { type BoardTask, type View } from "./state.js";
 
 type Send = (message: ClientMessage) => void;
@@ -98,6 +99,36 @@ function ApproveOrRevise({ send, approve, reject, placeholder }: {
   );
 }
 
+/**
+ * The briefing (UI plan U5): goal → scan → intake → spec → plan → sign-off as one
+ * sequence, instead of four screens that appear minutes apart with dead air between.
+ *
+ * It is a trail, and it only ever *appends* — which is the whole mitigation for the
+ * risk the plan names. Nothing above the approve button reorders as stages complete,
+ * so the button does not slide into place under a pointer that was already moving, and
+ * the contract a person read at `specifying` is the same contract in the same place
+ * when the button arrives beneath it.
+ *
+ * Only the running row moves. `briefing()` guarantees there is exactly one.
+ */
+function Briefing({ view }: { view: View }) {
+  const stages = briefing(view);
+
+  return (
+    <ol class="briefing">
+      {stages.map((stage) => (
+        <li class={`stage stage-${stage.state}`} key={stage.key}>
+          <span class="stage-mark" aria-hidden="true">
+            {stage.state === "done" ? "✓" : stage.state === "running" ? "▸" : "○"}
+          </span>
+          <span class="stage-label">{stage.label}</span>
+          {stage.detail ? <span class="stage-detail">{stage.detail}</span> : null}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
 // §13's sign-off screen, returning mid-mission: the diff and the reasoning, above the
 // spec they would edit.
 function CriteriaChange({ view, send }: { view: View; send: Send }) {
@@ -145,13 +176,24 @@ function CriteriaChange({ view, send }: { view: View; send: Send }) {
   );
 }
 
-function Signoff({ view, send }: { view: View; send: Send }) {
+/**
+ * The contract, as much of it as exists yet.
+ *
+ * One component for both the waiting screen and the sign-off screen, which is what
+ * makes the sequence continuous rather than merely animated: the sign-off screen *is*
+ * this, plus one row of buttons at the bottom. Nothing a person read while the mission
+ * was still specifying moves when the decision arrives.
+ *
+ * The order is load-bearing (UI plan U5): **guesses stay above the plan**. A guess is
+ * the thing most likely to be wrong, and burying it under twenty task rows is how a
+ * sign-off screen becomes a formality.
+ */
+function Contract({ view }: { view: View }) {
   const estimate = view.estimate;
   const cli = view.plan.filter((task) => task.worker === "code").length;
 
   return (
     <>
-      <h2>Awaiting your approval</h2>
       {view.brief ? <div class="card">{view.brief}</div> : null}
       <Criteria criteria={view.criteria} />
 
@@ -177,19 +219,23 @@ function Signoff({ view, send }: { view: View; send: Send }) {
         </>
       ) : null}
 
-      <h2>Plan</h2>
-      <div class="card scroll">
-        <ul>
-          {view.plan.map((task) => (
-            <li key={task.id}>
-              <span class="id">{task.id}</span> [{task.worker}] {task.goal}
-              {task.dependsOn.length > 0 ? (
-                <span class="quiet"> after {task.dependsOn.join(", ")}</span>
-              ) : null}
-            </li>
-          ))}
-        </ul>
-      </div>
+      {view.plan.length > 0 ? (
+        <>
+          <h2>Plan</h2>
+          <div class="card scroll">
+            <ul>
+              {view.plan.map((task) => (
+                <li key={task.id}>
+                  <span class="id">{task.id}</span> [{task.worker}] {task.goal}
+                  {task.dependsOn.length > 0 ? (
+                    <span class="quiet"> after {task.dependsOn.join(", ")}</span>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </>
+      ) : null}
 
       {estimate ? (
         <>
@@ -201,7 +247,17 @@ function Signoff({ view, send }: { view: View; send: Send }) {
           </div>
         </>
       ) : null}
+    </>
+  );
+}
 
+/** The contract, and the one row of buttons that is the whole difference between
+ *  watching a mission prepare and being asked about it. The buttons are last, under
+ *  everything they approve — never where a click aimed at the previous screen lands. */
+function Signoff({ view, send }: { view: View; send: Send }) {
+  return (
+    <>
+      <Contract view={view} />
       <ApproveOrRevise
         send={send}
         approve="approve"
@@ -676,9 +732,38 @@ function Home({ view, send, onChoose }: { view: View; send: Send; onChoose: Choo
  * approve button under a contract change nobody was shown.
  */
 export function Screen({ view, send, onSelect }: ScreenProps) {
-  if (view.questions.length > 0) return <Intake view={view} send={send} />;
+  // The briefing rides above intake and sign-off rather than replacing them: those
+  // two *are* stages of it, and a person answering intake should be able to see what
+  // the scan already turned up (U5).
+  if (view.questions.length > 0) {
+    return (
+      <>
+        <Briefing view={view} />
+        <Intake view={view} send={send} />
+      </>
+    );
+  }
+  // No briefing here. A criteria change arrives long after preparing is over, and a
+  // trail of finished stages above it would frame a contract change as routine.
   if (view.pendingChange) return <CriteriaChange view={view} send={send} />;
-  if (view.status === "awaiting_signoff") return <Signoff view={view} send={send} />;
+  if (view.status === "awaiting_signoff") {
+    return (
+      <>
+        <Briefing view={view} />
+        <Signoff view={view} send={send} />
+      </>
+    );
+  }
+  // The minutes that used to be a blank page. Same trail, same contract components,
+  // in the same order — the sign-off screen appends to this rather than replacing it.
+  if (isPreparing(view)) {
+    return (
+      <>
+        <Briefing view={view} />
+        <Contract view={view} />
+      </>
+    );
+  }
 
   return (
     <>
