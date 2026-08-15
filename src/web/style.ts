@@ -161,6 +161,15 @@ export const pageStyle = `
     margin-bottom: .5rem;
   }
 
+  /* The selected workspace (UI plan U4). Cyan means live, so a *chosen* row is
+     drawn with the ink hairline and a lifted ground rather than with the accent —
+     picking a directory is not a mission running in it. */
+  .card.chosen {
+    background: var(--raise);
+    box-shadow: inset 0 0 0 1px var(--line-2);
+  }
+  .card.chosen > strong { color: var(--ink); }
+
   .scroll { overflow-x: auto; }
 
   /* ── semantic colour ─────────────────────────────────────── */

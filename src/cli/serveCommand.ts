@@ -7,15 +7,30 @@
 // live mission's session, and appends answers to parked missions directly — the
 // mission a question parked has no loop running to route through.
 //
-// One composed mission at a time, stated rather than discovered: two live missions
-// would share one repo checkout and one merge queue, and refusing the second
-// compose with a reason is honest where interleaving them is a corruption. The cap
-// is this command's, not the architecture's.
+// One composed mission at a time **per workspace** (UI plan U4), stated rather than
+// discovered: two live missions in one directory would share a repo checkout and a
+// merge queue, and refusing the second compose with a reason is honest where
+// interleaving them is a corruption. Two *workspaces* share neither, so the cap is
+// per directory — which is the honest generalisation of a limit this file used to
+// document as "this command's, not the architecture's". The identity that makes it
+// hold is `workspaceId`'s: one real path, one workspace, whatever it was typed as.
+import fs from "node:fs";
 import { buildCard } from "../channel/cards.js";
 import { type Carrier } from "../channel/carrier.js";
 import { createTrust, type BoundIdentity } from "../channel/trust.js";
 import { missionDir, type DiscoveredConfig } from "../config/discover.js";
 import { forgetMission } from "../config/hygiene.js";
+import {
+  configForWorkspace,
+  probeWorkspace,
+  readWorkspaces,
+  resolveWorkspacePath,
+  withWorkspace,
+  workspaceId,
+  writeWorkspaces,
+  type Workspace,
+  type WorkspaceProbe,
+} from "../config/workspaces.js";
 import { type MissionStore } from "../loop/run.js";
 import { createFileStore } from "../loop/store.js";
 import { createMissionRegistry } from "../web/registry.js";
@@ -52,6 +67,8 @@ export function parseServeArgs(argv: readonly string[]): ParsedServe {
 
 interface LiveSession {
   missionId: string;
+  /** Which directory it holds. The cap is a lookup on this, not a boolean. */
+  workspaceId: string;
   human: WebHuman;
   store: MissionStore;
   onPanic: () => void;
@@ -81,8 +98,49 @@ export async function serve(
   const run = deps.run ?? runMission;
   const now = deps.now ?? (() => new Date());
 
-  let live: LiveSession | undefined;
+  /** One live mission per workspace, keyed by workspace id. */
+  const sessions = new Map<string, LiveSession>();
   let server: RunningServer;
+
+  // ── workspaces (UI plan U4) ──
+  //
+  // The directory serve was launched in is a workspace without being registered:
+  // it is what `orchestra serve` has always meant, and persisting it on boot would
+  // write to disk on every start to record a fact the cwd already carries.
+  const defaultPath = resolveWorkspacePath(config.cwd, config.cwd);
+  const defaultWorkspace: Workspace = {
+    id: workspaceId(defaultPath),
+    path: defaultPath,
+    addedAt: now().toISOString(),
+  };
+  let workspaces = withWorkspace(readWorkspaces(config.stateDir, (m) => io.err(m)), defaultWorkspace);
+
+  // The last probe, and the only path an `workspace_add` may name. Holding it here
+  // rather than trusting the page is what makes "you cannot add a workspace you have
+  // not been shown" a property of the server instead of a habit of the UI.
+  let pending: WorkspaceProbe | null = null;
+
+  // Discovery per workspace, done once. `discoverConfig` was once-per-process; this
+  // is the whole of U4 in one map.
+  const configs = new Map<string, DiscoveredConfig>([[defaultWorkspace.id, config]]);
+
+  const configFor = async (workspace: Workspace): Promise<DiscoveredConfig> => {
+    const hit = configs.get(workspace.id);
+    if (hit) return hit;
+    const discovered = await configForWorkspace(config, workspace.path);
+    configs.set(workspace.id, discovered);
+    return discovered;
+  };
+
+  const sessionOf = (missionId: string): LiveSession | undefined =>
+    [...sessions.values()].find((session) => session.missionId === missionId);
+
+  const workspacesFrame = () => ({
+    workspaces,
+    pending,
+    live: Object.fromEntries([...sessions].map(([id, session]) => [id, session.missionId])),
+    defaultId: defaultWorkspace.id,
+  });
 
   // ── the mirror (§10, §17): the carrier moves cards, the trust store decides ──
   const trust = deps.channel ? createTrust(deps.channel.identity) : undefined;
@@ -92,40 +150,52 @@ export async function serve(
   // Phase 8 gives gates something to show; the card builder already refuses what
   // may never be mirrored, whatever this loop learns to send.
   const mirror = (): void => {
-    if (!deps.channel || !trust || !live) return;
-    const { missionId, store } = live;
-    for (const item of store.state().inbox) {
-      if (item.kind !== "question" || item.resolvedAt || carded.has(item.id)) continue;
-      const event = registry
-        .eventsFor(missionId)
-        .find((e) => e.type === "question_asked" && e.questionId === item.id);
-      if (!event) continue;
-      carded.add(item.id);
-      const built = buildCard(event, trust.issue(item.id, now()).nonce);
-      if (!built.ok) {
-        io.err(`not mirrored: ${built.reason}`);
-        continue;
+    if (!deps.channel || !trust) return;
+    for (const { missionId, store } of sessions.values()) {
+      for (const item of store.state().inbox) {
+        if (item.kind !== "question" || item.resolvedAt || carded.has(item.id)) continue;
+        const event = registry
+          .eventsFor(missionId)
+          .find((e) => e.type === "question_asked" && e.questionId === item.id);
+        if (!event) continue;
+        carded.add(item.id);
+        const built = buildCard(event, trust.issue(item.id, now()).nonce);
+        if (!built.ok) {
+          io.err(`not mirrored: ${built.reason}`);
+          continue;
+        }
+        deps.channel.carrier
+          .publish(built.card)
+          .catch((error: unknown) => io.err(`mirror publish failed: ${(error as Error).message}`));
       }
-      deps.channel.carrier
-        .publish(built.card)
-        .catch((error: unknown) => io.err(`mirror publish failed: ${(error as Error).message}`));
     }
   };
+
+  /** Which live mission raised this inbox item. With one mission the answer was
+   *  "the live one"; with one per workspace it has to be looked up, because a card
+   *  approved on a phone must not be applied to whichever mission happens to be
+   *  first in the map. */
+  const sessionForItem = (itemId: string): LiveSession | undefined =>
+    [...sessions.values()].find((session) =>
+      session.store.state().inbox.some((item) => item.id === itemId),
+    );
 
   deps.channel?.carrier.onReply((reply) => {
     const verdict = trust!.validate({ nonce: reply.nonce, senderId: reply.senderId }, now());
 
     if (verdict.kind === "wrong_sender") {
       // Refused, recorded, and the bound user is told it happened — being told is
-      // part of the mitigation (§17), not a courtesy.
+      // part of the mitigation (§17), not a courtesy. Recorded against whichever
+      // mission is live; with none, the terminal is the whole of the record.
       io.err(`refused a carrier reply from unbound sender '${reply.senderId}'.`);
-      if (live) {
-        live.store.emit({
+      const any = [...sessions.values()][0];
+      if (any) {
+        any.store.emit({
           type: "envelope_violation",
-          missionId: live.missionId,
+          missionId: any.missionId,
           actor: "runtime",
           requested: `carrier reply from unbound sender '${reply.senderId}'`,
-          envelope: live.store.state().mission.capabilityEnvelope,
+          envelope: any.store.state().mission.capabilityEnvelope,
         });
       }
       deps.channel!.carrier
@@ -134,7 +204,7 @@ export async function serve(
           kind: "notice",
           caption: "A reply from another account was refused. Nothing was approved.",
           nonce: "",
-          missionId: live?.missionId ?? "",
+          missionId: any?.missionId ?? "",
         })
         .catch(() => {});
       return;
@@ -146,26 +216,97 @@ export async function serve(
     }
 
     const answer = reply.text?.trim();
-    if (!answer || !live) {
+    const session = sessionForItem(verdict.itemId);
+    if (!answer || !session) {
       io.err("carrier reply validated but carried no answer text, or nothing is live.");
       return;
     }
     const result = handleFromDashboard(
       { kind: "answer", questionId: verdict.itemId, answer },
-      live.human,
-      live.store,
-      live.missionId,
+      session.human,
+      session.store,
+      session.missionId,
       io,
-      live.onPanic,
+      session.onPanic,
     );
     if (!result.ok) io.err(`carrier answer not applied: ${result.problem}`);
     server.publish();
   });
 
-  const route = (message: ClientMessage): { ok: true } | { ok: false; problem: string } => {
+  type Routed = { ok: true } | { ok: false; problem: string };
+
+  const route = async (message: ClientMessage): Promise<Routed> => {
+    if (message.kind === "workspace_probe") {
+      pending = await probeWorkspace(message.path, config.cwd, config.stateDir, workspaces);
+      server.publish();
+      return { ok: true };
+    }
+
+    if (message.kind === "workspace_add") {
+      const resolved = resolveWorkspacePath(message.path, config.cwd);
+      // The structural half of "the step with consequences is the step you read":
+      // an add may only confirm the resolution the server itself last reported.
+      if (!pending || pending.path !== resolved) {
+        return {
+          ok: false,
+          problem: "check the directory first — a workspace is added from a resolution you were shown.",
+        };
+      }
+      if (pending.exists && !pending.isDirectory) {
+        return { ok: false, problem: pending.problem ?? `${resolved} is not a directory.` };
+      }
+      if (!pending.exists) {
+        if (!message.create) {
+          return { ok: false, problem: `${resolved} does not exist — confirm creating it, or give a directory that does.` };
+        }
+        try {
+          fs.mkdirSync(resolved, { recursive: true });
+          io.out(`Created ${resolved}`);
+        } catch (error) {
+          return { ok: false, problem: `Cannot create ${resolved}: ${(error as Error).message}` };
+        }
+      }
+
+      workspaces = withWorkspace(workspaces, {
+        id: pending.id,
+        path: resolved,
+        addedAt: now().toISOString(),
+      });
+      // The default workspace is never persisted (it is the cwd), so it is filtered
+      // back out rather than written into a registry that would outlive this process.
+      writeWorkspaces(config.stateDir, workspaces.filter((each) => each.id !== defaultWorkspace.id));
+      pending = null;
+      server.publish();
+      return { ok: true };
+    }
+
+    if (message.kind === "workspace_forget") {
+      if (message.workspaceId === defaultWorkspace.id) {
+        return { ok: false, problem: "that is the directory serve was started in — it cannot be removed." };
+      }
+      const held = sessions.get(message.workspaceId);
+      if (held) {
+        return { ok: false, problem: `mission ${held.missionId} is running there — panic or let it finish first.` };
+      }
+      workspaces = workspaces.filter((each) => each.id !== message.workspaceId);
+      configs.delete(message.workspaceId);
+      writeWorkspaces(config.stateDir, workspaces.filter((each) => each.id !== defaultWorkspace.id));
+      server.publish();
+      return { ok: true };
+    }
+
     if (message.kind === "compose") {
-      if (live) {
-        return { ok: false, problem: `mission ${live.missionId} is running — one at a time for now.` };
+      const targetId = message.workspaceId ?? defaultWorkspace.id;
+      const workspace = workspaces.find((each) => each.id === targetId);
+      if (!workspace) {
+        return { ok: false, problem: `no workspace '${targetId}' — add the directory first.` };
+      }
+      const held = sessions.get(targetId);
+      if (held) {
+        return {
+          ok: false,
+          problem: `mission ${held.missionId} is already running in ${workspace.path} — one at a time per directory.`,
+        };
       }
       const runOptions: RunOptions = {
         goal: message.goal,
@@ -175,10 +316,14 @@ export async function serve(
         web: true,
         budgetMinutes: message.budgetMinutes ?? DEFAULT_BUDGET_MINUTES,
       };
+      const workspaceConfig = await configFor(workspace);
       // Detached deliberately: compose returns while the mission runs for hours. A
       // rejection here must reach the terminal, not vanish — an unhandled one would
       // kill the serve process and every dashboard with it.
-      void run(runOptions, config, io, { createCalls: deps.createCalls, surface })
+      void run(runOptions, workspaceConfig, io, {
+        createCalls: deps.createCalls,
+        surface: surfaceFor(targetId),
+      })
         .then((code) => io.out(`mission finished (exit ${code})`))
         .catch((error: unknown) => io.err(`mission failed: ${(error as Error).message}`))
         .finally(() => server.publish());
@@ -186,7 +331,7 @@ export async function serve(
     }
 
     if (message.kind === "forget") {
-      if (live?.missionId === message.missionId) {
+      if (sessionOf(message.missionId)) {
         return { ok: false, problem: "that mission is running — panic or let it finish first." };
       }
       try {
@@ -199,11 +344,12 @@ export async function serve(
       }
     }
 
-    // A message aimed at a mission that is not the live one: open its log and
-    // append. Safe precisely because it is not live — nothing else holds the
-    // writer, and this is how a parked mission's question gets answered (§10).
+    // A message aimed at a mission that is not live: open its log and append. Safe
+    // precisely because it is not live — nothing else holds the writer, and this is
+    // how a parked mission's question gets answered (§10).
     const target = "missionId" in message ? message.missionId : undefined;
-    if (target !== undefined && target !== live?.missionId) {
+    const targeted = target === undefined ? undefined : sessionOf(target);
+    if (target !== undefined && !targeted) {
       if (registry.eventsFor(target).length === 0) {
         return { ok: false, problem: `no mission '${target}'.` };
       }
@@ -213,11 +359,26 @@ export async function serve(
       return result;
     }
 
-    if (!live) return { ok: false, problem: "no mission is running." };
-    return handleFromDashboard(message, live.human, live.store, live.missionId, io, live.onPanic);
+    // No mission named, so it is aimed at the one running — which is unambiguous
+    // only while there is exactly one. Two live workspaces and an unaddressed
+    // `panic` is the ambiguity that must be refused rather than guessed at.
+    const session = targeted ?? (sessions.size === 1 ? [...sessions.values()][0] : undefined);
+    if (!session) {
+      return {
+        ok: false,
+        problem: sessions.size === 0
+          ? "no mission is running."
+          : "more than one mission is running — say which one.",
+      };
+    }
+    return handleFromDashboard(message, session.human, session.store, session.missionId, io, session.onPanic);
   };
 
-  const surface: RunDeps["surface"] = {
+  /** The surface one composed mission publishes through. Built per compose so the
+   *  workspace it holds is closed over rather than correlated after the fact: `run`
+   *  registers from inside itself, and a second compose must not be able to claim
+   *  the first one's registration. */
+  const surfaceFor = (workspace: string): RunDeps["surface"] => ({
     // `server` is assigned before any client can compose: startWebServer resolves
     // below, and `register` only ever runs inside a message handler. The mirror
     // rides every publish, so a question reaches the phone the same moment it
@@ -232,18 +393,19 @@ export async function serve(
       };
     },
     register: (missionId, session) => {
-      live = { missionId, ...session };
+      sessions.set(workspace, { missionId, workspaceId: workspace, ...session });
       server.publish();
       mirror();
     },
     release: (missionId) => {
-      if (live?.missionId === missionId) live = undefined;
+      if (sessions.get(workspace)?.missionId === missionId) sessions.delete(workspace);
       server.publish();
     },
-  };
+  });
 
   server = await startWebServer({
     registry,
+    workspaces: workspacesFrame,
     onMessage: route,
     onWarn: (message) => io.err(message),
     ...(options.port !== undefined ? { port: options.port } : {}),

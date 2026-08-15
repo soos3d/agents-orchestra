@@ -22,7 +22,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { type Event } from "../events/schema.js";
 import { BUNDLE_ROUTE, readBundle } from "./assets.js";
 import { shellHtml } from "./shell.html.js";
-import { parseClientMessage, type ClientMessage } from "./protocol.js";
+import { parseClientMessage, type ClientMessage, type WorkspacesFrame } from "./protocol.js";
 import { type MissionRegistry } from "./registry.js";
 
 /** Never configurable. See the header. */
@@ -71,7 +71,17 @@ export interface WebServerDeps {
   events?(): readonly Event[];
   /** Many missions, watched by id — the serve mode. */
   registry?: MissionRegistry;
-  onMessage(message: ClientMessage): { ok: true } | { ok: false; problem: string };
+  /** The workspace listing, in serve mode (UI plan U4). Absent on a per-run server,
+   *  which has one directory and nothing to choose between. Pushed on every publish
+   *  alongside the mission listing, because a probe result and a new registration
+   *  reach the page the same way an event does. */
+  workspaces?(): WorkspacesFrame;
+  /** May be async: probing a workspace shells out to git, and the alternative — a
+   *  result pushed later on some other frame — would let a client compose against a
+   *  directory it was never shown. */
+  onMessage(
+    message: ClientMessage,
+  ): { ok: true } | { ok: false; problem: string } | Promise<{ ok: true } | { ok: false; problem: string }>;
   /** 0 asks the OS for a free one, which is what keeps two missions from colliding. */
   port?: number;
   onWarn?(message: string): void;
@@ -181,6 +191,7 @@ export async function startWebServer(deps: WebServerDeps): Promise<RunningServer
     // reconnecting tab from rendering a mission that skipped a round.
     sockets.set(socket, { seq: 0 });
     if (deps.registry) sendMissions(socket);
+    sendWorkspaces(socket);
     pushTo(socket);
 
     socket.on("message", (raw) => {
@@ -207,10 +218,16 @@ export async function startWebServer(deps: WebServerDeps): Promise<RunningServer
         return;
       }
 
-      const handled = deps.onMessage(parsed.message);
-      if (!handled.ok) {
-        socket.send(JSON.stringify({ kind: "rejected", problem: handled.problem }));
-      }
+      // A rejection has to reach the tab that sent the message even when the handler
+      // took a turn of the event loop to decide — and a handler that throws must
+      // report, not take the process down with the mission it is running.
+      void Promise.resolve(deps.onMessage(parsed.message))
+        .catch((error: unknown) => ({ ok: false as const, problem: (error as Error).message }))
+        .then((handled) => {
+          if (!handled.ok && socket.readyState === socket.OPEN) {
+            socket.send(JSON.stringify({ kind: "rejected", problem: handled.problem }));
+          }
+        });
     });
 
     socket.on("close", () => sockets.delete(socket));
@@ -220,6 +237,11 @@ export async function startWebServer(deps: WebServerDeps): Promise<RunningServer
   function sendMissions(socket: WebSocket): void {
     if (!deps.registry || socket.readyState !== socket.OPEN) return;
     socket.send(JSON.stringify({ kind: "missions", missions: deps.registry.missions() }));
+  }
+
+  function sendWorkspaces(socket: WebSocket): void {
+    if (!deps.workspaces || socket.readyState !== socket.OPEN) return;
+    socket.send(JSON.stringify({ kind: "workspaces", ...deps.workspaces() }));
   }
 
   function pushTo(socket: WebSocket): void {
@@ -248,6 +270,7 @@ export async function startWebServer(deps: WebServerDeps): Promise<RunningServer
     publish: () => {
       for (const socket of sockets.keys()) {
         sendMissions(socket);
+        sendWorkspaces(socket);
         pushTo(socket);
       }
     },

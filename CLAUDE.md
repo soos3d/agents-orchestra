@@ -15,9 +15,9 @@ and no database — setup simplicity is a hard constraint, not a cleanup item.
 writes an outcome spec, plans, **waits for a human to sign off**, then synthesizes, dispatches,
 verifies, merges, and replans; `--plan-only` stops after the estimate. An attended run also serves a
 dashboard on loopback (`--no-web` turns it off), and `orchestra serve` is the server that outlives
-missions: list, watch, compose, answer, pause, forget — one composed mission at a time, and the
-per-run server is untouched (`runMission` takes an optional `RunSurface` and never closes a server
-it did not open). Other commands: `doctor`, `resume <missionId>`, `forget <missionId>`,
+missions: list, watch, compose, answer, pause, forget — **one composed mission per workspace**, and
+the per-run server is untouched (`runMission` takes an optional `RunSurface` and never closes a
+server it did not open). Other commands: `doctor`, `resume <missionId>`, `forget <missionId>`,
 `save <missionId> --as <name>`, `promote <missionId> <taskId> --as <name>`, `help`.
 
 **Phase 7 added `src/workers/acp/`** — ACP as a worker transport (§12): `protocol.ts` (the JSON-RPC
@@ -181,6 +181,17 @@ folded state — which is what makes the whole loop assertable against a canned 
   native client and is allowed, while the literal string `"null"` is a sandboxed iframe on a hostile
   page and is not; and loopback hosts match exactly and by port, because
   `127.0.0.1.evil.example` ends with a loopback literal.
+- **A workspace is a directory that was probed, never one that was declared** (UI plan U4,
+  `config/workspaces.ts`). `discoverConfig` is per workspace now rather than per process, and three
+  rules are structural rather than conventional. The id is a hash of the **real path**, so two
+  spellings of one directory are one workspace — which is what keeps the per-workspace mission cap
+  meaning "one mission per checkout". `compose` carries a `workspaceId` and **never a path**, so a
+  mission-side message cannot reach a filesystem path at all. And `workspace_add` is refused unless
+  its resolved path is the one the server's last `workspace_probe` reported: you cannot add a
+  workspace you have not been shown. The state dir does *not* move with the workspace — missions
+  stay under the serve process's own, so the registry keeps one listing and a mission stays
+  addressable by id alone; `worktreeRoot` is the one field derived per workspace, because a worktree
+  is a checkout of one repo.
 - **The dashboard is a Preact bundle** (`web/app/` — `state`, `screens.tsx`, `wire`, `main.tsx`),
   built by esbuild into `dist/web/app.js` and served on `/app.js`. It is the *maintainer's* build:
   `npm i -g` is unchanged, one binary and one process, no dev server. `web/app/state.ts` imports the

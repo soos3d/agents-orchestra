@@ -35,6 +35,23 @@ function App() {
           setView((current) => ({ ...current, missions: frame.missions }));
           return;
         }
+        // The workspace listing, U4. `chosen` is this tab's and survives every
+        // refresh of the server's half — losing the selection every time a probe
+        // comes back is exactly the kind of state the innerHTML page destroyed.
+        if (frame.kind === "workspaces") {
+          setView((current) => ({
+            ...current,
+            workspaces: {
+              ...current.workspaces,
+              list: frame.workspaces,
+              probe: frame.pending,
+              live: frame.live,
+              defaultId: frame.defaultId,
+              chosen: current.workspaces.chosen ?? frame.defaultId,
+            },
+          }));
+          return;
+        }
         // A replay arrives as one frame from seq 0, so the mission half of the view
         // resets when a stream restarts — applying a replay onto a stale view would
         // double every count. `missions` and `watching` are the server's and survive.
@@ -70,7 +87,16 @@ function App() {
         <h1>Mission Control</h1>
         <div class="bar" />
         {problem ? <div class="card warn">{problem}</div> : null}
-        <Home view={view} send={send} />
+        <Home
+          view={view}
+          send={send}
+          onChoose={(workspaceId) =>
+            setView((current) => ({
+              ...current,
+              workspaces: { ...current.workspaces, chosen: workspaceId },
+            }))
+          }
+        />
       </>
     );
   }

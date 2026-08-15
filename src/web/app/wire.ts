@@ -10,7 +10,7 @@
 // `ClientMessage` is imported as a type, so the schema it comes from is erased at
 // bundle time. The browser sends decisions; zod validates them on the far side.
 import { type Event } from "../../events/schema.js";
-import { type ClientMessage } from "../protocol.js";
+import { type ClientMessage, type WorkspacesFrame } from "../protocol.js";
 import { type MissionSummary } from "./state.js";
 
 /** What the server can say. It sends events and listings, never rendered state —
@@ -18,6 +18,7 @@ import { type MissionSummary } from "./state.js";
 export type ServerFrame =
   | { kind: "events"; events: Event[] }
   | { kind: "missions"; missions: MissionSummary[] }
+  | ({ kind: "workspaces" } & WorkspacesFrame)
   | { kind: "rejected"; problem: string };
 
 export interface Wire {

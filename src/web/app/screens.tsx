@@ -15,12 +15,18 @@
 // contents would put a disk-reading route on the approval surface, and that trade is
 // still not taken here (§17).
 import { type ComponentChildren } from "preact";
+import { type WorkspaceProbe } from "../../config/workspaces.js";
 import { type Artifact } from "../../domain/artifacts.js";
 import { type Criterion } from "../../domain/ledger.js";
 import { type ClientMessage } from "../protocol.js";
 import { type BoardTask, type View } from "./state.js";
 
 type Send = (message: ClientMessage) => void;
+
+/** Picking a workspace is the page's own business, exactly as selecting a task is: it
+ *  moves a highlight and sends nothing. What it *chooses* rides on the next compose,
+ *  as an id. */
+type Choose = (workspaceId: string) => void;
 
 interface ScreenProps {
   view: View;
@@ -494,14 +500,118 @@ function Why({ view, onSelect }: { view: View; onSelect: (id: string | null) => 
   );
 }
 
+/** What discovery found for a directory, as one line per fact (UI plan U4). Every
+ *  line is observed rather than settable — the UI shows what was probed and never
+ *  offers a field to declare it (§2a rule 3). */
+function Discovered({ probe }: { probe: WorkspaceProbe }) {
+  return (
+    <dl class="why">
+      <dt>path</dt>
+      <dd class="mono">{probe.path}</dd>
+      <dt>git</dt>
+      <dd>{probe.repoRoot ? `repo at ${probe.repoRoot}` : "not a git repo — research and computer missions still run"}</dd>
+      <dt>verify</dt>
+      <dd>{probe.verify ? `${probe.verify.command}  (from ${probe.verify.source})` : "none found — code tasks merge without a project gate"}</dd>
+      <dt>workers</dt>
+      <dd>{probe.agents.length > 0 ? probe.agents.join(", ") : "none on PATH — no code task can be dispatched"}</dd>
+      <dt>state</dt>
+      <dd class="mono">{probe.stateDir}</dd>
+    </dl>
+  );
+}
+
+/** The workspace picker and the add flow. Two steps, and the split is the design: a
+ *  probe resolves and reports, and only then is there anything to confirm. The server
+ *  refuses an add it did not just resolve, so this is the readable half of a rule that
+ *  is enforced elsewhere. */
+function Workspaces({ view, send, onChoose }: { view: View; send: Send; onChoose: Choose }) {
+  const { list, probe, live, chosen, defaultId } = view.workspaces;
+  if (!list) return null;
+
+  return (
+    <>
+      <h2>Workspace</h2>
+      {list.map((workspace) => {
+        const busy = live[workspace.id];
+        return (
+          <div
+            class={`card${workspace.id === chosen ? " chosen" : ""}`}
+            key={workspace.id}
+            onClick={() => onChoose(workspace.id)}
+          >
+            <strong class="mono">{workspace.path}</strong>
+            <div class="quiet">
+              {workspace.id === defaultId ? "where serve was started" : "added"}
+              {busy ? ` · mission ${busy} is running here` : ""}
+            </div>
+            {workspace.id !== defaultId && !busy ? (
+              <div class="row">
+                <button
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    send({ kind: "workspace_forget", workspaceId: workspace.id });
+                  }}
+                >
+                  remove
+                </button>
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
+
+      <div class="card">
+        <div class="row">
+          <input id="workspace-path" placeholder="another directory, e.g. ~/code/ledger" />
+          <button
+            onClick={() => {
+              const box = document.getElementById("workspace-path") as HTMLInputElement | null;
+              const typed = box?.value.trim();
+              if (typed) send({ kind: "workspace_probe", path: typed });
+            }}
+          >
+            check
+          </button>
+        </div>
+
+        {probe ? (
+          <>
+            <Discovered probe={probe} />
+            {probe.problem ? <p class="bad">{probe.problem}</p> : null}
+            {probe.registered ? <p class="quiet">already a workspace</p> : null}
+            {!probe.problem && !probe.registered ? (
+              <div class="row">
+                <button
+                  onClick={() =>
+                    send({ kind: "workspace_add", path: probe.path, create: !probe.exists })
+                  }
+                >
+                  {probe.exists ? "add this directory" : "create it and add it"}
+                </button>
+              </div>
+            ) : null}
+          </>
+        ) : null}
+      </div>
+    </>
+  );
+}
+
 /** §13's compose card, minus the envelope editor: a composed mission gets the default
  *  envelope, and widening it stays a deliberate act elsewhere. No unattended toggle
  *  either — skipping sign-off is a typed CLI flag (§17). */
-function Home({ view, send }: { view: View; send: Send }) {
+function Home({ view, send, onChoose }: { view: View; send: Send; onChoose: Choose }) {
+  const { chosen, live, list } = view.workspaces;
+  const target = list?.find((workspace) => workspace.id === chosen);
+  const busy = chosen ? live[chosen] : undefined;
+
   return (
     <>
+      <Workspaces view={view} send={send} onChoose={onChoose} />
+
       <h2>New mission</h2>
       <div class="card">
+        {target ? <p class="quiet mono">in {target.path}</p> : null}
         <textarea
           id="compose-goal"
           rows={3}
@@ -511,6 +621,7 @@ function Home({ view, send }: { view: View; send: Send }) {
           <input id="compose-budget" type="number" min="1" placeholder="budget minutes (240)" />
           <button
             class="primary"
+            disabled={busy !== undefined}
             onClick={() => {
               const goalBox = document.getElementById("compose-goal") as HTMLTextAreaElement | null;
               const budgetBox = document.getElementById("compose-budget") as HTMLInputElement | null;
@@ -520,6 +631,10 @@ function Home({ view, send }: { view: View; send: Send }) {
               send({
                 kind: "compose",
                 goal,
+                // The one value that comes from the page's own state, and it is the
+                // id of the workspace row that was clicked — the stated exception to
+                // the containment rule, and an id rather than a path by design.
+                ...(chosen ? { workspaceId: chosen } : {}),
                 ...(Number.isFinite(budget) && budget > 0 ? { budgetMinutes: budget } : {}),
               });
             }}
@@ -527,6 +642,9 @@ function Home({ view, send }: { view: View; send: Send }) {
             start mission
           </button>
         </div>
+        {busy ? (
+          <p class="quiet">mission {busy} is running in this directory — one at a time per workspace.</p>
+        ) : null}
       </div>
 
       <h2>Missions</h2>

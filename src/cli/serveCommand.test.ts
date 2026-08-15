@@ -20,7 +20,9 @@ import { fold } from "../events/fold.js";
 import { createEventLog } from "../events/log.js";
 import { createFileStore } from "../loop/store.js";
 import { aCodeTask, missionCreated } from "../testing/fixtures.js";
+import { type WorkspacesFrame } from "../web/protocol.js";
 import { createWebHuman } from "../web/webHuman.js";
+import { workspaceId } from "../config/workspaces.js";
 import { type Io } from "./main.js";
 import { type RunOptions } from "./runCommand.js";
 import { parseServeArgs, serve, type ServeDeps } from "./serveCommand.js";
@@ -79,7 +81,16 @@ describe("serve", () => {
   interface Started {
     url: string;
     send(message: object): void;
+    /** The next frame that is *not* the workspace listing. Workspaces ride every
+     *  publish (U4), so folding them into this queue would make every existing
+     *  assertion about frame order a test of how many times the server published. */
     next(): Promise<Record<string, unknown>>;
+    /** The next workspace listing. */
+    nextWorkspaces(): Promise<WorkspacesFrame>;
+    /** The next frame that is neither listing — a refusal, or an event push. Every
+     *  publish carries a mission listing, so waiting for a rejection means skipping
+     *  however many of those happened to land first. */
+    nextDecision(): Promise<Record<string, unknown>>;
     runs: RunOptions[];
   }
 
@@ -114,8 +125,16 @@ describe("serve", () => {
     const socket = new WebSocket(url.replace("http://", "ws://"));
     const buffered: Record<string, unknown>[] = [];
     const waiting: ((frame: Record<string, unknown>) => void)[] = [];
+    const bufferedWorkspaces: WorkspacesFrame[] = [];
+    const waitingWorkspaces: ((frame: WorkspacesFrame) => void)[] = [];
     socket.on("message", (raw) => {
       const frame = JSON.parse(raw.toString());
+      if (frame.kind === "workspaces") {
+        const next = waitingWorkspaces.shift();
+        if (next) next(frame as WorkspacesFrame);
+        else bufferedWorkspaces.push(frame as WorkspacesFrame);
+        return;
+      }
       const next = waiting.shift();
       if (next) next(frame);
       else buffered.push(frame);
@@ -125,14 +144,27 @@ describe("serve", () => {
       socket.once("error", reject);
     });
 
+    const next = (): Promise<Record<string, unknown>> =>
+      new Promise((settle) => {
+        const ready = buffered.shift();
+        if (ready) settle(ready);
+        else waiting.push(settle);
+      });
+
     return {
       url,
       send: (message) => socket.send(JSON.stringify(message)),
-      next: () =>
-        new Promise((settle) => {
-          const ready = buffered.shift();
+      next,
+      nextDecision: async () => {
+        let frame = await next();
+        while (frame.kind === "missions") frame = await next();
+        return frame;
+      },
+      nextWorkspaces: () =>
+        new Promise<WorkspacesFrame>((settle) => {
+          const ready = bufferedWorkspaces.shift();
           if (ready) settle(ready);
-          else waiting.push(settle);
+          else waitingWorkspaces.push(settle);
         }),
       runs,
     };
@@ -291,6 +323,203 @@ describe("serve", () => {
     assert.ok("answer" in answers[0]! && answers[0].answer === "the staging one");
 
     release();
+  });
+
+  // ── workspaces (UI plan U4) ──
+  //
+  // The cap is what these are really about. It exists so two missions never share one
+  // checkout and one merge queue, and under U4 it became a lookup on a workspace id —
+  // so "two directories may run at once" and "one directory may not" have to be
+  // asserted together, or the generalisation quietly removes the protection.
+
+  /** A runner that registers and stays live until it is released. */
+  function holdingRunner(): { runner: NonNullable<ServeDeps["run"]>; releaseAll: () => void } {
+    const releases: (() => void)[] = [];
+    let count = 0;
+    return {
+      releaseAll: () => releases.forEach((release) => release()),
+      runner: async (_options, runConfig, _io, deps) => {
+        const missionId = `m-${++count}`;
+        deps.surface!.register(missionId, {
+          human: createWebHuman(),
+          store: {
+            emit: () => {},
+            state: () => {
+              throw new Error(`unused (${runConfig.cwd})`);
+            },
+          },
+          onPanic: () => {},
+        });
+        await new Promise<void>((resolve) => releases.push(resolve));
+        deps.surface!.release(missionId);
+        return 0;
+      },
+    };
+  }
+
+  test("the directory serve was started in is a workspace without being registered", async () => {
+    const config = scratchConfig();
+    const client = await boot(config);
+
+    const frame = await client.nextWorkspaces();
+
+    assert.equal(frame.defaultId, workspaceId(fs.realpathSync(config.cwd)));
+    assert.deepEqual(
+      frame.workspaces.map((workspace) => workspace.path),
+      [fs.realpathSync(config.cwd)],
+    );
+    // Never written to disk: it is the cwd, and persisting it would record on every
+    // boot a fact the process already carries.
+    assert.equal(fs.existsSync(path.join(config.stateDir, "workspaces.json")), false);
+  });
+
+  // The structural rule: naming a directory and using one are separate acts, and the
+  // server refuses an add whose resolution it did not itself just report. A stale tab
+  // replaying an old add cannot register a directory nobody was shown.
+  test("a workspace cannot be added without first being resolved and shown", async () => {
+    const config = scratchConfig();
+    const other = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "orchestra-other-")));
+    const client = await boot(config);
+    await client.nextWorkspaces();
+
+    client.send({ kind: "workspace_add", path: other, create: false });
+    const refused = await client.nextDecision();
+    assert.equal(refused.kind, "rejected");
+    assert.match(String(refused.problem), /check the directory first/);
+
+    client.send({ kind: "workspace_probe", path: other });
+    const probed = await client.nextWorkspaces();
+    assert.equal(probed.pending?.path, other);
+    assert.equal(probed.pending?.exists, true);
+
+    client.send({ kind: "workspace_add", path: other, create: false });
+    const added = await client.nextWorkspaces();
+    assert.equal(added.pending, null, "the resolution was not cleared once it was used");
+    assert.ok(added.workspaces.some((workspace) => workspace.path === other));
+    assert.ok(fs.existsSync(path.join(config.stateDir, "workspaces.json")));
+  });
+
+  test("a directory is created from the browser, and only when creating was confirmed", async () => {
+    const config = scratchConfig();
+    const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "orchestra-parent-")));
+    const target = path.join(parent, "ledger");
+    const client = await boot(config);
+    await client.nextWorkspaces();
+
+    client.send({ kind: "workspace_probe", path: target });
+    const probed = await client.nextWorkspaces();
+    assert.equal(probed.pending?.exists, false);
+    assert.equal(probed.pending?.problem, undefined, "a path to create was refused as a problem");
+
+    // Confirming an add without confirming the creation does not create anything.
+    client.send({ kind: "workspace_add", path: target, create: false });
+    const refused = await client.nextDecision();
+    assert.equal(refused.kind, "rejected");
+    assert.match(String(refused.problem), /does not exist/);
+    assert.equal(fs.existsSync(target), false);
+
+    client.send({ kind: "workspace_add", path: target, create: true });
+    const added = await client.nextWorkspaces();
+    assert.equal(fs.existsSync(target), true);
+    assert.ok(added.workspaces.some((workspace) => workspace.path === target));
+  });
+
+  test("two workspaces run at once; a second mission in one of them is refused", async () => {
+    const config = scratchConfig();
+    const other = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "orchestra-other-")));
+    const held = holdingRunner();
+    const client = await boot(config, held.runner);
+    const first = await client.nextWorkspaces();
+
+    client.send({ kind: "workspace_probe", path: other });
+    await client.nextWorkspaces();
+    client.send({ kind: "workspace_add", path: other, create: false });
+    const registered = await client.nextWorkspaces();
+    const otherId = registered.workspaces.find((workspace) => workspace.path === other)!.id;
+
+    client.send({ kind: "compose", goal: "in the launch directory" });
+    await client.nextWorkspaces();
+    client.send({ kind: "compose", goal: "in the other one", workspaceId: otherId });
+    const both = await client.nextWorkspaces();
+
+    assert.equal(client.runs.length, 2, "the second workspace was refused a mission");
+    assert.equal(Object.keys(both.live).length, 2);
+    assert.ok(both.live[first.defaultId]);
+    assert.ok(both.live[otherId]);
+
+    // …and the cap still holds inside one directory, which is the whole reason it
+    // exists: two missions there would share a checkout and a merge queue.
+    client.send({ kind: "compose", goal: "a third, in the launch directory again" });
+    const refused = await client.nextDecision();
+    assert.equal(refused.kind, "rejected");
+    assert.match(String(refused.problem), /one at a time per directory/);
+    assert.equal(client.runs.length, 2);
+
+    held.releaseAll();
+  });
+
+  test("each mission runs against its own workspace's discovered config", async () => {
+    const config = scratchConfig();
+    const other = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "orchestra-other-")));
+    const cwds: string[] = [];
+    const held = holdingRunner();
+    const client = await boot(config, async (options, runConfig, io, deps) => {
+      cwds.push(runConfig.cwd);
+      return held.runner(options, runConfig, io, deps);
+    });
+    await client.nextWorkspaces();
+
+    client.send({ kind: "workspace_probe", path: other });
+    await client.nextWorkspaces();
+    client.send({ kind: "workspace_add", path: other, create: false });
+    const registered = await client.nextWorkspaces();
+    const otherId = registered.workspaces.find((workspace) => workspace.path === other)!.id;
+
+    client.send({ kind: "compose", goal: "over there", workspaceId: otherId });
+    await client.nextWorkspaces();
+
+    assert.deepEqual(cwds, [other]);
+    held.releaseAll();
+  });
+
+  test("a workspace holding a live mission cannot be removed, and neither can the launch directory", async () => {
+    const config = scratchConfig();
+    const other = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "orchestra-other-")));
+    const held = holdingRunner();
+    const client = await boot(config, held.runner);
+    const first = await client.nextWorkspaces();
+
+    client.send({ kind: "workspace_forget", workspaceId: first.defaultId });
+    const refusedDefault = await client.nextDecision();
+    assert.equal(refusedDefault.kind, "rejected");
+    assert.match(String(refusedDefault.problem), /serve was started in/);
+
+    client.send({ kind: "workspace_probe", path: other });
+    await client.nextWorkspaces();
+    client.send({ kind: "workspace_add", path: other, create: false });
+    const registered = await client.nextWorkspaces();
+    const otherId = registered.workspaces.find((workspace) => workspace.path === other)!.id;
+
+    client.send({ kind: "compose", goal: "over there", workspaceId: otherId });
+    await client.nextWorkspaces();
+
+    client.send({ kind: "workspace_forget", workspaceId: otherId });
+    const refusedLive = await client.nextDecision();
+    assert.equal(refusedLive.kind, "rejected");
+    assert.match(String(refusedLive.problem), /is running there/);
+
+    held.releaseAll();
+  });
+
+  test("composing into a workspace that was never added is refused by id", async () => {
+    const client = await boot(scratchConfig());
+    await client.nextWorkspaces();
+
+    client.send({ kind: "compose", goal: "somewhere else entirely", workspaceId: "ws-000000000000" });
+    const refused = await client.nextDecision();
+
+    assert.equal(refused.kind, "rejected");
+    assert.match(String(refused.problem), /no workspace/);
   });
 
   test("a runner that rejects does not take the serve process down", async () => {

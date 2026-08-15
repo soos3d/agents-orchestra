@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { render } from "preact-render-to-string";
 import { type Criterion } from "../../domain/ledger.js";
-import { Screen } from "./screens.js";
+import { Home, Screen } from "./screens.js";
 import { emptyView, type View } from "./state.js";
 
 const noop = (): void => {};
@@ -114,6 +114,103 @@ describe("screen priority", () => {
     assert.ok(html.includes("pull the June ledger"));
     assert.ok(html.includes("running (1)"));
     assert.ok(!html.includes("approve"));
+  });
+});
+
+// UI plan U4. The failure mode: a compose card that looks the same whichever
+// directory it is aimed at. A person about to spend four hours of model time has to
+// be able to read where it lands, and the discovery result is the only honest way to
+// say it — §2a rule 3 means the page shows what was found and never offers a field to
+// declare it.
+describe("the compose card", () => {
+  const workspace = (id: string, dir: string) => ({ id, path: dir, addedAt: "2026-08-14T00:00:00.000Z" });
+
+  const drawHome = (patch: Partial<View["workspaces"]>): string =>
+    render(
+      <Home
+        view={viewWith({ workspaces: { ...emptyView().workspaces, ...patch } })}
+        send={noop}
+        onChoose={noop}
+      />,
+    );
+
+  test("names the directory the mission will run in", () => {
+    const html = drawHome({
+      list: [workspace("ws-1", "/Users/dev/ledger")],
+      chosen: "ws-1",
+      defaultId: "ws-1",
+    });
+
+    assert.ok(html.includes("/Users/dev/ledger"), "the target directory is not shown");
+  });
+
+  // The cap, as the person composing experiences it: not a button that fails, but a
+  // button that is already off with the reason beside it.
+  test("cannot start a second mission in a directory that already holds one", () => {
+    const html = drawHome({
+      list: [workspace("ws-1", "/Users/dev/ledger")],
+      chosen: "ws-1",
+      defaultId: "ws-1",
+      live: { "ws-1": "m-7" },
+    });
+
+    assert.ok(html.includes("disabled"), "the start button is still live");
+    assert.ok(html.includes("m-7"), "the mission holding the directory is not named");
+  });
+
+  test("a directory that is not a git repo is stated plainly, not warned about", () => {
+    const html = drawHome({
+      list: [workspace("ws-1", "/Users/dev/notes")],
+      chosen: "ws-1",
+      defaultId: "ws-1",
+      probe: {
+        path: "/Users/dev/notes",
+        input: "~/notes",
+        id: "ws-2",
+        exists: true,
+        isDirectory: true,
+        agents: ["claude"],
+        optionalAgents: [],
+        stateDir: "/Users/dev/ledger/.orchestra",
+        registered: false,
+      },
+    });
+
+    assert.ok(html.includes("not a git repo"));
+    assert.ok(html.includes("none found"), "a missing verify command is not reported");
+    assert.ok(html.includes("add this directory"));
+  });
+
+  // A directory that does not exist is the create case, and creating is the act with
+  // consequences — so the button says so and the resolved path is above it.
+  test("offers to create a directory that is not there, with the resolved path shown", () => {
+    const html = drawHome({
+      list: [workspace("ws-1", "/Users/dev/ledger")],
+      chosen: "ws-1",
+      defaultId: "ws-1",
+      probe: {
+        path: "/Users/dev/new-thing",
+        input: "~/new-thing",
+        id: "ws-3",
+        exists: false,
+        isDirectory: false,
+        agents: [],
+        optionalAgents: [],
+        stateDir: "/Users/dev/ledger/.orchestra",
+        registered: false,
+      },
+    });
+
+    assert.ok(html.includes("/Users/dev/new-thing"), "the resolved path is not shown");
+    assert.ok(html.includes("create it and add it"));
+  });
+
+  // §17's habitual-default rule, asserted rather than remembered: the flag that skips
+  // sign-off must stay something a person types on a terminal, twice.
+  test("offers no way to skip sign-off", () => {
+    const html = drawHome({ list: [workspace("ws-1", "/Users/dev/ledger")], chosen: "ws-1", defaultId: "ws-1" });
+
+    assert.ok(!html.includes("unattended"));
   });
 });
 

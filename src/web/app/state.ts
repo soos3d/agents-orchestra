@@ -13,6 +13,7 @@
 // sends intents and the loop decides, so a divergence here shows a stale screen and
 // can never approve the wrong thing. Keep every `case` one-liner small — review is
 // the only net under this file, exactly as it is under `agentCalls.ts`.
+import { type Workspace, type WorkspaceProbe } from "../../config/workspaces.js";
 import { type Event } from "../../events/schema.js";
 import { type Artifact } from "../../domain/artifacts.js";
 import {
@@ -55,11 +56,28 @@ export interface MissionSummary {
  *  what the live timer counts from and is not a field of `Task`. */
 export type BoardTask = Task & { startedAt?: string };
 
+/** The workspace half of the view (UI plan U4). All four fields are the server's, so
+ *  they survive a mission stream resetting — except `chosen`, which is this tab's own
+ *  selection and is the workspace half of what `selected` is for tasks. */
+export interface WorkspaceView {
+  /** `null` on a per-run server, which has one directory and nothing to choose. */
+  list: readonly Workspace[] | null;
+  /** The directory the server last resolved, awaiting confirmation. */
+  probe: WorkspaceProbe | null;
+  /** workspace id → the mission holding it. The per-directory cap, as data. */
+  live: Readonly<Record<string, string>>;
+  /** Where serve was launched: what `compose` targets when it names no workspace. */
+  defaultId: string | null;
+  /** This tab's pick. Page state, never sent as anything but the id that was clicked. */
+  chosen: string | null;
+}
+
 export interface View {
   /** `null` on a per-run server; a listing under `orchestra serve`. */
   missions: readonly MissionSummary[] | null;
   /** Which mission this tab is streaming, under serve. */
   watching: string | null;
+  workspaces: WorkspaceView;
 
   goal: string;
   status: string;
@@ -87,7 +105,15 @@ export interface View {
  *  Separate from the listing on purpose: a reconnect replays from seq 0, and applying
  *  a replay on top of a stale view would double every count. `missions` and
  *  `watching` survive that reset because they are the server's, not the mission's. */
-export const emptyMission = (): Omit<View, "missions" | "watching"> => ({
+export const emptyWorkspaces = (): WorkspaceView => ({
+  list: null,
+  probe: null,
+  live: {},
+  defaultId: null,
+  chosen: null,
+});
+
+export const emptyMission = (): Omit<View, "missions" | "watching" | "workspaces"> => ({
   goal: "",
   status: "",
   brief: "",
@@ -109,7 +135,12 @@ export const emptyMission = (): Omit<View, "missions" | "watching"> => ({
   selected: null,
 });
 
-export const emptyView = (): View => ({ missions: null, watching: null, ...emptyMission() });
+export const emptyView = (): View => ({
+  missions: null,
+  watching: null,
+  workspaces: emptyWorkspaces(),
+  ...emptyMission(),
+});
 
 /**
  * An approved change is the one thing that moves a signed-off criterion (§3), and the

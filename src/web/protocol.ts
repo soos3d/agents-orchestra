@@ -15,6 +15,26 @@
 //
 // So the browser sends decisions, never state.
 import { z } from "zod";
+import { type Workspace, type WorkspaceProbe } from "../config/workspaces.js";
+
+/**
+ * The one frame that is not events and not a mission listing (UI plan U4): the
+ * directories a mission may be composed in, the one currently being resolved, and
+ * which of them are busy.
+ *
+ * It lives here rather than in `server.ts` because both sides read it and the browser
+ * bundle must not import the server module even in type space. It is still not
+ * rendered state — every field is a fact about the machine, and none of it is a view
+ * of the mission log, which is the asymmetry this file's header is about.
+ */
+export interface WorkspacesFrame {
+  workspaces: readonly Workspace[];
+  pending: WorkspaceProbe | null;
+  /** workspace id → the mission holding it. The per-directory cap, stated as data. */
+  live: Readonly<Record<string, string>>;
+  /** The workspace `compose` targets when it names none: where serve was launched. */
+  defaultId: string;
+}
 
 export const clientMessageSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("approve") }),
@@ -67,10 +87,31 @@ export const clientMessageSchema = z.discriminatedUnion("kind", [
     kind: z.literal("compose"),
     goal: z.string().trim().min(1),
     budgetMinutes: z.number().positive().optional(),
+    // Which directory it runs in (UI plan U4). An **id**, never a path: a mission-side
+    // message that could carry a filesystem path is one edit away from putting a
+    // browser-typed string in front of a process that spawns shells, and the shape is
+    // where that is prevented. Absent means the directory serve was launched in.
+    workspaceId: z.string().min(1).optional(),
     // Deliberately no `unattended` field: skipping sign-off stays a typed CLI flag
     // (§17 — the habitual-default risk), and the compose screen never offers it.
   }),
   z.object({ kind: z.literal("forget"), missionId: z.string().min(1) }),
+
+  // ── workspaces (UI plan U4) ──
+  //
+  // The two messages that *do* carry a path, and the split is the point: naming a
+  // directory and using one are separate acts, so the step with consequences is the
+  // step a human has to read. `workspace_probe` resolves and reports; `workspace_add`
+  // confirms what was reported, and the server refuses an add whose path is not the
+  // one it last showed. You cannot add a workspace you have not been shown.
+  z.object({ kind: z.literal("workspace_probe"), path: z.string().trim().min(1) }),
+  z.object({
+    kind: z.literal("workspace_add"),
+    path: z.string().trim().min(1),
+    /** Create the directory. False confirms an existing one; true is the act. */
+    create: z.boolean().default(false),
+  }),
+  z.object({ kind: z.literal("workspace_forget"), workspaceId: z.string().min(1) }),
 ]);
 
 export type ClientMessage = z.infer<typeof clientMessageSchema>;
