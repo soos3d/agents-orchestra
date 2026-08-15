@@ -210,13 +210,26 @@ folded state — which is what makes the whole loop assertable against a canned 
   stay under the serve process's own, so the registry keeps one listing and a mission stays
   addressable by id alone; `worktreeRoot` is the one field derived per workspace, because a worktree
   is a checkout of one repo.
-- **The dashboard is a Preact bundle** (`web/app/` — `state`, `screens.tsx`, `wire`, `main.tsx`),
+- **Past sign-off the page is three rails, and what fills them is decided in `web/app/hud.ts`**
+  (UI plan U7). `core`, `vitals` and `panes` are pure and tested, because a HUD is a *ranking*
+  before it is a layout and the ranking is where it can be wrong invisibly: a mission with a
+  question pending and three tasks running looks busy and is stopped, so "needs you" outranks
+  running and does not spin. Two rules fall out and both are asserted — a counter still at zero is
+  not drawn at all, and the run view holds the board and the inbox while everything else is one
+  pane click away. `Ticker` (`runView.tsx`) is the only thing that repaints between events; it owns
+  its clock so a second passing costs one text node and not the card's hover, focus or scroll.
+- **The dashboard is a Preact bundle** (`web/app/` — `state`, `screens.tsx`, `runView.tsx`,
+  `contract.tsx`, `hud.ts`, `wire`, `main.tsx`),
   built by esbuild into `dist/web/app.js` and served on `/app.js`. It is the *maintainer's* build:
   `npm i -g` is unchanged, one binary and one process, no dev server. `web/app/state.ts` imports the
   `Event` union **as a type**, so tsc checks every `case` against the real schema and the bundler
   erases zod entirely — `grep zod dist/web/app.js` returns nothing, and it should stay that way.
   No `send()` argument may derive from the page's own fold — the one exception is the id of the
   element that was clicked, which is why every outbound message lives in `web/app/wire.ts`.
+  **`main.tsx` clears the mount before the first render**: Preact diffs against a container it has
+  no previous tree for, so `shell.html.ts`'s `connecting…` heading is *not* removed and sat above
+  the whole app from U1 until somebody opened the page in U7. A green suite renders components, not
+  the document.
 - **A resumed mission's directory is decided from its envelope, never from the message.** A
   mission's log records no workspace; `mission_created`'s envelope records `fsRoots`, which is the
   repo root or cwd it was scoped to. `workspaceForRoots` (`config/workspaces.ts`) matches on that,

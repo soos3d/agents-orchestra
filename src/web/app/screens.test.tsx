@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { render } from "preact-render-to-string";
 import { type Criterion } from "../../domain/ledger.js";
+import { type PaneKey } from "./hud.js";
 import { Home, Screen } from "./screens.js";
 import { emptyView, type View } from "./state.js";
 
@@ -17,8 +18,19 @@ const noop = (): void => {};
 
 const viewWith = (patch: Partial<View>): View => ({ ...emptyView(), ...patch });
 
-const draw = (patch: Partial<View>): string =>
-  render(<Screen view={viewWith(patch)} send={noop} onSelect={noop} />);
+/** The board is the pane a run view opens on, so it is what these draw unless the
+ *  assertion is about something the rail puts one click away (UI plan U7). */
+const draw = (patch: Partial<View>, pane: PaneKey = "board"): string =>
+  render(
+    <Screen
+      view={viewWith(patch)}
+      send={noop}
+      onSelect={noop}
+      pane={pane}
+      onPane={noop}
+      timeline={[]}
+    />,
+  );
 
 const criterion = (id: string, met?: boolean): Criterion =>
   ({
@@ -112,7 +124,7 @@ describe("screen priority", () => {
     });
 
     assert.ok(html.includes("pull the June ledger"));
-    assert.ok(html.includes("running (1)"));
+    assert.ok(html.includes(">running "), "the running column is missing");
     assert.ok(!html.includes("approve"));
   });
 });
@@ -207,7 +219,7 @@ describe("the briefing", () => {
     });
 
     assert.ok(!html.includes("scan the ground"));
-    assert.ok(html.includes("running (1)"));
+    assert.ok(html.includes("pull the ledger"), "the board did not replace the trail");
   });
 });
 
@@ -310,14 +322,16 @@ describe("the compose card", () => {
 
 describe("criteria", () => {
   test("show how each one is checked, so a criterion nobody can check is visible", () => {
-    const html = draw({ status: "running", criteria: [criterion("c1", false)] });
+    // On the contract pane: how a criterion is checked is the thing a person reads
+    // once, and the run view keeps only the verdicts in sight of the board (U7).
+    const html = draw({ status: "running", criteria: [criterion("c1", false)] }, "contract");
 
     assert.ok(html.includes("check ▸ command: npm test"));
     assert.ok(html.includes("✗"), "a failed criterion is not marked");
   });
 
   test("a criterion with no verdict yet is marked neither met nor failed", () => {
-    const html = draw({ status: "running", criteria: [criterion("c1")] });
+    const html = draw({ status: "running", criteria: [criterion("c1")] }, "contract");
 
     assert.ok(!html.includes("✗"));
     assert.ok(!html.includes("✓"));

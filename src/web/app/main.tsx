@@ -12,6 +12,8 @@
 import { render } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import { type ClientMessage } from "../protocol.js";
+import { type PaneKey } from "./hud.js";
+import { StatusCore } from "./runView.js";
 import { Home, Screen } from "./screens.js";
 import { apply, emptyMission, emptyView, line, type View } from "./state.js";
 import { connect, type ServerFrame, type Wire } from "./wire.js";
@@ -21,6 +23,10 @@ const TIMELINE_LIMIT = 400;
 function App() {
   const [view, setView] = useState<View>(emptyView);
   const [timeline, setTimeline] = useState<readonly string[]>([]);
+  // Which rail pane is showing. Page state, like the selected task: it sends nothing.
+  // The board is the default because it is what a mission is; the contract and the
+  // timeline are what a person goes looking for (U7).
+  const [pane, setPane] = useState<PaneKey>("board");
   const [wire, setWire] = useState<Wire | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   // The acknowledgement half of `problem` (U6): a save or a promote changes no event
@@ -119,88 +125,51 @@ function App() {
     );
   }
 
+  // The crown: what this mission is, and what it is doing, in one line that is in the
+  // same place on every mission screen. The status core is the page's one rotating
+  // element and it lives here rather than in a rail, because the briefing, the sign-off
+  // screen and the run view all want it and none of them wants a second copy (U7).
   return (
     <>
-      <h1>{view.goal || "orchestra"}</h1>
-      <div class="bar">
-        <span>
-          status <strong>{view.status}</strong>
-          {view.paused ? " ⏸ paused" : ""}
-        </span>
-        <span>round {view.round}</span>
-        <span>stalls {view.stalls}</span>
-        <span>resets {view.resets}</span>
-      </div>
-
-      {problem ? <div class="card warn">{problem}</div> : null}
-      {note ? <div class="card">{note}</div> : null}
-
-      {view.missions !== null ? (
-        <div class="row">
+      <header class="crown">
+        {view.missions !== null ? (
           <button
+            class="back"
+            title="back to the mission list"
             onClick={() => {
               setView((current) => ({ ...current, ...emptyMission(), watching: null }));
               setTimeline([]);
             }}
           >
-            ← missions
+            ←
           </button>
-        </div>
-      ) : null}
+        ) : null}
+        <StatusCore view={view} />
+        <h1>{view.goal || "orchestra"}</h1>
+      </header>
+
+      {problem ? <div class="card warn">{problem}</div> : null}
+      {note ? <div class="card">{note}</div> : null}
 
       <Screen
         view={view}
         send={send}
         onSelect={(taskId) => setView((current) => ({ ...current, selected: taskId }))}
+        pane={pane}
+        onPane={setPane}
+        timeline={timeline}
       />
-
-      <h2>Note — steers the mission, never blocks it</h2>
-      <div class="row">
-        <input id="note" placeholder="e.g. stop using the staging database" />
-        <button
-          onClick={() => {
-            const box = document.getElementById("note") as HTMLInputElement | null;
-            const text = box?.value.trim();
-            if (!text) return;
-            send({
-              kind: "note",
-              scope: "global",
-              text,
-              ...(view.watching ? { missionId: view.watching } : {}),
-            });
-            box!.value = "";
-          }}
-        >
-          send
-        </button>
-        <button
-          title="drain in-flight work and park — reversible"
-          onClick={() =>
-            send({
-              kind: view.paused ? "unpause" : "pause",
-              ...(view.watching ? { missionId: view.watching } : {}),
-            })
-          }
-        >
-          {view.paused ? "resume" : "pause"}
-        </button>
-        <button
-          title="stop dispatching now — worktrees are left intact"
-          onClick={() => send({ kind: "panic", reason: "panic from the dashboard" })}
-        >
-          panic
-        </button>
-      </div>
-
-      <h2>Timeline</h2>
-      <div class="log">
-        {timeline.map((entry, index) => (
-          <div key={index}>{entry}</div>
-        ))}
-      </div>
     </>
   );
 }
 
 const root = document.getElementById("app");
-if (root) render(<App />, root);
+if (root) {
+  // The shell paints a "connecting…" heading so the page is not blank while the bundle
+  // loads, and Preact does not remove it: the first render diffs against a container it
+  // has no previous tree for, and the placeholder is left sitting above the app. It sat
+  // there for the whole of every session until U7 went looking at the page. Clearing the
+  // container is the fix, and it must happen before the first render, not in an effect.
+  root.replaceChildren();
+  render(<App />, root);
+}

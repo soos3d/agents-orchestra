@@ -84,6 +84,10 @@ export interface View {
   health: HealthFrame | null;
 
   goal: string;
+  /** When `mission_created` was appended. The HUD's elapsed clock counts from here,
+   *  and it is the log's own timestamp rather than the page's — a tab opened four hours
+   *  into a run replays from seq 0 and must read four hours, not four seconds. */
+  startedAt: string;
   status: string;
   /** The scan reported, whatever it found. Separate from `findings > 0` because a
    *  scan that turned up nothing is a finished stage, not a missing one (U5). */
@@ -130,6 +134,7 @@ export const emptyMission = (): Omit<
   "missions" | "watching" | "workspaces" | "health"
 > => ({
   goal: "",
+  startedAt: "",
   status: "",
   scanned: false,
   findings: 0,
@@ -190,7 +195,7 @@ const without = <T>(map: ReadonlyMap<string, T>, key: string): Map<string, T> =>
 export function apply(view: View, event: Event): View {
   switch (event.type) {
     case "mission_created":
-      return { ...view, goal: event.goal };
+      return { ...view, goal: event.goal, startedAt: event.at };
     case "mission_status":
       return { ...view, status: event.to };
     // Kept as a count and a flag rather than the findings themselves: the briefing
