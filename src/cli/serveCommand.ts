@@ -19,6 +19,7 @@ import { buildCard } from "../channel/cards.js";
 import { type Carrier } from "../channel/carrier.js";
 import { createTrust, type BoundIdentity } from "../channel/trust.js";
 import { missionDir, type DiscoveredConfig } from "../config/discover.js";
+import { doctor } from "../config/doctor.js";
 import { forgetMission } from "../config/hygiene.js";
 import {
   configForWorkspace,
@@ -26,17 +27,23 @@ import {
   readWorkspaces,
   resolveWorkspacePath,
   withWorkspace,
+  workspaceForRoots,
   workspaceId,
   writeWorkspaces,
   type Workspace,
   type WorkspaceProbe,
 } from "../config/workspaces.js";
+import { fold } from "../events/fold.js";
 import { type MissionStore } from "../loop/run.js";
 import { createFileStore } from "../loop/store.js";
+import { saveProfile } from "../memory/profiles.js";
+import { saveMission } from "../memory/savedMission.js";
+import { availableTransports } from "../workers/availability.js";
 import { createMissionRegistry } from "../web/registry.js";
 import { type ClientMessage } from "../web/protocol.js";
-import { startWebServer, type RunningServer } from "../web/server.js";
+import { startWebServer, type Handled, type RunningServer } from "../web/server.js";
 import { createWebHuman, type WebHuman } from "../web/webHuman.js";
+import { resumeMission } from "./resumeCommand.js";
 import { handleFromDashboard, runMission, type RunDeps, type RunOptions } from "./runCommand.js";
 import { type Io } from "./main.js";
 
@@ -79,6 +86,10 @@ export interface ServeDeps {
   /** The mission runner, injectable so the composition root is testable without a
    *  model, a repo, or a worker CLI. Defaults to the real one. */
   run?: typeof runMission;
+  /** The resumer, injectable for the same reason (UI plan U6). A resumed mission is
+   *  the same wiring as a composed one and differs only in where the plan came from,
+   *  so the two are substituted together. */
+  resume?: typeof resumeMission;
   /** The phone mirror, when one is configured (§2, §10). Optional in exactly the
    *  defect-12b sense, which is why the wiring below has its own test: the carrier
    *  delivers, `trust` decides, and no mirror at all is the default. */
@@ -96,7 +107,14 @@ export async function serve(
 ): Promise<number> {
   const registry = createMissionRegistry(config.stateDir, (message) => io.err(message));
   const run = deps.run ?? runMission;
+  const resume = deps.resume ?? resumeMission;
   const now = deps.now ?? (() => new Date());
+
+  // Probed once, at boot: `doctor` reads PATH and the filesystem, and these are facts
+  // about the installation rather than about a mission. Re-running it on every publish
+  // would spend a syscall storm to report a version number that cannot change while
+  // the process is up.
+  const health = { ...doctor(config), transports: availableTransports(config) };
 
   /** One live mission per workspace, keyed by workspace id. */
   const sessions = new Map<string, LiveSession>();
@@ -233,9 +251,7 @@ export async function serve(
     server.publish();
   });
 
-  type Routed = { ok: true } | { ok: false; problem: string };
-
-  const route = async (message: ClientMessage): Promise<Routed> => {
+  const route = async (message: ClientMessage): Promise<Handled> => {
     if (message.kind === "workspace_probe") {
       pending = await probeWorkspace(message.path, config.cwd, config.stateDir, workspaces);
       server.publish();
@@ -310,7 +326,7 @@ export async function serve(
       }
       const runOptions: RunOptions = {
         goal: message.goal,
-        planOnly: false,
+        planOnly: message.planOnly,
         unattended: false,
         force: false,
         web: true,
@@ -328,6 +344,107 @@ export async function serve(
         .catch((error: unknown) => io.err(`mission failed: ${(error as Error).message}`))
         .finally(() => server.publish());
       return { ok: true };
+    }
+
+    // Carry a parked mission on (UI plan U6) — the one capability that made "no
+    // terminal needed" nearly true rather than true. Which directory it runs in is
+    // decided from the mission's own envelope rather than from the message, because a
+    // browser choosing a checkout for work already scoped to one is how a mission gets
+    // resumed in the wrong repo.
+    if (message.kind === "resume") {
+      if (sessionOf(message.missionId)) {
+        return { ok: false, problem: "that mission is already running." };
+      }
+      const events = registry.eventsFor(message.missionId);
+      if (events.length === 0) return { ok: false, problem: `no mission '${message.missionId}'.` };
+
+      const { mission } = fold(events);
+      const roots = await Promise.all(
+        workspaces.map(async (workspace) => {
+          const discovered = await configFor(workspace);
+          return {
+            id: workspace.id,
+            roots: [workspace.path, ...(discovered.repoRoot ? [discovered.repoRoot] : [])],
+          };
+        }),
+      );
+      const targetId = workspaceForRoots(mission.capabilityEnvelope.fsRoots, roots);
+      if (!targetId) {
+        const scope = mission.capabilityEnvelope.fsRoots.join(", ") || "nowhere on this machine";
+        return {
+          ok: false,
+          problem:
+            `mission ${message.missionId} is scoped to ${scope}, which is not a workspace here — ` +
+            `add that directory, or run 'orchestra resume ${message.missionId}' from inside it.`,
+        };
+      }
+      const held = sessions.get(targetId);
+      if (held) {
+        return {
+          ok: false,
+          problem: `mission ${held.missionId} is already running in that directory — one at a time per directory.`,
+        };
+      }
+
+      const workspace = workspaces.find((each) => each.id === targetId)!;
+      const workspaceConfig = await configFor(workspace);
+      // Detached for the same reason a compose is: this returns while the mission runs
+      // for hours, and an unhandled rejection would take the serve process down.
+      void resume(message.missionId, workspaceConfig, io, {
+        createCalls: deps.createCalls,
+        surface: surfaceFor(targetId),
+      })
+        .then((code) => io.out(`mission finished (exit ${code})`))
+        .catch((error: unknown) => io.err(`resume failed: ${(error as Error).message}`))
+        .finally(() => server.publish());
+      return { ok: true, note: `Resuming ${message.missionId} in ${workspace.path}.` };
+    }
+
+    // Procedural memory from the page (§6, §7). Both fold the log rather than reading a
+    // projection, for the reason the CLI does: a projection is derived and safe to
+    // delete, so a profile built off one is a profile a `rm` could silently empty.
+    if (message.kind === "save" || message.kind === "promote") {
+      const events = registry.eventsFor(message.missionId);
+      if (events.length === 0) return { ok: false, problem: `no mission '${message.missionId}'.` };
+      const state = fold(events);
+
+      try {
+        if (message.kind === "save") {
+          const file = saveMission(config.stateDir, message.name, state, now().toISOString());
+          io.out(`Saved ${file}`);
+          return {
+            ok: true,
+            note: `Saved '${message.name}'. Replay it with 'orchestra run --saved ${message.name}'.`,
+          };
+        }
+        const task = state.tasks.find((candidate) => candidate.id === message.taskId);
+        if (!task) {
+          const known = state.tasks.map((candidate) => candidate.id);
+          return {
+            ok: false,
+            problem:
+              known.length === 0
+                ? `mission ${message.missionId} planned no tasks, so there is no agent to promote.`
+                : `no task '${message.taskId}' — promote one of: ${known.join(", ")}.`,
+          };
+        }
+        const file = saveProfile(config.stateDir, {
+          name: message.name,
+          spec: task.agentSpec,
+          promotedFrom: { missionId: message.missionId, taskId: message.taskId },
+          promotedAt: now().toISOString(),
+        });
+        io.out(`Promoted ${task.agentSpec.role} to ${file}`);
+        return {
+          ok: true,
+          note: `Promoted ${task.agentSpec.role} as '${message.name}'. Later missions are offered it as prior art; the envelope still bounds it.`,
+        };
+      } catch (error) {
+        // Every refusal both of these make — a name that is really a path, a mission
+        // nobody signed off — is something a human typed, so it comes back as a
+        // message rather than as a stack trace on the terminal.
+        return { ok: false, problem: (error as Error).message };
+      }
     }
 
     if (message.kind === "forget") {
@@ -406,6 +523,7 @@ export async function serve(
   server = await startWebServer({
     registry,
     workspaces: workspacesFrame,
+    health: () => health,
     onMessage: route,
     onWarn: (message) => io.err(message),
     ...(options.port !== undefined ? { port: options.port } : {}),

@@ -22,7 +22,12 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { type Event } from "../events/schema.js";
 import { BUNDLE_ROUTE, readBundle } from "./assets.js";
 import { shellHtml } from "./shell.html.js";
-import { parseClientMessage, type ClientMessage, type WorkspacesFrame } from "./protocol.js";
+import {
+  parseClientMessage,
+  type ClientMessage,
+  type HealthFrame,
+  type WorkspacesFrame,
+} from "./protocol.js";
 import { type MissionRegistry } from "./registry.js";
 
 /** Never configurable. See the header. */
@@ -64,6 +69,17 @@ export function isAllowedOrigin(origin: string | undefined, port: number): boole
   return LOOPBACK_HOSTS.has(url.hostname) && url.port === String(port);
 }
 
+/**
+ * What a handled message answers with.
+ *
+ * `note` is the acknowledgement half, and it exists because U6 added two decisions
+ * whose whole effect is a file on disk: saving a mission and promoting an agent change
+ * nothing the page folds, so a click that worked and a click that vanished looked
+ * identical. It is a sentence about what happened, never state — the page still folds
+ * events and only events, which is the asymmetry `protocol.ts` explains.
+ */
+export type Handled = { ok: true; note?: string } | { ok: false; problem: string };
+
 export interface WebServerDeps {
   /** Reads the one mission's log — the per-run mode. Injected rather than reading
    *  the file here, so the server has no opinion about where a mission lives and
@@ -76,12 +92,14 @@ export interface WebServerDeps {
    *  alongside the mission listing, because a probe result and a new registration
    *  reach the page the same way an event does. */
   workspaces?(): WorkspacesFrame;
+  /** What `doctor` found on this machine, in serve mode (UI plan U6). Sent once on
+   *  connect rather than on every publish: these are facts about the installation, and
+   *  re-probing PATH forty times a minute would be a cost paid for nothing. */
+  health?(): HealthFrame;
   /** May be async: probing a workspace shells out to git, and the alternative — a
    *  result pushed later on some other frame — would let a client compose against a
    *  directory it was never shown. */
-  onMessage(
-    message: ClientMessage,
-  ): { ok: true } | { ok: false; problem: string } | Promise<{ ok: true } | { ok: false; problem: string }>;
+  onMessage(message: ClientMessage): Handled | Promise<Handled>;
   /** 0 asks the OS for a free one, which is what keeps two missions from colliding. */
   port?: number;
   onWarn?(message: string): void;
@@ -192,6 +210,7 @@ export async function startWebServer(deps: WebServerDeps): Promise<RunningServer
     sockets.set(socket, { seq: 0 });
     if (deps.registry) sendMissions(socket);
     sendWorkspaces(socket);
+    sendHealth(socket);
     pushTo(socket);
 
     socket.on("message", (raw) => {
@@ -224,9 +243,15 @@ export async function startWebServer(deps: WebServerDeps): Promise<RunningServer
       void Promise.resolve(deps.onMessage(parsed.message))
         .catch((error: unknown) => ({ ok: false as const, problem: (error as Error).message }))
         .then((handled) => {
-          if (!handled.ok && socket.readyState === socket.OPEN) {
+          if (socket.readyState !== socket.OPEN) return;
+          if (!handled.ok) {
             socket.send(JSON.stringify({ kind: "rejected", problem: handled.problem }));
+            return;
           }
+          // Only when the handler asked for one: most decisions announce themselves by
+          // the events they cause, and an acknowledgement for those would be a second
+          // way of saying what the log already says.
+          if (handled.note) socket.send(JSON.stringify({ kind: "noted", note: handled.note }));
         });
     });
 
@@ -242,6 +267,11 @@ export async function startWebServer(deps: WebServerDeps): Promise<RunningServer
   function sendWorkspaces(socket: WebSocket): void {
     if (!deps.workspaces || socket.readyState !== socket.OPEN) return;
     socket.send(JSON.stringify({ kind: "workspaces", ...deps.workspaces() }));
+  }
+
+  function sendHealth(socket: WebSocket): void {
+    if (!deps.health || socket.readyState !== socket.OPEN) return;
+    socket.send(JSON.stringify({ kind: "health", ...deps.health() }));
   }
 
   function pushTo(socket: WebSocket): void {

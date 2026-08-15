@@ -384,6 +384,27 @@ export const pageStyle = `
   }
   input:focus-visible, textarea:focus-visible { outline: 2px solid var(--live); outline-offset: 1px; }
 
+  /* A checkbox is not a text field, and the width rule above stretches one across the
+     whole row. Its label is the click target and reads as a control rather than as
+     prose, which is what keeps the plan-only toggle from looking like a caption. */
+  .row > label {
+    display: flex;
+    align-items: center;
+    gap: .45rem;
+    font: 11px/1 var(--mono);
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--ink-2);
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  input[type="checkbox"] {
+    width: auto;
+    flex: none;
+    accent-color: var(--live);
+    cursor: pointer;
+  }
+
   /* ── motion, and the right to switch it off ──────────────── */
 
   @media (prefers-reduced-motion: reduce) {

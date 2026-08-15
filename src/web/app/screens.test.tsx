@@ -323,3 +323,112 @@ describe("criteria", () => {
     assert.ok(!html.includes("✓"));
   });
 });
+
+// ── terminal parity (UI plan U6) ──
+//
+// The failure mode: a capability that exists only as a typed command while the plan
+// claims `orchestra serve` is the only command a person runs. Each of these asserts
+// the *control is drawn*, which is the half no server test can see.
+describe("the mission listing", () => {
+  const mission = (id: string, status: string) => ({ id, goal: `goal of ${id}`, status });
+
+  const drawList = (
+    missions: readonly { id: string; goal: string; status: string }[],
+    live: Readonly<Record<string, string>> = {},
+  ): string =>
+    render(
+      <Home
+        view={viewWith({
+          missions,
+          workspaces: { ...emptyView().workspaces, list: [], live, defaultId: "ws-1" },
+        })}
+        send={noop}
+        onChoose={noop}
+      />,
+    );
+
+  test("offers to resume a mission that is parked, and to keep it", () => {
+    const html = drawList([mission("m-parked", "blocked")]);
+
+    assert.ok(html.includes("resume"), "a parked mission cannot be carried on from here");
+    assert.ok(html.includes("save"), "a finished mission cannot be kept from here");
+  });
+
+  // Two missions in one directory is the thing the cap exists to prevent, so the
+  // button is not offered for a mission that is already running.
+  test("does not offer to resume a mission that is already running", () => {
+    const html = drawList([mission("m-live", "executing")], { "ws-1": "m-live" });
+
+    assert.ok(html.includes("running"));
+    assert.ok(!html.includes(">resume<"), "a live mission was offered a resume button");
+  });
+
+  test("does not offer to resume a mission that is finished", () => {
+    const html = drawList([mission("m-done", "complete")]);
+
+    assert.ok(!html.includes(">resume<"));
+  });
+});
+
+// `doctor`, on the page. What matters is that the transports line reports what this
+// machine can *start* (defect 21) and that a failing check brings its fix with it.
+describe("the health panel", () => {
+  const drawHealth = (health: View["health"]): string =>
+    render(
+      <Home
+        view={viewWith({ missions: [], health })}
+        send={noop}
+        onChoose={noop}
+      />,
+    );
+
+  test("shows each check with the thing to type when it fails", () => {
+    const html = drawHealth({
+      ready: false,
+      checks: [
+        { name: "node", level: "ok", detail: "v22.4.0" },
+        { name: "workers", level: "fail", detail: "no coding agent on PATH", fix: "npm i -g @anthropic-ai/claude-code" },
+      ],
+      transports: ["cli"],
+    });
+
+    assert.ok(html.includes("v22.4.0"));
+    assert.ok(html.includes("no coding agent on PATH"));
+    assert.ok(html.includes("npm i -g @anthropic-ai/claude-code"), "a failing check has no fix beside it");
+    assert.ok(html.includes("cli"), "the transports line is missing");
+  });
+
+  test("says plainly when nothing can be dispatched", () => {
+    const html = drawHealth({ ready: false, checks: [], transports: [] });
+
+    assert.ok(html.includes("nothing can be dispatched"));
+  });
+
+  test("is absent on a per-run server, which has no registry either", () => {
+    const html = render(<Home view={viewWith({ missions: [] })} send={noop} onChoose={noop} />);
+
+    assert.ok(!html.includes("This machine"));
+  });
+});
+
+describe("the plan-only toggle", () => {
+  test("is offered, and it is not a way to skip sign-off", () => {
+    const html = render(
+      <Home
+        view={viewWith({
+          workspaces: {
+            ...emptyView().workspaces,
+            list: [{ id: "ws-1", path: "/Users/dev/ledger", addedAt: "2026-08-14T00:00:00.000Z" }],
+            chosen: "ws-1",
+            defaultId: "ws-1",
+          },
+        })}
+        send={noop}
+        onChoose={noop}
+      />,
+    );
+
+    assert.ok(html.includes("plan only"), "there is no way to ask what a mission would take");
+    assert.ok(!html.includes("unattended"));
+  });
+});

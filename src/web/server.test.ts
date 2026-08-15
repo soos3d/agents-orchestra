@@ -124,6 +124,28 @@ describe("parseClientMessage", () => {
     assert.equal(parseClientMessage('{"kind":"compose","goal":"x","budgetMinutes":-5}').ok, false);
     const composed = parseClientMessage('{"kind":"compose","goal":"x","unattended":true}');
     assert.ok(composed.ok && !("unattended" in composed.message));
+    // Plan-only is a real field and defaults to off, so a compose from an older tab
+    // dispatches work exactly as it always did (U6).
+    const planned = parseClientMessage('{"kind":"compose","goal":"x","planOnly":true}');
+    assert.ok(planned.ok && "planOnly" in planned.message && planned.message.planOnly);
+    const bare = parseClientMessage('{"kind":"compose","goal":"x"}');
+    assert.ok(bare.ok && "planOnly" in bare.message && bare.message.planOnly === false);
+  });
+
+  // The three U6 messages. Each names a mission, and none names a directory: where a
+  // resumed mission runs is the server's to work out from the mission's own envelope.
+  test("accepts resume, save and promote, and refuses the nameless shapes", () => {
+    assert.equal(parseClientMessage('{"kind":"resume","missionId":"m1"}').ok, true);
+    assert.equal(parseClientMessage('{"kind":"save","missionId":"m1","name":"monthly"}').ok, true);
+    assert.equal(
+      parseClientMessage('{"kind":"promote","missionId":"m1","taskId":"t1","name":"reconciler"}').ok,
+      true,
+    );
+    assert.equal(parseClientMessage('{"kind":"resume"}').ok, false);
+    assert.equal(parseClientMessage('{"kind":"save","missionId":"m1","name":"  "}').ok, false);
+    assert.equal(parseClientMessage('{"kind":"promote","missionId":"m1","name":"x"}').ok, false);
+    const resumed = parseClientMessage('{"kind":"resume","missionId":"m1","path":"/etc"}');
+    assert.ok(resumed.ok && !("path" in resumed.message));
   });
 
   test("accepts pause and unpause, scoped or not", () => {
@@ -227,7 +249,7 @@ describe("the server", () => {
     for (const server of running) await server.close();
   });
 
-  type Handled = { ok: true } | { ok: false; problem: string };
+  type Handled = { ok: true; note?: string } | { ok: false; problem: string };
 
   async function serve(events: Event[], onMessage: () => Handled = () => ({ ok: true })) {
     const server = await startWebServer({ events: () => events, onMessage });
@@ -405,6 +427,38 @@ describe("the server", () => {
 
     assert.equal(frame.kind, "rejected");
     assert.match(String(frame.problem), /not JSON/);
+    client.close();
+  });
+
+  // A save and a promote write a file and no event, so without this frame a click
+  // that worked and a click that vanished are the same picture (U6).
+  test("acknowledges a decision whose only effect is a file on disk", async () => {
+    const server = await serve(someEvents(1), () => ({ ok: true as const, note: "Saved 'monthly'." }));
+    const client = await open(server.url);
+    await client.next();
+
+    client.socket.send('{"kind":"approve"}');
+    const frame = await client.next();
+
+    assert.equal(frame.kind, "noted");
+    assert.match(String(frame.note), /Saved 'monthly'/);
+    client.close();
+  });
+
+  // …and stays quiet otherwise: most decisions announce themselves by the events they
+  // cause, and a second way of saying the same thing is a second thing to keep true.
+  test("says nothing back for a decision the log already reports", async () => {
+    const events = someEvents(1);
+    const server = await serve(events);
+    const client = await open(server.url);
+    await client.next();
+
+    client.socket.send('{"kind":"approve"}');
+    events.push(...someEvents(2).slice(1));
+    server.publish();
+    const frame = await client.next();
+
+    assert.equal(frame.kind, "events", "an unremarkable decision sent a frame of its own");
     client.close();
   });
 

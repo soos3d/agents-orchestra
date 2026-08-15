@@ -10,7 +10,7 @@
 // `ClientMessage` is imported as a type, so the schema it comes from is erased at
 // bundle time. The browser sends decisions; zod validates them on the far side.
 import { type Event } from "../../events/schema.js";
-import { type ClientMessage, type WorkspacesFrame } from "../protocol.js";
+import { type ClientMessage, type HealthFrame, type WorkspacesFrame } from "../protocol.js";
 import { type MissionSummary } from "./state.js";
 
 /** What the server can say. It sends events and listings, never rendered state —
@@ -19,7 +19,12 @@ export type ServerFrame =
   | { kind: "events"; events: Event[] }
   | { kind: "missions"; missions: MissionSummary[] }
   | ({ kind: "workspaces" } & WorkspacesFrame)
-  | { kind: "rejected"; problem: string };
+  | ({ kind: "health" } & HealthFrame)
+  | { kind: "rejected"; problem: string }
+  /** A decision whose only effect is a file on disk — saving a mission, promoting an
+   *  agent — saying so. It is a sentence, never state: nothing on the page is folded
+   *  from it. */
+  | { kind: "noted"; note: string };
 
 export interface Wire {
   send(message: ClientMessage): void;

@@ -23,12 +23,19 @@ function App() {
   const [timeline, setTimeline] = useState<readonly string[]>([]);
   const [wire, setWire] = useState<Wire | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+  // The acknowledgement half of `problem` (U6): a save or a promote changes no event
+  // and would otherwise look identical whether it worked or vanished.
+  const [note, setNote] = useState<string | null>(null);
 
   useEffect(() => {
     const socket = connect({
       onFrame: (frame: ServerFrame) => {
         if (frame.kind === "rejected") {
           setProblem(frame.problem);
+          return;
+        }
+        if (frame.kind === "noted") {
+          setNote(frame.note);
           return;
         }
         if (frame.kind === "missions") {
@@ -52,6 +59,15 @@ function App() {
           }));
           return;
         }
+        // What `doctor` found, sent once on connect (U6). Not part of the mission
+        // half of the view, so a stream reset leaves it alone.
+        if (frame.kind === "health") {
+          setView((current) => ({
+            ...current,
+            health: { checks: frame.checks, ready: frame.ready, transports: frame.transports },
+          }));
+          return;
+        }
         // A replay arrives as one frame from seq 0, so the mission half of the view
         // resets when a stream restarts — applying a replay onto a stale view would
         // double every count. `missions` and `watching` are the server's and survive.
@@ -66,6 +82,7 @@ function App() {
 
   const send = (message: ClientMessage): void => {
     setProblem(null);
+    setNote(null);
     // `watch` is the one message that resets the mission view: this tab is about to
     // be streamed a different log from seq 0.
     if (message.kind === "watch") {
@@ -87,6 +104,7 @@ function App() {
         <h1>Mission Control</h1>
         <div class="bar" />
         {problem ? <div class="card warn">{problem}</div> : null}
+        {note ? <div class="card">{note}</div> : null}
         <Home
           view={view}
           send={send}
@@ -115,6 +133,7 @@ function App() {
       </div>
 
       {problem ? <div class="card warn">{problem}</div> : null}
+      {note ? <div class="card">{note}</div> : null}
 
       {view.missions !== null ? (
         <div class="row">

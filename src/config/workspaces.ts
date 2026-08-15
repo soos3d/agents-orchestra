@@ -207,6 +207,36 @@ export function withWorkspace(
     : workspaces.concat([workspace]);
 }
 
+/** A registered directory, and the filesystem roots a mission composed in it would
+ *  have been scoped to: the directory itself, and its repo root when it has one. */
+export interface WorkspaceRoots {
+  id: string;
+  roots: readonly string[];
+}
+
+/**
+ * Which workspace a mission belongs to, decided from the mission's own log (UI plan
+ * U6).
+ *
+ * Resuming from the browser needs a directory, and the log does not record one: it
+ * records the envelope, whose `fsRoots` is the repo root or the cwd the mission was
+ * composed against (`defaultEnvelope`). That is a fact a human approved rather than a
+ * field this feature invented, so it is what the match is made on — no event type
+ * changes, and a mission written by an older version resolves the same way.
+ *
+ * Returning `undefined` is a real answer and the caller must refuse rather than guess:
+ * a mission scoped to a directory this serve process has never been shown would
+ * otherwise be resumed in the wrong checkout, which is the one mistake worse than
+ * making somebody open a terminal.
+ */
+export function workspaceForRoots(
+  fsRoots: readonly string[],
+  candidates: readonly WorkspaceRoots[],
+): string | undefined {
+  const wanted = new Set(fsRoots);
+  return candidates.find((candidate) => candidate.roots.some((root) => wanted.has(root)))?.id;
+}
+
 /**
  * The config a mission in this workspace runs under.
  *

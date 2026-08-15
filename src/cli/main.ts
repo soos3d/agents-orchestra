@@ -8,18 +8,12 @@ import { doctor, formatReport } from "../config/doctor.js";
 import { ensureGitignored, ensurePrivateDir, forgetMission } from "../config/hygiene.js";
 import { createEventLog } from "../events/log.js";
 import { fold } from "../events/fold.js";
-import { writeProjections } from "../events/projections.js";
-import { pruneOrphanWorktrees } from "../git/worktree.js";
-import { hasCommitsSince } from "../git/repo.js";
-import { liveWorktrees, reconcileOrphans } from "../runtime/resume.js";
-import { isCodeTask, type Task } from "../domain/task.js";
 import { createAgentCalls } from "../loop/agentCalls.js";
 import { type HumanPort } from "../loop/human.js";
 import { resilientCalls, type ResilientCallsDeps } from "../loop/resilience.js";
-import { createFileStore } from "../loop/store.js";
 import { saveProfile } from "../memory/profiles.js";
 import { saveMission } from "../memory/savedMission.js";
-import { executeMission } from "./execute.js";
+import { resumeMission } from "./resumeCommand.js";
 import { parseRunArgs, runMission, type RunDeps } from "./runCommand.js";
 import { parseServeArgs, serve } from "./serveCommand.js";
 import { createStdinPrompter, createTerminalHuman } from "./terminal.js";
@@ -65,86 +59,6 @@ function assertHygiene(config: DiscoveredConfig, io: Io): void {
   if (result.added) {
     io.err(`Added ${result.entry} to ${path.relative(config.repoRoot, result.file)}.`);
   }
-}
-
-/** Replay, reconcile, then carry on. The reconciliation half is deliberately kept
- *  separate from the continuation: what to do next is a pure function of the state it
- *  rebuilds (`continuationFor`), and rebuilding is worth reporting even when nothing
- *  can be continued. */
-async function resume(
-  missionId: string,
-  config: DiscoveredConfig,
-  io: Io,
-  createCalls: RunDeps["createCalls"],
-  human?: HumanPort,
-): Promise<number> {
-  const dir = missionDir(config.stateDir, missionId);
-  const log = createEventLog(dir);
-  const events = log.read();
-
-  if (events.length === 0) {
-    io.err(`No mission '${missionId}' under ${config.stateDir}.`);
-    return 1;
-  }
-
-  const state = fold(events);
-  const repo = config.repoRoot;
-
-  const { decisions, events: recorded } = await reconcileOrphans(state, {
-    hasCommits: async (task: Task) => {
-      if (!repo || !isCodeTask(task) || !task.worktree) return false;
-      return hasCommitsSince(task.worktree, task.branch).catch(() => false);
-    },
-  });
-
-  log.appendAll(recorded);
-
-  // Typing `resume` is the act that lifts a pause: the flag exists so the *loop*
-  // does not carry on, and a human explicitly asking it to carry on is the answer
-  // the flag was waiting for. Without this, a paused mission resumes straight back
-  // into the park it was just resumed from.
-  if (fold(log.read()).paused) {
-    log.append({ type: "pause_lifted", missionId, actor: "human", by: "resume" });
-  }
-
-  const resumed = fold(log.read());
-  writeProjections(dir, resumed);
-
-  if (repo) {
-    const pruned = await pruneOrphanWorktrees(repo, config.worktreeRoot, liveWorktrees(resumed));
-    for (const removed of pruned.removed) io.out(`pruned orphan worktree ${removed}`);
-  }
-
-  io.out(`${missionId}: ${resumed.mission.status}, round ${resumed.mission.round}`);
-  for (const decision of decisions) {
-    io.out(`  ${decision.taskId}: ${decision.from} → ${decision.to} — ${decision.action}`);
-  }
-  if (decisions.length === 0) io.out("  no orphaned tasks");
-  io.out("");
-
-  // The store re-reads the log it was just written to, so the loop runs against the
-  // reconciled state rather than the one this function folded a moment ago.
-  const store = createFileStore(dir);
-  const { code } = await executeMission({
-    store,
-    config,
-    io,
-    // A resumed mission may be sitting at its own sign-off, so resume needs the same
-    // port `run` has — that is the whole reason a mission left overnight is still
-    // approvable rather than merely still on disk.
-    ...(human ? { human } : {}),
-    calls: () =>
-      createCalls(config, (spend) =>
-        store.emit({
-          type: "spend_recorded",
-          missionId,
-          actor: "orchestrator",
-          phase: "orchestration",
-          spend,
-        }),
-      ),
-  });
-  return code;
 }
 
 /**
@@ -321,7 +235,7 @@ export async function main(
         return 1;
       }
       assertHygiene(config, io);
-      return finish(await resume(missionId, config, io, createCalls, human));
+      return finish(await resumeMission(missionId, config, io, { createCalls, human }));
     }
 
     case "run": {

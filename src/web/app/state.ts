@@ -25,6 +25,7 @@ import {
 } from "../../domain/ledger.js";
 import { type Estimate } from "../../domain/mission.js";
 import { type Task } from "../../domain/task.js";
+import { type HealthFrame } from "../protocol.js";
 
 /** An inbox card. `id` is present only where the card can be answered — a gate has
  *  no reply box here, and an intake question is answered on its own screen. */
@@ -78,6 +79,9 @@ export interface View {
   /** Which mission this tab is streaming, under serve. */
   watching: string | null;
   workspaces: WorkspaceView;
+  /** What `doctor` found (UI plan U6). `null` until the frame arrives, and forever on
+   *  a per-run server — the machine was already checked before that mission started. */
+  health: HealthFrame | null;
 
   goal: string;
   status: string;
@@ -121,7 +125,10 @@ export const emptyWorkspaces = (): WorkspaceView => ({
   chosen: null,
 });
 
-export const emptyMission = (): Omit<View, "missions" | "watching" | "workspaces"> => ({
+export const emptyMission = (): Omit<
+  View,
+  "missions" | "watching" | "workspaces" | "health"
+> => ({
   goal: "",
   status: "",
   scanned: false,
@@ -151,6 +158,7 @@ export const emptyView = (): View => ({
   missions: null,
   watching: null,
   workspaces: emptyWorkspaces(),
+  health: null,
   ...emptyMission(),
 });
 

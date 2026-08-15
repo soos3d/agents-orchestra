@@ -15,6 +15,7 @@
 //
 // So the browser sends decisions, never state.
 import { z } from "zod";
+import { type Check } from "../config/doctor.js";
 import { type Workspace, type WorkspaceProbe } from "../config/workspaces.js";
 
 /**
@@ -34,6 +35,24 @@ export interface WorkspacesFrame {
   live: Readonly<Record<string, string>>;
   /** The workspace `compose` targets when it names none: where serve was launched. */
   defaultId: string;
+}
+
+/**
+ * What `orchestra doctor` reports, on the page (UI plan U6).
+ *
+ * The same `doctor(config)` the command prints, so the browser and the terminal cannot
+ * disagree about whether this machine is ready. `transports` is deliberately
+ * `availableTransports` and not the built registry — offering a transport this machine
+ * cannot start is defect 21, and a health panel that repeated the build's list would
+ * reintroduce it as a display.
+ *
+ * Facts about the machine, never a view of a mission — which is what keeps it on the
+ * right side of this file's asymmetry.
+ */
+export interface HealthFrame {
+  checks: readonly Check[];
+  ready: boolean;
+  transports: readonly string[];
 }
 
 export const clientMessageSchema = z.discriminatedUnion("kind", [
@@ -92,10 +111,38 @@ export const clientMessageSchema = z.discriminatedUnion("kind", [
     // browser-typed string in front of a process that spawns shells, and the shape is
     // where that is prevented. Absent means the directory serve was launched in.
     workspaceId: z.string().min(1).optional(),
+    // Research, spec, plan, estimate — then stop, dispatching nothing (UI plan U6).
+    // The CI flag, offered as a toggle because "show me what it would do" is the
+    // question a person asks before their first real mission in a directory.
+    planOnly: z.boolean().default(false),
     // Deliberately no `unattended` field: skipping sign-off stays a typed CLI flag
     // (§17 — the habitual-default risk), and the compose screen never offers it.
   }),
   z.object({ kind: z.literal("forget"), missionId: z.string().min(1) }),
+
+  // Carry a parked mission on (UI plan U6). Distinct from `unpause`, which only lifts
+  // a flag on a mission whose loop is still running: this one has no loop at all, and
+  // starting it is what `orchestra resume` does from a terminal. Which directory it
+  // runs in is the server's to decide from the mission's own envelope — a resume that
+  // named a workspace would be a browser choosing a checkout for work already scoped
+  // to one.
+  z.object({ kind: z.literal("resume"), missionId: z.string().min(1) }),
+
+  // Procedural memory (§6, §7), from the page: keep a finished mission to replay, or
+  // keep one task's synthesized agent as prior art. Both are the exact mechanisms
+  // `orchestra save` and `orchestra promote` use, and both stay human-initiated —
+  // nothing in the loop sends either.
+  z.object({
+    kind: z.literal("save"),
+    missionId: z.string().min(1),
+    name: z.string().trim().min(1),
+  }),
+  z.object({
+    kind: z.literal("promote"),
+    missionId: z.string().min(1),
+    taskId: z.string().min(1),
+    name: z.string().trim().min(1),
+  }),
 
   // ── workspaces (UI plan U4) ──
   //

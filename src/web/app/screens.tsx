@@ -14,7 +14,7 @@
 // Artifacts still render *metadata only* — kind, path, summary, counts. Serving file
 // contents would put a disk-reading route on the approval surface, and that trade is
 // still not taken here (§17).
-import { type ComponentChildren } from "preact";
+import { Fragment, type ComponentChildren } from "preact";
 import { type WorkspaceProbe } from "../../config/workspaces.js";
 import { type Artifact } from "../../domain/artifacts.js";
 import { type Criterion } from "../../domain/ledger.js";
@@ -483,11 +483,22 @@ const artifactLine = (artifact: Artifact): string => {
   return `${artifact.kind} · ${artifact.path}${caption ? ` · ${caption}` : ""}`;
 };
 
-function Why({ view, onSelect }: { view: View; onSelect: (id: string | null) => void }) {
+function Why({
+  view,
+  send,
+  onSelect,
+}: {
+  view: View;
+  send: Send;
+  onSelect: (id: string | null) => void;
+}) {
   const task = view.selected ? view.tasks.get(view.selected) : undefined;
   if (!task) return null;
 
   const produced = view.artifacts.filter((written) => written.taskId === task.id);
+  // Promotion is addressed by mission id, which only a serve dashboard has: a per-run
+  // server holds one mission and refuses the message, so the row is not offered there.
+  const missionId = view.watching;
 
   return (
     <>
@@ -548,6 +559,26 @@ function Why({ view, onSelect }: { view: View; onSelect: (id: string | null) => 
             </>
           ) : null}
         </dl>
+        {/* Promote this task's synthesized agent to procedural memory (§6, §7, U6).
+            Here rather than on the board, because a role worth keeping is one somebody
+            watched do the work — and this is the panel they were reading while it did.
+            Human-initiated by design: nothing in the loop sends this. */}
+        {missionId ? (
+          <div class="row">
+            <input class="promote-name" data-task={task.id} placeholder="keep this agent as…" />
+            <button
+              onClick={() => {
+                const box = document.querySelector<HTMLInputElement>(
+                  `input.promote-name[data-task="${task.id}"]`,
+                );
+                const name = box?.value.trim();
+                if (name) send({ kind: "promote", missionId, taskId: task.id, name });
+              }}
+            >
+              promote
+            </button>
+          </div>
+        ) : null}
         <div class="row">
           <button onClick={() => onSelect(null)}>close</button>
         </div>
@@ -653,6 +684,63 @@ function Workspaces({ view, send, onChoose }: { view: View; send: Send; onChoose
   );
 }
 
+/**
+ * `orchestra doctor`, on the page (UI plan U6).
+ *
+ * The same report the command prints, so the two cannot disagree about whether this
+ * machine is ready — and the transports line is what this machine can *start*, never
+ * the list the build ships (defect 21). Every line carries its fix, because a check
+ * that cannot tell you what to type next has not helped (§2a rule 5).
+ */
+function Health({ view }: { view: View }) {
+  const health = view.health;
+  if (!health) return null;
+
+  return (
+    <>
+      <h2>This machine {health.ready ? "" : "— not ready"}</h2>
+      <div class={`card${health.ready ? "" : " warn"}`}>
+        <dl class="why">
+          {health.checks.map((check) => (
+            // A keyed `Fragment` rather than `<>`: the pair is one row of the list and
+            // Preact keys the outermost node of a mapped item, which here is neither
+            // the `dt` nor the `dd`.
+            <Fragment key={check.name}>
+              <dt>
+                <span class={check.level === "ok" ? "ok" : check.level === "warn" ? "quiet" : "bad"}>
+                  {check.level === "ok" ? "✓" : check.level === "warn" ? "!" : "✗"}
+                </span>{" "}
+                {check.name}
+              </dt>
+              <dd>
+                {check.detail}
+                {check.fix ? (
+                  <>
+                    <br />
+                    <span class="quiet mono">→ {check.fix}</span>
+                  </>
+                ) : null}
+              </dd>
+            </Fragment>
+          ))}
+          <dt>transports</dt>
+          <dd>
+            {health.transports.length > 0
+              ? health.transports.join(", ")
+              : "none — no worker CLI on PATH, so nothing can be dispatched"}
+          </dd>
+        </dl>
+      </div>
+    </>
+  );
+}
+
+/** Statuses a mission cannot be carried on from. Everything else is parked at
+ *  something — a question, a pause, a decision point that would not answer — and
+ *  resume is what lifts it. The page only decides whether to *offer* the button; the
+ *  server decides whether it runs, and refuses with a reason. */
+const FINISHED = ["complete", "abandoned"];
+
 /** §13's compose card, minus the envelope editor: a composed mission gets the default
  *  envelope, and widening it stays a deliberate act elsewhere. No unattended toggle
  *  either — skipping sign-off is a typed CLI flag (§17). */
@@ -675,18 +763,25 @@ function Home({ view, send, onChoose }: { view: View; send: Send; onChoose: Choo
         />
         <div class="row">
           <input id="compose-budget" type="number" min="1" placeholder="budget minutes (240)" />
+          {/* Research, spec, plan, estimate — then stop (U6). Not `--unattended`,
+              which appears nowhere here and stays a flag somebody has to type. */}
+          <label for="compose-plan-only">
+            <input id="compose-plan-only" type="checkbox" /> plan only — dispatch nothing
+          </label>
           <button
             class="primary"
             disabled={busy !== undefined}
             onClick={() => {
               const goalBox = document.getElementById("compose-goal") as HTMLTextAreaElement | null;
               const budgetBox = document.getElementById("compose-budget") as HTMLInputElement | null;
+              const planBox = document.getElementById("compose-plan-only") as HTMLInputElement | null;
               const goal = goalBox?.value.trim();
               if (!goal) return;
               const budget = Number(budgetBox?.value);
               send({
                 kind: "compose",
                 goal,
+                planOnly: planBox?.checked === true,
                 // The one value that comes from the page's own state, and it is the
                 // id of the workspace row that was clicked — the stated exception to
                 // the containment rule, and an id rather than a path by design.
@@ -705,21 +800,55 @@ function Home({ view, send, onChoose }: { view: View; send: Send; onChoose: Choo
 
       <h2>Missions</h2>
       {view.missions && view.missions.length > 0 ? (
-        view.missions.map((mission) => (
-          <div class="card" key={mission.id}>
-            <strong>{mission.goal}</strong>
-            <div class="quiet mono">
-              {mission.id} · {mission.status}
+        view.missions.map((mission) => {
+          const running = Object.values(live).includes(mission.id);
+          return (
+            <div class="card" key={mission.id}>
+              <strong>{mission.goal}</strong>
+              <div class="quiet mono">
+                {mission.id} · {mission.status}
+                {running ? " · running" : ""}
+              </div>
+              <div class="row">
+                <button onClick={() => send({ kind: "watch", missionId: mission.id })}>watch</button>
+                {/* The mission that was parked overnight, carried on from the browser
+                    (U6). Which directory it runs in is the server's to work out from
+                    the mission's own envelope — this button names only the mission. */}
+                {!running && !FINISHED.includes(mission.status) ? (
+                  <button onClick={() => send({ kind: "resume", missionId: mission.id })}>
+                    resume
+                  </button>
+                ) : null}
+                <button onClick={() => send({ kind: "forget", missionId: mission.id })}>
+                  forget
+                </button>
+              </div>
+              <div class="row">
+                <input
+                  class="save-name"
+                  data-mission={mission.id}
+                  placeholder="keep it as… (a name to replay)"
+                />
+                <button
+                  onClick={() => {
+                    const box = document.querySelector<HTMLInputElement>(
+                      `input.save-name[data-mission="${mission.id}"]`,
+                    );
+                    const name = box?.value.trim();
+                    if (name) send({ kind: "save", missionId: mission.id, name });
+                  }}
+                >
+                  save
+                </button>
+              </div>
             </div>
-            <div class="row">
-              <button onClick={() => send({ kind: "watch", missionId: mission.id })}>watch</button>
-              <button onClick={() => send({ kind: "forget", missionId: mission.id })}>forget</button>
-            </div>
-          </div>
-        ))
+          );
+        })
       ) : (
         <p class="quiet">none yet</p>
       )}
+
+      <Health view={view} />
     </>
   );
 }
@@ -770,7 +899,7 @@ export function Screen({ view, send, onSelect }: ScreenProps) {
       <Strip view={view} />
       <Criteria criteria={view.criteria} />
       <Board view={view} onSelect={onSelect} />
-      <Why view={view} onSelect={onSelect} />
+      <Why view={view} send={send} onSelect={onSelect} />
       <Inbox view={view} send={send} />
     </>
   );

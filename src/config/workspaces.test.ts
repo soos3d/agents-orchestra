@@ -21,6 +21,7 @@ import {
   readWorkspaces,
   resolveWorkspacePath,
   withWorkspace,
+  workspaceForRoots,
   workspaceId,
   writeWorkspaces,
   WORKSPACES_FILE,
@@ -221,5 +222,35 @@ describe("configForWorkspace", () => {
 
     assert.equal(config.repoRoot, undefined);
     assert.equal(config.verify, undefined);
+  });
+});
+
+// The failure mode: a mission resumed from the browser running in the wrong checkout.
+//
+// A mission's log records no directory — it records the envelope, whose `fsRoots` is
+// what the mission was scoped to. Matching on that is what lets `serve` resume without
+// an event-union change, and the case that must never be guessed at is the one with no
+// match: resuming a mission in a directory nobody chose is worse than making somebody
+// open a terminal.
+describe("workspaceForRoots", () => {
+  const candidates = [
+    { id: "ws-a", roots: ["/work/ledger"] },
+    { id: "ws-b", roots: ["/work/site/docs", "/work/site"] },
+  ];
+
+  test("matches a mission scoped to a workspace's own directory", () => {
+    assert.equal(workspaceForRoots(["/work/ledger"], candidates), "ws-a");
+  });
+
+  // A workspace inside a repo is scoped to the repo root, not to the directory that
+  // was added — `defaultEnvelope` writes `repoRoot ?? cwd`, so both have to match.
+  test("matches a mission scoped to the workspace's repo root", () => {
+    assert.equal(workspaceForRoots(["/work/site"], candidates), "ws-b");
+  });
+
+  test("no match is an answer, not a default", () => {
+    assert.equal(workspaceForRoots(["/somewhere/else"], candidates), undefined);
+    assert.equal(workspaceForRoots([], candidates), undefined);
+    assert.equal(workspaceForRoots(["/work/ledger"], []), undefined);
   });
 });

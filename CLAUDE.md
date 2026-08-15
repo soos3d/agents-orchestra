@@ -68,13 +68,18 @@ blocks on a person. The terminal (`cli/terminal.ts`), the dashboard (`web/webHum
 `unattendedHuman` all implement it, and `anyOf` lets a decision arrive from whichever surface answers
 first. `prepareMission` cannot tell them apart, which is the point.
 
+**`orchestra serve` is now the only command a normal run needs** (UI plan U6). Resume, save,
+promote, a `doctor` panel and a plan-only toggle are all on the page; `--unattended` is not, and
+`screens.test.tsx` asserts it. `cli/resumeCommand.ts` is the reconciliation and the continuation,
+extracted from `main.ts` so the terminal and the browser reach them by one path — the difference is
+the optional `RunSurface`, exactly as in `runMission`.
+
 `ask_human` now parks exactly its `blocks` tasks — in the *fold*, deliberately, because the answer
 may arrive when no loop is running and resume can only lift what the fold recorded. A worker
 reporting `blocked` raises the question; the inbox answers it; `question_answered` returns the task
 to `waiting`, where the scheduler owns the promotion. Pause works the same way: a folded flag the
-loop parks on, lifted by `orchestra resume`. Still open after Phase 6: kill-task, serve-side resume
-of a parked mission, the retention sweep, artifact content serving, envelope editing on compose, and
-the concrete OpenClaw carrier; panic still has no browser session to close until Phase 8.
+loop parks on, lifted by `orchestra resume`. Still open after Phase 6: kill-task, the retention sweep,
+artifact content serving, envelope editing on compose, and the concrete OpenClaw carrier; panic still has no browser session to close until Phase 8.
 
 **The design docs are authoritative, and they are not in this repository.** `specs.md` (§0–§17),
 `ROADMAP.md` (phases, milestone checklist, the numbered defect table), `NEXT-PLAN.md` (execution
@@ -212,6 +217,20 @@ folded state — which is what makes the whole loop assertable against a canned 
   erases zod entirely — `grep zod dist/web/app.js` returns nothing, and it should stay that way.
   No `send()` argument may derive from the page's own fold — the one exception is the id of the
   element that was clicked, which is why every outbound message lives in `web/app/wire.ts`.
+- **A resumed mission's directory is decided from its envelope, never from the message.** A
+  mission's log records no workspace; `mission_created`'s envelope records `fsRoots`, which is the
+  repo root or cwd it was scoped to. `workspaceForRoots` (`config/workspaces.ts`) matches on that,
+  so serve-side resume needed no event-union change and an older log resolves the same way. **No
+  match is a refusal** naming the directory and `orchestra resume <id>` — a browser choosing a
+  checkout for work already scoped to one is how a mission gets resumed in the wrong repo.
+- **A composed `--plan-only` mission still gets the dashboard, and a terminal one still does not.**
+  Plan-only runs intake, so under `serve` a mission with no port would ask its three questions into
+  a process nobody is attached to and sit there until the budget ran out. From a terminal it prints
+  and exits, and CI has no browser.
+- **`noted` is the acknowledgement half of `rejected`** (`web/server.ts` `Handled`). Save and
+  promote write a file and no event, so without it a click that worked and a click that vanished
+  were the same picture. It is a sentence and never state — the page still folds events and only
+  events. Handlers opt in: most decisions announce themselves through the log.
 - **`npm run dev` will serve a stale or missing bundle.** `tsx` runs the server from source but the
   page is whatever `dist/web/app.js` last held, so run `npm run build:web -- --watch` alongside it.
   A missing bundle answers 503 with the command to type rather than 404ing into a blank page

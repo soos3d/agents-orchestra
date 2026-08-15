@@ -19,8 +19,8 @@ import { type DiscoveredConfig } from "../config/discover.js";
 import { fold } from "../events/fold.js";
 import { createEventLog } from "../events/log.js";
 import { createFileStore } from "../loop/store.js";
-import { aCodeTask, missionCreated } from "../testing/fixtures.js";
-import { type WorkspacesFrame } from "../web/protocol.js";
+import { aCodeTask, anEnvelope, missionCreated } from "../testing/fixtures.js";
+import { type HealthFrame, type WorkspacesFrame } from "../web/protocol.js";
 import { createWebHuman } from "../web/webHuman.js";
 import { workspaceId } from "../config/workspaces.js";
 import { type Io } from "./main.js";
@@ -87,6 +87,11 @@ describe("serve", () => {
     next(): Promise<Record<string, unknown>>;
     /** The next workspace listing. */
     nextWorkspaces(): Promise<WorkspacesFrame>;
+    /** The doctor report, sent once on connect (U6). Kept out of `next()` for the
+     *  reason the workspace listing is: a frame that rides the connection is not a
+     *  reply to anything, and threading it through the queue would make every
+     *  assertion about frame order a test of what the server volunteers. */
+    nextHealth(): Promise<HealthFrame>;
     /** The next frame that is neither listing — a refusal, or an event push. Every
      *  publish carries a mission listing, so waiting for a rejection means skipping
      *  however many of those happened to land first. */
@@ -127,12 +132,20 @@ describe("serve", () => {
     const waiting: ((frame: Record<string, unknown>) => void)[] = [];
     const bufferedWorkspaces: WorkspacesFrame[] = [];
     const waitingWorkspaces: ((frame: WorkspacesFrame) => void)[] = [];
+    const bufferedHealth: HealthFrame[] = [];
+    const waitingHealth: ((frame: HealthFrame) => void)[] = [];
     socket.on("message", (raw) => {
       const frame = JSON.parse(raw.toString());
       if (frame.kind === "workspaces") {
         const next = waitingWorkspaces.shift();
         if (next) next(frame as WorkspacesFrame);
         else bufferedWorkspaces.push(frame as WorkspacesFrame);
+        return;
+      }
+      if (frame.kind === "health") {
+        const next = waitingHealth.shift();
+        if (next) next(frame as HealthFrame);
+        else bufferedHealth.push(frame as HealthFrame);
         return;
       }
       const next = waiting.shift();
@@ -165,6 +178,12 @@ describe("serve", () => {
           const ready = bufferedWorkspaces.shift();
           if (ready) settle(ready);
           else waitingWorkspaces.push(settle);
+        }),
+      nextHealth: () =>
+        new Promise<HealthFrame>((settle) => {
+          const ready = bufferedHealth.shift();
+          if (ready) settle(ready);
+          else waitingHealth.push(settle);
         }),
       runs,
     };
@@ -520,6 +539,164 @@ describe("serve", () => {
 
     assert.equal(refused.kind, "rejected");
     assert.match(String(refused.problem), /no workspace/);
+  });
+
+  // ── terminal parity (UI plan U6) ──
+  //
+  // The point of these is that the browser can now do what only a typed command could,
+  // and the risk they cover is the one U4 introduced: a mission is resumed *somewhere*,
+  // and nothing in the message says where. The directory comes from the mission's own
+  // envelope, and a mission scoped to a directory this process was never shown is
+  // refused rather than run in the launch directory by default.
+
+  /** A parked mission scoped to `root` — what `defaultEnvelope` writes for a mission
+   *  composed in that workspace. */
+  function seedScopedMission(stateDir: string, missionId: string, root: string): void {
+    const store = createFileStore(path.join(stateDir, "missions", missionId));
+    store.emit(missionCreated({ missionId, envelope: anEnvelope({ fsRoots: [root] }) }));
+    store.emit({ missionId, actor: "human", type: "signoff_granted", unattended: false });
+    store.emit({
+      missionId,
+      actor: "orchestrator",
+      type: "task_planned",
+      task: aCodeTask({ missionId }),
+    });
+  }
+
+  test("a parked mission is resumed in the workspace its envelope names", async () => {
+    const config = scratchConfig();
+    const launch = fs.realpathSync(config.cwd);
+    seedScopedMission(config.stateDir, "m-parked", launch);
+
+    const resumed: { missionId: string; cwd: string }[] = [];
+    let release = () => {};
+    const client = await boot(config, undefined, {
+      resume: async (missionId, resumeConfig, _io, deps) => {
+        resumed.push({ missionId, cwd: resumeConfig.cwd });
+        deps.surface!.register(missionId, {
+          human: createWebHuman(),
+          store: { emit: () => {}, state: () => { throw new Error("unused"); } },
+          onPanic: () => {},
+        });
+        await new Promise<void>((resolve) => { release = resolve; });
+        deps.surface!.release(missionId);
+        return 0;
+      },
+    });
+    await client.next(); // the listing
+
+    client.send({ kind: "resume", missionId: "m-parked" });
+    const started = await client.nextDecision();
+    assert.equal(started.kind, "noted");
+    assert.match(String(started.note), /Resuming m-parked/);
+    // Compared through `realpathSync`, the macOS `/var` vs `/private/var` rule: the
+    // launch workspace's *path* is resolved and its discovered config's `cwd` is the
+    // one the process was started with, which are two spellings of one directory.
+    assert.equal(resumed.length, 1);
+    assert.equal(resumed[0]?.missionId, "m-parked");
+    assert.equal(fs.realpathSync(resumed[0]!.cwd), launch);
+
+    // It holds the workspace while it runs, so a compose into the same directory is
+    // refused by the same cap a second compose is — resume is not a way around it.
+    client.send({ kind: "compose", goal: "in the same directory" });
+    const refusedCompose = await client.nextDecision();
+    assert.equal(refusedCompose.kind, "rejected");
+    assert.match(String(refusedCompose.problem), /one at a time per directory/);
+
+    client.send({ kind: "resume", missionId: "m-parked" });
+    const refusedResume = await client.nextDecision();
+    assert.equal(refusedResume.kind, "rejected");
+    assert.match(String(refusedResume.problem), /already running/);
+    assert.equal(resumed.length, 1);
+
+    release();
+  });
+
+  test("a mission scoped to a directory this server was never shown is refused, with the command that works", async () => {
+    const config = scratchConfig();
+    // `seedParkedMission`'s envelope names /repo, which is nobody's workspace here.
+    seedParkedMission(config.stateDir, "m-elsewhere");
+
+    const resumed: string[] = [];
+    const client = await boot(config, undefined, {
+      resume: async (missionId) => {
+        resumed.push(missionId);
+        return 0;
+      },
+    });
+    await client.next();
+
+    client.send({ kind: "resume", missionId: "m-elsewhere" });
+    const refused = await client.nextDecision();
+
+    assert.equal(refused.kind, "rejected");
+    assert.match(String(refused.problem), /\/repo/);
+    assert.match(String(refused.problem), /orchestra resume m-elsewhere/);
+    assert.deepEqual(resumed, [], "a mission was resumed in a directory nobody chose");
+
+    client.send({ kind: "resume", missionId: "no-such-mission" });
+    const unknown = await client.nextDecision();
+    assert.equal(unknown.kind, "rejected");
+    assert.match(String(unknown.problem), /no mission/);
+  });
+
+  test("save and promote reach procedural memory, and a name that is a path does not", async () => {
+    const config = scratchConfig();
+    seedScopedMission(config.stateDir, "m-done", fs.realpathSync(config.cwd));
+
+    const client = await boot(config);
+    await client.next();
+
+    // Both are acknowledged, and that is not a nicety: neither writes an event, so a
+    // click that worked and a click that vanished are the same picture without it.
+    client.send({ kind: "save", missionId: "m-done", name: "monthly-reconcile" });
+    const saved = await client.nextDecision();
+    assert.equal(saved.kind, "noted");
+    assert.match(String(saved.note), /monthly-reconcile/);
+    assert.ok(fs.existsSync(path.join(config.stateDir, "saved", "monthly-reconcile.md")));
+
+    client.send({ kind: "promote", missionId: "m-done", taskId: "t1", name: "reconciler" });
+    const promoted = await client.nextDecision();
+    assert.equal(promoted.kind, "noted");
+    assert.ok(fs.existsSync(path.join(config.stateDir, "profiles", "reconciler.md")));
+
+    // The refusals are the memory layer's own, reported rather than thrown: both of
+    // these are things a human typed into a box.
+    client.send({ kind: "promote", missionId: "m-done", taskId: "t9", name: "whoever" });
+    const noTask = await client.nextDecision();
+    assert.equal(noTask.kind, "rejected");
+    assert.match(String(noTask.problem), /t1/);
+
+    client.send({ kind: "save", missionId: "m-done", name: "../escape" });
+    const escape = await client.nextDecision();
+    assert.equal(escape.kind, "rejected");
+    assert.match(String(escape.problem), /name/);
+  });
+
+  test("plan-only rides the compose through, and unattended has no way in", async () => {
+    const config = scratchConfig();
+    const client = await boot(config);
+    await client.next();
+
+    client.send({ kind: "compose", goal: "what would this take?", planOnly: true });
+    await client.next();
+
+    assert.equal(client.runs[0]?.planOnly, true);
+    // The one flag the page may never set, whatever it sends (§17).
+    assert.equal(client.runs[0]?.unattended, false);
+  });
+
+  test("the doctor report reaches the page, and names what this machine can start", async () => {
+    const config = scratchConfig();
+    const client = await boot(config);
+
+    const health = await client.nextHealth();
+
+    assert.ok(health.checks.some((check) => check.name === "node"));
+    // No agents on PATH in this config, so nothing can be dispatched — the transports
+    // line is `availableTransports`, never the registry the build ships (defect 21).
+    assert.deepEqual(health.transports, []);
+    assert.equal(health.ready, false);
   });
 
   test("a runner that rejects does not take the serve process down", async () => {

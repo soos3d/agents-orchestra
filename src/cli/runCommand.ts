@@ -280,9 +280,18 @@ export async function runMission(
   // looked at the plan.
   const attended = !options.unattended;
 
-  // No dashboard for `--plan-only`: it prints and exits, so a port nobody can reach
-  // in time is a port for nothing. It is the CI mode, and CI has no browser.
-  const web = attended && options.web && !options.planOnly ? createWebHuman() : undefined;
+  // No dashboard for `--plan-only` from a terminal: it prints and exits, so a port
+  // nobody can reach in time is a port for nothing. It is the CI mode, and CI has no
+  // browser.
+  //
+  // A *composed* plan-only mission is the opposite case and the exception is not a
+  // convenience (UI plan U6): the port already exists, and plan-only still runs intake
+  // — so a mission with no port would ask its three questions into a process nobody is
+  // attached to and hang there until the budget ran out.
+  const web =
+    attended && options.web && (!options.planOnly || deps.surface !== undefined)
+      ? createWebHuman()
+      : undefined;
 
   if (web && deps.surface) {
     // Composed from `orchestra serve`: publish through the lent server, and let the

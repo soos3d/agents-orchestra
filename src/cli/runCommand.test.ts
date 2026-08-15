@@ -253,4 +253,39 @@ describe("runMission under a surface", () => {
     assert.equal(log[0]!.slice(9), log[1]!.slice(8));
     assert.ok(publishes > 0, "the mission never published through the lent server");
   });
+
+  // `--plan-only` from a terminal takes no port: it prints and exits, and CI has no
+  // browser. A *composed* plan-only mission is the opposite case, and the exception is
+  // not a convenience (UI plan U6) — plan-only still runs intake, so a mission with no
+  // port would ask its questions into a process nobody is attached to and sit there
+  // until the budget ran out.
+  test("a composed plan-only mission still gets the port its intake needs", async () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "orchestra-planonly-"));
+    const config: DiscoveredConfig = {
+      cwd: stateDir,
+      stateDir,
+      worktreeRoot: path.join(stateDir, "worktrees"),
+      agents: [],
+      orchestratorModel: "sonnet",
+      maxConcurrency: 4,
+    };
+
+    const log: string[] = [];
+    const surface: RunSurface = {
+      server: { publish: () => {}, url: "http://127.0.0.1:0" },
+      register: (missionId) => log.push(`register ${missionId}`),
+      release: (missionId) => log.push(`release ${missionId}`),
+    };
+
+    await assert.rejects(() =>
+      runMission(
+        { goal: "what would this take?", planOnly: true, unattended: false, force: false, web: true, budgetMinutes: 5 },
+        config,
+        quietIo,
+        { createCalls: () => scriptedCalls({}), surface },
+      ),
+    );
+
+    assert.match(log[0] ?? "", /^register /, "a composed plan-only mission was given no surface");
+  });
 });
