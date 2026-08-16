@@ -20,13 +20,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { run } from "../runtime/sh.js";
 import { PROCESS_BASELINE_VARS } from "./childEnv.js";
-import {
-  DEFAULT_WORKER_TIMEOUT_MS,
-  type CliOutcome,
-  type CliWorkerOptions,
-} from "./claudeCode.js";
+import { runCliProcess, type CliOutcome, type CliWorkerOptions } from "./claudeCode.js";
 
 /** What `codex` needs from the environment to start and find its own credentials
  *  (defect 42), beside the launch that needs it. It authenticates from `~/.codex` on a
@@ -70,17 +65,19 @@ export async function runCodex(
   worktree: string,
   options: CliWorkerOptions,
 ): Promise<CliOutcome> {
-  const outFile = path.join(os.tmpdir(), `codex-${process.pid}-${outFileCounter++}.txt`);
+  // A directory rather than a bare file under `os.tmpdir()`, because under containment
+  // it has to be mounted — and mounting the whole of `/tmp` into a sandbox to read one
+  // message back would hand the worker every other process's scratch space. Contained or
+  // not, this is the same path, so the scrape below does not know the difference.
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), `codex-${process.pid}-`));
+  const outFile = path.join(outDir, "last-message.txt");
 
-  const result = await run(
+  const result = await runCliProcess(
     "codex",
     codexArgs(task, options.model, outFile),
-    {
-      cwd: worktree,
-      timeoutMs: options.timeoutMs ?? DEFAULT_WORKER_TIMEOUT_MS,
-      signal: options.signal,
-      ...(options.env ? { env: options.env } : {}),
-    },
+    worktree,
+    options,
+    [outDir],
   );
 
   try {
@@ -89,7 +86,7 @@ export async function runCodex(
   } catch {
     /* the file is only written on a clean finish; fall through to the streams */
   } finally {
-    fs.rmSync(outFile, { force: true });
+    fs.rmSync(outDir, { recursive: true, force: true });
   }
 
   return { text: result.stdout || result.stderr || `codex exited with code ${result.code}` };

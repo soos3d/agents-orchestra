@@ -63,6 +63,12 @@ export interface SynthesizeDeps {
    *  at a provider's API rather than a name this harness is known to accept. Absent is a
    *  machine with no probed provider, which is every machine until one is configured. */
   modelCards?: readonly ModelCard[];
+  /** The container backends this machine answered for (PLAN-NEXT 3.3), arriving in the
+   *  same `staffingOffer` object as the four above. Read only when the envelope demands
+   *  containment: an empty list then is a mission that cannot be staffed at all, and it
+   *  says so here rather than at dispatch, where every task would spawn a backend that
+   *  is not running and burn a retry and a replan learning it (defect 21's shape). */
+  containment?: readonly string[];
   /** The roles this mission may staff from (§7, amended): the documented roster plus
    *  anything a human promoted, already merged by `agents/offer.ts`. They change what
    *  the model is *shown* and nothing about what it is allowed to return — every check
@@ -277,6 +283,36 @@ export class UnavailableModelError extends SynthesisError {
   }
 }
 
+/**
+ * A mission whose envelope demands a container on a machine that cannot start one
+ * (PLAN-NEXT 3.3).
+ *
+ * Checked once, before the first task is staffed, rather than per spec — because no
+ * answer a model gives fixes it. The model cannot install Docker, start a daemon, or
+ * pull an image, so quoting the constraint back and re-asking would spend a call to
+ * arrive at the same place. It is the `UnavailableTargetError` argument taken to its
+ * end: a planning problem the *planner* cannot solve either, which makes it the human's.
+ *
+ * The alternative is what this exists to prevent: every task staffs cleanly, every
+ * dispatch spawns a backend that is not there, each one burns its typed retry, takes a
+ * replan with it, and the mission escalates at the reset cap having produced nothing —
+ * defect 21, rebuilt one layer down.
+ */
+export class UnavailableContainmentError extends SynthesisError {
+  constructor(missionId: string) {
+    super(
+      missionId,
+      `Mission '${missionId}' has a capability envelope that requires every worker to ` +
+        `run inside a container, and this machine has no container backend answering. ` +
+        `Start one (\`docker desktop start\`, \`podman machine start\`) and set ` +
+        `ORCHESTRA_CONTAINER_IMAGE to an image that has the agent CLI installed, then ` +
+        `\`orchestra resume\` — or compose the mission again with containment 'none'. ` +
+        `Run 'orchestra doctor' to see which half is missing.`,
+    );
+    this.name = "UnavailableContainmentError";
+  }
+}
+
 /** A task in one of these states is history or in flight, and a replan may not
  *  redefine it: running work would be duplicated, and `done` work is evidence. */
 const REDEFINABLE = new Set(["waiting", "todo", "blocked", "failed", "cancelled", "conflicted"]);
@@ -295,6 +331,10 @@ interface RuntimeOffer {
   readonly transports: readonly string[];
   readonly targets: readonly string[];
   readonly models: readonly string[];
+  /** Container backends this machine answered for. Empty is *none available*, not
+   *  unconstrained — the opposite of `models`, because a backend is a binary that is
+   *  either running or is not, and there is nothing unknown about it (PLAN-NEXT 3.3). */
+  readonly containment: readonly string[];
 }
 
 function runtimeOffer(deps: SynthesizeDeps): RuntimeOffer {
@@ -302,6 +342,7 @@ function runtimeOffer(deps: SynthesizeDeps): RuntimeOffer {
     transports: deps.transports ?? AVAILABLE_TRANSPORTS,
     targets: deps.targets ?? allowedTargets(builtHarnesses()),
     models: deps.models ?? [],
+    containment: deps.containment ?? [],
   };
 }
 
@@ -329,6 +370,15 @@ export async function synthesizeTasks(
   let added = 0;
 
   const runtime = runtimeOffer(deps);
+
+  // Before the first staffing call, because no spec can answer it and every one of them
+  // would otherwise be written against a runtime that cannot start (PLAN-NEXT 3.3).
+  if (
+    state.mission.capabilityEnvelope.containment === "container" &&
+    runtime.containment.length === 0
+  ) {
+    throw new UnavailableContainmentError(state.mission.id);
+  }
 
   for (const entry of planned) {
     const existing = byId.get(entry.id);
@@ -580,6 +630,9 @@ function inspect(
   const environment = inspectEnv(spec.env ?? [], envelope);
   if (environment) return environment;
 
+  const contained = inspectContainment(spec.containment, envelope);
+  if (contained) return contained;
+
   // Defect 27: the judge reads files on disk (§3), so a judge-verified agent must be
   // able to leave one behind. A rubric about files and a toolset that cannot make one
   // is a task that fails however well the work is done — and it was found exactly that
@@ -714,6 +767,39 @@ function inspectEnv(requested: readonly string[], envelope: Envelope): SpecProbl
       `needs to start and nothing else, so naming one here that the envelope does not ` +
       `list fails validation. Ask for none unless the task genuinely cannot be done ` +
       `without the value, and never put a value in the spec — only names.`,
+  };
+}
+
+/**
+ * The sandbox half of the same ceiling (PLAN-NEXT 3.2), and the only check here that
+ * catches a request for *less* rather than more.
+ *
+ * A spec that sets `containment: "none"` under a mission composed with `"container"` is
+ * asking to be let out onto the machine — the same widening as an out-of-envelope tool,
+ * arrived at from the other direction, so it goes through the same door and parks on the
+ * same human. Reported as `capability` for exactly that reason: same event, same
+ * question, same person.
+ *
+ * Absent is not a request. Almost every spec omits the field, and omitting it means the
+ * task runs however the envelope says, which is what makes containment invisible to
+ * synthesis on the missions that do not use it.
+ */
+function inspectContainment(
+  requested: AgentSpec["containment"],
+  envelope: Envelope,
+): SpecProblem | undefined {
+  if (requested === undefined) return undefined;
+  if (violations(envelope, { containment: requested }).length === 0) return undefined;
+
+  return {
+    kind: "capability",
+    requested: `containment: ${requested}`,
+    retry:
+      `This mission runs every worker inside a container, and this spec asked to run ` +
+      `outside one. Leave 'containment' out — the mission decides it, and a task cannot ` +
+      `opt out of it any more than it can grant itself a tool the envelope withheld. ` +
+      `Plan the work to be doable inside the container: the worktree and the artifact ` +
+      `directory are mounted at the same paths, and there is no network.`,
   };
 }
 

@@ -5,7 +5,8 @@
 // them once. Replacing `--dangerously-skip-permissions` with ACP's permission
 // channel is Phase 7 (defect 14).
 import { isEmptyUsage, type TokenUsage } from "../domain/budget.js";
-import { run } from "../runtime/sh.js";
+import { runContained, type Containment } from "../runtime/contained.js";
+import { run, type RunResult } from "../runtime/sh.js";
 import { PROCESS_BASELINE_VARS } from "./childEnv.js";
 
 /**
@@ -36,6 +37,45 @@ export interface CliWorkerOptions {
    *  task's granted names plus `CLAUDE_TRANSPORT_VARS`; omitted only by callers that
    *  are not running mission work, who then inherit this process's. */
   env?: NodeJS.ProcessEnv;
+  /** Run inside a disposable container instead of on this machine (PLAN-NEXT 3.2).
+   *  Absent is every mission that did not ask for it, which is every mission today. */
+  contained?: Containment;
+  /** Directories besides the worktree this launch needs inside the container — the
+   *  task's artifact directory. Ignored when `contained` is absent. */
+  mounts?: readonly string[];
+}
+
+/**
+ * One spawn for both CLI targets, contained or not.
+ *
+ * A branch written twice is a branch that stops matching itself: `runClaudeCode` and
+ * `runCodex` would each decide whether this worker is sandboxed, and the first
+ * correction to either would leave the other running on the machine while the log said
+ * otherwise. `cwd` moves to the container's workdir under containment and stays the
+ * spawn's cwd without it, which is the one difference between the two calls.
+ */
+export function runCliProcess(
+  cmd: string,
+  args: readonly string[],
+  worktree: string,
+  options: CliWorkerOptions,
+  extraMounts: readonly string[] = [],
+): Promise<RunResult> {
+  const common = {
+    timeoutMs: options.timeoutMs ?? DEFAULT_WORKER_TIMEOUT_MS,
+    ...(options.signal ? { signal: options.signal } : {}),
+    ...(options.env ? { env: options.env } : {}),
+  };
+
+  return options.contained
+    ? runContained(
+        options.contained,
+        { cwd: worktree, mounts: [...(options.mounts ?? []), ...extraMounts] },
+        cmd,
+        args,
+        common,
+      )
+    : run(cmd, args, { ...common, cwd: worktree });
 }
 
 /**
@@ -126,7 +166,7 @@ export async function runClaudeCode(
   worktree: string,
   options: CliWorkerOptions,
 ): Promise<CliOutcome> {
-  const result = await run(
+  const result = await runCliProcess(
     "claude",
     [
       "-p",
@@ -137,12 +177,8 @@ export async function runClaudeCode(
       "json",
       "--dangerously-skip-permissions",
     ],
-    {
-      cwd: worktree,
-      timeoutMs: options.timeoutMs ?? DEFAULT_WORKER_TIMEOUT_MS,
-      signal: options.signal,
-      ...(options.env ? { env: options.env } : {}),
-    },
+    worktree,
+    options,
   );
 
   return parseClaudeCodeResult(result);

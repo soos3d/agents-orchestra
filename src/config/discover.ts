@@ -8,6 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { repoRoot } from "../git/repo.js";
 import { PROVIDERS } from "../providers/openaiCompatible.js";
+import { CONTAINER_BACKENDS } from "../runtime/contained.js";
 import { run } from "../runtime/sh.js";
 
 export interface DiscoveredConfig {
@@ -18,6 +19,17 @@ export interface DiscoveredConfig {
   worktreeRoot: string;
   verify?: { command: string; source: string };
   agents: string[];
+  /**
+   * Container backends whose daemon answered (PLAN-NEXT 3.3).
+   *
+   * Optional for `providerKeys`' reason: one producer, `discoverConfig`, which always
+   * sets it and is asserted to in `discover.test.ts`; required would have meant editing
+   * every config literal in the suite to say "none". Absent reads as none everywhere.
+   */
+  containers?: string[];
+  /** `ORCHESTRA_CONTAINER_IMAGE`. Absent means containment is unavailable however many
+   *  backends answered — there is no default image and there must not be one. */
+  containerImage?: string;
   orchestratorModel: string;
   maxConcurrency: number;
   /** An OpenClaw Gateway to mirror the inbox to, if the user runs one (§2). Never
@@ -97,6 +109,35 @@ async function probe(names: readonly string[]): Promise<string[]> {
 export const probeAgents = (): Promise<string[]> => probe(KNOWN_AGENTS);
 
 /**
+ * Which container backends can actually start a container right now (PLAN-NEXT 3.3).
+ *
+ * **`which docker` is not the question, and answering it would rebuild defect 21.** The
+ * CLI is installed on every machine whose Docker Desktop is closed, and a mission staffed
+ * against a backend that is present-but-not-running dies at dispatch — every task, each
+ * burning its retry and taking a replan with it. So the probe asks the daemon.
+ *
+ * `version --format {{.Server.Version}}` rather than `info`, which is a real trap and not
+ * a preference: with the daemon stopped, `docker info` prints "Cannot connect to the
+ * Docker daemon" and **exits 0**. `version` exits 1, and the non-empty stdout check is
+ * the belt to that brace.
+ *
+ * A podman with no service running reads as absent here. That is a false negative rather
+ * than a wrong offer, which is the direction this codebase errs in everywhere — empty
+ * means nothing is offered, and `podman machine start` fixes it.
+ */
+export async function probeContainers(): Promise<string[]> {
+  const found = await Promise.all(
+    CONTAINER_BACKENDS.map(async (backend): Promise<string | undefined> => {
+      const result = await run(backend, ["version", "--format", "{{.Server.Version}}"], {
+        timeoutMs: 15_000,
+      }).catch(() => undefined);
+      return result?.code === 0 && result.stdout.trim() !== "" ? backend : undefined;
+    }),
+  );
+  return found.filter((backend): backend is string => backend !== undefined);
+}
+
+/**
  * Which model providers this machine has a key for, by provider name (PLAN-NEXT 2.2).
  *
  * Pure over an environment rather than reading `process.env` itself, so what a machine
@@ -141,6 +182,13 @@ export async function discoverConfig(cwd = process.cwd()): Promise<DiscoveredCon
       : path.join(base, "..", ".orchestra-worktrees"),
     verify: root ? discoverVerifyCommand(root) : undefined,
     agents: await probeAgents(),
+    containers: await probeContainers(),
+    // No default, deliberately: an image has to contain the agent CLI and none has been
+    // verified for this project, so inventing a name here would be a menu entry nobody
+    // probed (`runtime/contained.ts`, and the `MODELS_BY_VENDOR.openai` discipline).
+    ...(process.env.ORCHESTRA_CONTAINER_IMAGE
+      ? { containerImage: process.env.ORCHESTRA_CONTAINER_IMAGE }
+      : {}),
     // An alias rather than a pinned id, so the default follows the latest build the
     // SDK resolves it to. §14 notes nothing in the design depends on a specific
     // model; `ORCHESTRATOR_MODEL` is the override when it does.

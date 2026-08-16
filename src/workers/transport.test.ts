@@ -12,10 +12,12 @@
 // work away, and the cheapest thing that recovers it is asking once.
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { aReport } from "../testing/fixtures.js";
+import { aCodeTask, aReport } from "../testing/fixtures.js";
+import { type CliOutcome } from "./claudeCode.js";
 import { parseWorkerReport } from "./report.js";
 import {
   createCliReformatter,
+  createCliTransport,
   REFORMAT_MODEL,
   REFORMAT_TIMEOUT_MS,
   tail,
@@ -108,5 +110,50 @@ describe("the worker report reformatter", () => {
 
     assert.equal(tail(long, 10), "…THE REPORT");
     assert.equal(tail("short", 10), "short");
+  });
+});
+
+// PLAN-NEXT 3.2. The mission's envelope decides containment and the transport is what
+// carries it to the spawn; a `contained` option accepted and dropped here is the
+// optional-`Deps` trap in its worst place — a mission that believes it is sandboxed and
+// is not, with nothing in the log to say so.
+describe("createCliTransport under containment", () => {
+  const contained = { backend: "docker", image: "org/worker" };
+
+  const capture = () => {
+    const seen: { contained?: unknown; mounts?: readonly string[]; cwd: string }[] = [];
+    const runner = async (
+      _prompt: string,
+      cwd: string,
+      options: { contained?: unknown; mounts?: readonly string[] },
+    ): Promise<CliOutcome> => {
+      seen.push({ cwd, ...options });
+      return { text: '{"outcome":"complete","summary":"done","artifacts":[],"claims":[]}' };
+    };
+    return { runners: { claude: runner, codex: runner } as never, seen };
+  };
+
+  test("hands the container and the artifact directory to the runner", async () => {
+    const { runners, seen } = capture();
+
+    await createCliTransport({ runners, contained })({
+      task: aCodeTask(),
+      cwd: "/worktree",
+      artifactDir: "/state/artifacts/t1",
+    });
+
+    assert.deepEqual(seen.at(-1)?.contained, contained);
+    // A worker that cannot write its report has not been contained, it has been broken.
+    assert.deepEqual(seen.at(-1)?.mounts, ["/state/artifacts/t1"]);
+    // The worktree is still the working directory — the same path, inside and out.
+    assert.equal(seen.at(-1)?.cwd, "/worktree");
+  });
+
+  test("an uncontained mission is given no container at all", async () => {
+    const { runners, seen } = capture();
+
+    await createCliTransport({ runners })({ task: aCodeTask(), cwd: "/worktree" });
+
+    assert.equal("contained" in (seen.at(-1) ?? {}), false);
   });
 });

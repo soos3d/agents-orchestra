@@ -109,3 +109,37 @@ that has structure. All three failed on correct work, two of them quietly.
 
 `runtime/command.ts` is a tokenizer, not a shell — no globs, pipes or substitution. `needsShell()`
 exists so a piped command fails loudly instead of silently misbehaving.
+
+## Containment
+
+**A contained worker is the same worker with the spawn rewritten** (`runtime/contained.ts`,
+PLAN-NEXT 3). `Envelope.containment` decides it once per mission, `containmentFor` builds the
+`Containment` at the composition root from the folded envelope, and `containedCommand` turns
+`(cmd, args, env)` into the backend's argv for **both** spawners — `sh.ts` through `runCliProcess`
+and `duplex.ts` in `acp/transport.ts`. Wiring one of them would have been the smaller change and a
+sandbox with a door in it: the same mission staffed `acp` instead of `cli` would run on the machine
+while the envelope said otherwise.
+
+- **Paths are identical inside and out.** Everything above the runtime — `detectRepoEscape`,
+  `changedFiles` against the pinned base sha, the `artifactDir` in the worker's prompt — holds host
+  paths. A tidy `/workspace` remap makes all of them compare a tree the worker never touched, and
+  they pass while meaning nothing. `contained.repo.test.ts` is the assertion.
+- **`--env NAME`, never `NAME=VALUE`.** The backend CLI is spawned with the constructed worker env
+  and copies each named value in; a value in the argv is readable by every process on the machine.
+  `clientVars` (`CONTAINER_CLIENT_VARS`) is the *client's* own environment — its socket address is
+  not the container's business.
+- **`--entrypoint` is explicit**, or an image with its own `ENTRYPOINT` runs that program and takes
+  `claude` as an argument, returning its output as the worker's report. Nothing about that is loud.
+- **`--network none` by default**, and the allowlist is the name of a network the operator created.
+  Docker has no per-host primitive; a domain list here would be a claim nothing enforces.
+- **`--user uid:gid`** whenever the platform has one, or a Linux container leaves root-owned files
+  in the mounted worktree that git can neither stage nor `removeWorktree` delete.
+- **`--pull=never`**, so the one feature whose point is that the worker has no network does not
+  fetch an image over it at dispatch.
+- `runCodex` writes its `--output-last-message` file into a per-run tmp *directory* it asks to have
+  mounted. A bare `os.tmpdir()` file would vanish inside the container and the scrape would fall
+  through to stdout — a contained codex worker quietly delivering a worse answer than a plain one.
+- **`containmentFor` throws** when a contained mission meets a machine that cannot contain.
+  `undefined` means "not contained", so returning it would run the mission on the bare machine.
+  Synthesis refuses first (`UnavailableContainmentError`, checked once before the first staffing
+  call — no answer a model gives installs Docker); this is the resumed-elsewhere case.

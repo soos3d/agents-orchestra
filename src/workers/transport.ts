@@ -7,6 +7,7 @@
 // decision made per task.
 import { workerReportSchema } from "../domain/report.js";
 import { type WorkerRun, type WorkerTransport } from "../loop/dispatch.js";
+import { type Containment } from "../runtime/contained.js";
 import { renderSchema } from "../runtime/json.js";
 import { workerPrompt } from "./prompt.js";
 import { type Reformatter } from "./report.js";
@@ -46,6 +47,10 @@ export interface CliTransportOptions {
    *  receives has to be assertable without spawning anything, and a test cannot put a
    *  fake secret in the real `process.env`. */
   parentEnv?: NodeJS.ProcessEnv;
+  /** Run every worker inside a disposable container (PLAN-NEXT 3.2). Decided by the
+   *  mission's envelope at the composition root, never per task — a task cannot opt out
+   *  of it, which is what `inspectContainment` refuses at synthesis. */
+  contained?: Containment;
 }
 
 export interface ReformatterOptions {
@@ -171,6 +176,13 @@ export function createCliTransport(options: CliTransportOptions = {}): WorkerTra
       timeoutMs: options.timeoutMs ?? task.budget.wallMs,
       env,
       ...(signal ? { signal } : {}),
+      // The mission's envelope, not the spec's: a task that asked to run outside the
+      // container was already refused at synthesis, and one that said nothing runs
+      // however the mission was composed. The artifact directory rides along because a
+      // worker that cannot write its report has not been contained, it has been broken.
+      ...(options.contained
+        ? { contained: options.contained, mounts: artifactDir ? [artifactDir] : [] }
+        : {}),
     });
 
     // The usage is carried when the CLI reported it and omitted when it did not,

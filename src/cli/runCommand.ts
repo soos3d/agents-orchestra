@@ -192,6 +192,11 @@ export function defaultEnvelope(config: DiscoveredConfig, budget: Budget): Envel
     // human names one here, which is the same act as widening any other capability.
     env: [],
     network: "none",
+    // On this machine, like every mission before containment existed. A terminal run has
+    // no screen to choose on and no image configured by default, so promoting it here
+    // would fail every mission at validation for a capability nobody asked for
+    // (PLAN-NEXT 3.2).
+    containment: "none",
     maxSpend: budget,
     approval: "local",
   };

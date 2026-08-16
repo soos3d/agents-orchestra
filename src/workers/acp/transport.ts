@@ -43,6 +43,7 @@ import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { type Task } from "../../domain/task.js";
 import { type WorkerRun, type WorkerTransport } from "../../loop/dispatch.js";
+import { containedCommand, type Containment } from "../../runtime/contained.js";
 import { spawnDuplex, type DuplexExit, type DuplexProcess } from "../../runtime/duplex.js";
 import { buildWorkerEnv } from "../childEnv.js";
 import { workerPrompt } from "../prompt.js";
@@ -111,6 +112,9 @@ export interface AcpTransportDeps {
    *  reach the child. */
   parentEnv?: NodeJS.ProcessEnv;
   clientInfo?: ClientInfo;
+  /** Run the agent inside a disposable container (PLAN-NEXT 3.2). Absent is every
+   *  mission whose envelope did not ask for one, which is every mission today. */
+  contained?: Containment;
 }
 
 const DEFAULT_CLIENT_INFO: ClientInfo = { name: "orchestra", version: "0.1.0" };
@@ -174,11 +178,31 @@ export function createAcpTransport(deps: AcpTransportDeps): WorkerTransport {
 
     const env = acpChildEnv(launch, task, deps.parentEnv ?? process.env);
 
+    // Containment is one rewrite of (command, args, env) and both runtimes take it from
+    // `containedCommand` (PLAN-NEXT 3.2). Wiring only the `cli` transport would have been
+    // the smaller change and a sandbox with a door in it: the same mission, staffed
+    // `acp` instead of `cli`, would run on the machine while the envelope said otherwise.
+    //
+    // Two facts about an ACP adapter under containment, neither of them this file's to
+    // fix: `npx -y` fetches the adapter at dispatch and there is no network, and the
+    // agent CLI it shims has to be in the image. Both fail loudly at session start with
+    // the backend's own message, which is the same place an image with no `claude` in it
+    // fails — no validation can see inside an image.
+    const spawnAs = deps.contained
+      ? containedCommand(
+          deps.contained,
+          { cwd, ...(artifactDir ? { mounts: [artifactDir] } : {}) },
+          launch.command,
+          launch.args,
+          env,
+        )
+      : { cmd: launch.command, args: [...launch.args], env };
+
     const startedAt = Date.now();
-    const proc = spawnDuplex(launch.command, launch.args, {
+    const proc = spawnDuplex(spawnAs.cmd, spawnAs.args, {
       cwd,
       timeoutMs: task.budget.wallMs,
-      env,
+      env: spawnAs.env,
       ...(signal ? { signal } : {}),
     });
 

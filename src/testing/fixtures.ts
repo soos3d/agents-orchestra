@@ -30,6 +30,7 @@ export const anEnvelope = (patch: Partial<Envelope> = {}): Envelope => ({
   fsRoots: ["/repo"],
   env: [],
   network: "none",
+  containment: "none",
   maxSpend: { wallMs: 4 * 60 * 60_000 },
   approval: "local",
   ...patch,

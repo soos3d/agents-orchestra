@@ -1,6 +1,7 @@
 // Defect 11: config.ts threw without TARGET_REPO. The repo is whatever you are
 // standing in, and the verification command is written in the project's own manifest
 // — asking a human to restate either is asking them to repeat themselves.
+import { CONTAINER_BACKENDS } from "../runtime/contained.js";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -9,6 +10,7 @@ import { after, beforeEach, describe, test } from "node:test";
 import {
   artifactDir,
   discoverConfig,
+  probeContainers,
   discoverVerifyCommand,
   missionDir,
   readProviderKeys,
@@ -264,5 +266,25 @@ describe("readProviderKeys", () => {
   test("discoverConfig populates it, which is the only producer there is", async () => {
     const config = await discoverConfig(process.cwd());
     assert.ok(config.providerKeys !== undefined);
+  });
+});
+
+// PLAN-NEXT 3.3. `containers` is optional on `DiscoveredConfig` for `providerKeys`'
+// reason — one producer, so the optional-`Deps` trap does not apply — and this is the
+// assertion that keeps that true.
+describe("probeContainers", () => {
+  test("discoverConfig populates it, which is the only producer there is", async () => {
+    const config = await discoverConfig(process.cwd());
+    assert.ok(config.containers !== undefined);
+  });
+
+  // The trap this probe exists for: with the daemon stopped, `docker info` prints
+  // "Cannot connect to the Docker daemon" and exits 0, so an exit-code-only probe would
+  // report a backend that cannot start a container. Whatever this machine's state, the
+  // answer is a subset of the backends we know how to drive and never a guess.
+  test("names only backends this build can actually drive", async () => {
+    for (const backend of await probeContainers()) {
+      assert.ok(CONTAINER_BACKENDS.includes(backend), backend);
+    }
   });
 });

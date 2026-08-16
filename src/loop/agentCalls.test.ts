@@ -552,6 +552,27 @@ describe("createAgentCalls", () => {
       assert.equal(result.criteria?.length, 1);
     });
 
+    // PLAN-NEXT 3.2, and the standing rule that a prompt and its validation move
+    // together: `inspectContainment` refuses a spec that asks to run outside the
+    // mission's container, so the call that writes the spec has to know the field exists
+    // and that setting it is not a choice it gets to make.
+    test("synthesize is told containment is the mission's decision, not the task's", async () => {
+      const { run, seen } = transport([JSON.stringify(anAgentSpec())]);
+
+      await createAgentCalls({ config, runQuery: run }).synthesize({
+        task: aPlannedTask(),
+        envelope: {} as never,
+        toolCatalogue: ["Read"],
+        transports: ["cli"],
+        targets: ["claude"],
+        models: [],
+      });
+
+      const system = seen.systemPrompts[0]!;
+      assert.match(system, /containment/);
+      assert.match(system, /refused at\s+validation/);
+    });
+
     test("synthesize returns an agent spec", async () => {
       const { run } = transport([JSON.stringify(anAgentSpec({ role: "invoice-reconciler" }))]);
       const calls = createAgentCalls({ config, runQuery: run });

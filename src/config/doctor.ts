@@ -156,6 +156,48 @@ export function checkProviders(
   };
 }
 
+/**
+ * Whether this machine can run a worker inside a container (PLAN-NEXT 3.3).
+ *
+ * Two halves that fail differently and are fixed differently, so the line says which one
+ * is missing: a daemon that is not answering is `docker desktop start`, and a daemon with
+ * no image named is `ORCHESTRA_CONTAINER_IMAGE`. Reporting "containment unavailable" for
+ * both would send someone to restart a daemon that is already running.
+ *
+ * Never a failure. Containment is opt-in per mission and no mission composed today asks
+ * for one; a machine without it runs exactly as every machine ran before this existed.
+ * The refusal that matters happens at synthesis, on the mission that did ask.
+ */
+export function checkContainment(config: DiscoveredConfig): Check {
+  const backends = config.containers ?? [];
+
+  if (backends.length === 0) {
+    return {
+      name: "containment",
+      level: "ok",
+      detail: "no container backend answering — missions run on this machine",
+      fix: "start Docker or Podman if you want to compose a mission with containment",
+    };
+  }
+
+  if (!config.containerImage) {
+    return {
+      name: "containment",
+      level: "warn",
+      detail: `${backends.join(", ")} ready, but no worker image is set — containment is unavailable`,
+      // Named rather than suggested: no image with an agent CLI in it has been verified
+      // for this project, and printing one here would be a recommendation nobody probed.
+      fix: "export ORCHESTRA_CONTAINER_IMAGE=<an image with your agent CLI installed and logged in>",
+    };
+  }
+
+  return {
+    name: "containment",
+    level: "ok",
+    detail: `${backends[0]} running ${config.containerImage}`,
+  };
+}
+
 function checkStateDir(config: DiscoveredConfig): Check {
   const parent = config.stateDir;
   try {
@@ -249,6 +291,7 @@ export function doctor(
     checkAgents(config),
     checkAcp(config),
     checkProviders(cards, config.providerKeys ?? {}, staffableCards(config.stateDir)),
+    checkContainment(config),
     checkStateDir(config),
     checkIgnored(config),
     checkChannel(config.gatewayUrl),

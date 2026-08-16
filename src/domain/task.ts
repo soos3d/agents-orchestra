@@ -78,6 +78,15 @@ export const agentSpecSchema = z.object({
   // — a worker still receives whatever its transport needs to start, and that list
   // lives beside the launch in `workers/`, not here and not in the envelope.
   env: z.array(z.string().min(1)).optional(),
+  // Where this worker runs (PLAN-NEXT 3.2). Absent means "whatever the envelope says",
+  // which is what almost every spec means and what every spec written before this field
+  // existed meant. Present and weaker than the envelope — `"none"` under a `"container"`
+  // mission — is refused at validation through the same door as an out-of-envelope tool.
+  //
+  // Representable rather than derived, for the reason `tools` is `z.array(z.string())`:
+  // a spec asking to be let out of the sandbox has to be *expressible* or the refusal
+  // cannot be tested, and a field the model cannot name is a ceiling nobody ever probes.
+  containment: z.enum(["none", "container"]).optional(),
   model: z.string().min(1),
   verify: verifySpecSchema,
 });

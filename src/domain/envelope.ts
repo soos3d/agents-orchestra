@@ -25,6 +25,16 @@ export const envelopeSchema = z.object({
   // folding, and "granted nothing" is the honest reading of a mission that never said.
   env: z.array(z.string().min(1)).default([]),
   network: z.enum(["none", "allowlist"]),
+  // Whether a worker runs on this machine or inside a disposable container (PLAN-NEXT
+  // 3.2). The third thing the envelope bounds, after what a worker may *do* and what it
+  // may *read*: where it may reach. `network: "none"` was always a claim the runtime had
+  // no way to enforce — a CLI with `Bash` curls whatever it likes — and `--network none`
+  // on a container is the first thing that actually holds it.
+  //
+  // `.default("none")` for the reason `env` has one: the envelope is embedded in
+  // `mission_created`, so every log written before this field existed has to keep
+  // folding, and "not contained" is the honest reading of a mission that never said.
+  containment: z.enum(["none", "container"]).default("none"),
   maxSpend: budgetSchema,
   // "This mission's gates never leave this machine" is a blast-radius property and
   // belongs next to the rest of them (§17).
@@ -41,10 +51,13 @@ export interface CapabilityRequest {
    *  secret in the event log, which is the failure this field exists to prevent. */
   env?: string[];
   network?: Envelope["network"];
+  /** What a spec asked to run under. Weaker than the envelope grants is the violation;
+   *  absent means "whatever the envelope says", which is what almost every spec means. */
+  containment?: Envelope["containment"];
 }
 
 export interface EnvelopeViolation {
-  field: "toolClasses" | "domains" | "fsPaths" | "env" | "network";
+  field: "toolClasses" | "domains" | "fsPaths" | "env" | "network" | "containment";
   requested: string;
 }
 
@@ -89,6 +102,14 @@ export function violations(
       .map((requested) => ({ field: "env" as const, requested })),
     ...(request.network === "allowlist" && envelope.network === "none"
       ? [{ field: "network" as const, requested: "allowlist" }]
+      : []),
+    // Containment runs the *other* way from every check above it, and that is the whole
+    // of it: the others catch a request for more than was granted, this one catches a
+    // request for less protection than was imposed. A spec saying `"none"` under a
+    // `"container"` envelope is asking to be let out, which is the same human decision
+    // as being let in and goes through the same door. Absent is not a request.
+    ...(request.containment === "none" && envelope.containment === "container"
+      ? [{ field: "containment" as const, requested: "none" }]
       : []),
   ];
 }

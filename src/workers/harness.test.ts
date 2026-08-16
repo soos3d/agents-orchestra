@@ -150,6 +150,9 @@ test("staffingOffer carries the human's harness and model through to one object"
     targets: ["claude"],
     models: ["haiku"],
     modelCards: [],
+    // Empty because this probe named no backend, which is the same answer a machine with
+    // Docker closed gives — a backend is running or it is not (PLAN-NEXT 3.3).
+    containment: [],
   });
 });
 
@@ -159,6 +162,7 @@ test("staffingOffer on an unequipped machine offers nothing to staff with", () =
     targets: [],
     models: [],
     modelCards: [],
+    containment: [],
   });
 });
 

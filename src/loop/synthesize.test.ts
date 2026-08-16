@@ -36,6 +36,7 @@ import {
   EnvelopeViolationError,
   SynthesisError,
   synthesizeTasks,
+  UnavailableContainmentError,
   UnavailableModelError,
   UnavailableTargetError,
   UnavailableTransportError,
@@ -917,5 +918,77 @@ describe("synthesis against what the machine and the human allow", () => {
     const added = await synthesizeTasks({ ...deps(store, calls), models: [] }, [aPlannedTask()], 0);
 
     assert.equal(added, 1);
+  });
+});
+
+// PLAN-NEXT 3.2 and 3.3. Two refusals that look alike and are not: one is a spec asking
+// to be let out of the mission's sandbox, which a re-ask can fix and a human decides;
+// the other is a machine that cannot provide the sandbox at all, which nothing a model
+// says can fix. Both fail here rather than at dispatch, where every task would spawn a
+// backend that is not running — defect 21's shape one layer down.
+describe("containment", () => {
+  const contained = () =>
+    testStore([missionCreated({ envelope: anEnvelope({ containment: "container" }) })]);
+  const withBackend = (calls: Pick<Calls, "synthesize">, store: MissionStore) => ({
+    store,
+    calls,
+    containment: ["docker"],
+  });
+
+  test("re-asks once when a spec asks to run outside the mission's container", async () => {
+    const store = contained();
+    const { calls, seen } = scriptedSynthesize([
+      anAgentSpec({ containment: "none" }),
+      anAgentSpec({}),
+    ]);
+
+    const added = await synthesizeTasks(withBackend(calls, store), [aPlannedTask()], 0);
+
+    assert.equal(added, 1);
+    assert.equal(seen.length, 2);
+    assert.match(seen[1]!.rejected ?? "", /outside one/);
+  });
+
+  test("a spec that says nothing inherits the mission's containment", async () => {
+    const { calls } = scriptedSynthesize([anAgentSpec({})]);
+
+    assert.equal(await synthesizeTasks(withBackend(calls, contained()), [aPlannedTask()], 0), 1);
+  });
+
+  test("asking twice to be let out parks on a human, like any other capability", async () => {
+    const { calls } = scriptedSynthesize([
+      anAgentSpec({ containment: "none" }),
+      anAgentSpec({ containment: "none" }),
+    ]);
+
+    await assert.rejects(
+      () => synthesizeTasks(withBackend(calls, contained()), [aPlannedTask()], 0),
+      (error: Error) => {
+        assert.ok(error instanceof EnvelopeViolationError);
+        return true;
+      },
+    );
+  });
+
+  // Not a re-ask: the model cannot install Docker, so spending a call to be told the
+  // same thing twice is the one thing this must not do.
+  test("a machine with no backend refuses before the first staffing call", async () => {
+    const { calls, seen } = scriptedSynthesize([anAgentSpec({})]);
+
+    await assert.rejects(
+      () => synthesizeTasks(deps(contained(), calls), [aPlannedTask()], 0),
+      (error: Error) => {
+        assert.ok(error instanceof UnavailableContainmentError);
+        assert.match(error.message, /ORCHESTRA_CONTAINER_IMAGE/);
+        return true;
+      },
+    );
+    assert.equal(seen.length, 0);
+  });
+
+  test("a mission that asked for no container is not held to a backend it never needed", async () => {
+    const { calls } = scriptedSynthesize([anAgentSpec({})]);
+
+    assert.equal(await synthesizeTasks(deps(testStore([missionCreated()]), calls), [aPlannedTask()], 0), 1);
   });
 });

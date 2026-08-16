@@ -540,6 +540,15 @@ it out unless the work genuinely cannot be done without the value: the worker is
 whatever its transport needs to start and authenticate regardless, so a task almost
 never needs this.
 
+\`containment\` is a field you should leave out. The input's \`envelope.containment\`
+says whether this mission's workers run on the machine or inside a disposable container
+with only the worktree and the artifact directory mounted and no network at all, and
+that is the mission's decision, not the task's — setting it to \`"none"\` under a
+\`"container"\` envelope is asking to be let out of the sandbox and is refused at
+validation like any other capability the envelope withheld. When the envelope says
+\`"container"\`, plan the work to be doable in one: no downloads, no package installs,
+nothing outside those two directories.
+
 \`outputPath\` is optional and names a file *inside* that directory — \`"report.md"\`,
 \`"findings/summary.md"\`. It is relative, always: the runtime decides the directory and
 a spec that names an absolute path, or one that climbs out with \`..\`, is refused at

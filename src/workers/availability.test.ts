@@ -3,7 +3,12 @@
 // an offer that is not true of this machine costs a task, its retry, and a replan each.
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { availableTransports, runnableAcpTargets } from "./availability.js";
+import {
+  availableContainment,
+  availableTransports,
+  containmentFor,
+  runnableAcpTargets,
+} from "./availability.js";
 
 describe("availableTransports", () => {
   test("a machine with claude offers both cli and acp", () => {
@@ -46,5 +51,59 @@ describe("runnableAcpTargets", () => {
 
   test("an unpinned agent is not an acp target however installed it is", () => {
     assert.deepEqual(runnableAcpTargets({ agents: ["gemini"] }), []);
+  });
+});
+
+// PLAN-NEXT 3.3. Same failure mode one subsystem over: a container backend that is
+// installed but not running, or running with no image to run, is a mission that staffs
+// cleanly and then dies at every dispatch. Both halves have to be true before anything
+// is offered, and neither may be guessed at.
+describe("availableContainment", () => {
+  test("needs a backend and an image, and an image is not a default", () => {
+    assert.deepEqual(
+      availableContainment({ agents: [], containers: ["docker"], containerImage: "org/worker" }),
+      ["docker"],
+    );
+    assert.deepEqual(availableContainment({ agents: [], containers: ["docker"] }), []);
+    assert.deepEqual(availableContainment({ agents: [], containerImage: "org/worker" }), []);
+  });
+
+  test("a config from before containment existed reads as none", () => {
+    assert.deepEqual(availableContainment({ agents: ["claude"] }), []);
+  });
+});
+
+describe("containmentFor", () => {
+  const probe = { agents: ["claude"], containers: ["docker"], containerImage: "org/worker" };
+
+  test("an uncontained mission is not given a container to run in", () => {
+    assert.equal(containmentFor({ containment: "none" }, probe, {}), undefined);
+  });
+
+  test("carries the image and the backend, and the client's own variables only", () => {
+    const contained = containmentFor({ containment: "container" }, probe, {
+      DOCKER_HOST: "unix:///var/run/docker.sock",
+      ANTHROPIC_API_KEY: "sk-should-not-be-here",
+    });
+
+    assert.equal(contained?.backend, "docker");
+    assert.equal(contained?.image, "org/worker");
+    assert.equal(contained?.clientVars?.DOCKER_HOST, "unix:///var/run/docker.sock");
+    // The client reaches the daemon; the worker's credentials are the transport's
+    // business and travel by `--env`, not in the client's environment by accident.
+    assert.equal("ANTHROPIC_API_KEY" in (contained?.clientVars ?? {}), false);
+  });
+
+  // The one that matters: `undefined` means "not contained", so returning it here would
+  // run a mission that demanded a sandbox on the bare machine, with nothing saying so.
+  test("refuses to run rather than run a contained mission uncontained", () => {
+    assert.throws(
+      () => containmentFor({ containment: "container" }, { agents: [] }, {}),
+      /no container backend answering/,
+    );
+    assert.throws(
+      () => containmentFor({ containment: "container" }, { agents: [], containers: ["podman"] }, {}),
+      /ORCHESTRA_CONTAINER_IMAGE/,
+    );
   });
 });

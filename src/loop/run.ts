@@ -69,6 +69,11 @@ export interface LoopDeps {
    *  the allowlist it is checked against is still `models`. Absent is a machine with no
    *  provider configured, which is every machine until one is. */
   modelCards?: readonly ModelCard[];
+  /** The container backends this machine answered for (PLAN-NEXT 3.3), from the same
+   *  `staffingOffer` object. Read only by a mission whose envelope demands containment,
+   *  where an empty list is a refusal at validation rather than a mission that staffs
+   *  cleanly and then dies at every dispatch. Absent reads as empty. */
+  containment?: readonly string[];
   /** Absent means nobody can be asked, which is what `--unattended` amounts to here. */
   requestExtension?(request: ExtendRequest): Promise<Budget | undefined>;
   limits?: Partial<Limits>;

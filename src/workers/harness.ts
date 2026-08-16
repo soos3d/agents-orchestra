@@ -35,7 +35,7 @@
 // human's account, and it arrives on the wire.
 import { type ModelCard } from "../providers/modelCard.js";
 import { acpAgentCommand, acpTargets } from "./acp/registry.js";
-import { type ProbedAgents } from "./availability.js";
+import { availableContainment, type ProbedAgents } from "./availability.js";
 import { AVAILABLE_TRANSPORTS, CLI_TARGETS } from "./transport.js";
 
 export type Vendor = "anthropic" | "openai" | "opencode";
@@ -223,11 +223,22 @@ export function staffingOffer(
   // out of the fix for defect 21. The door for a card id is the provider path
   // (PLAN-NEXT 4.2), where the card list genuinely *is* the complete menu.
   cards: readonly ModelCard[] = [],
-): { transports: string[]; targets: string[]; models: string[]; modelCards: ModelCard[] } {
+): {
+  transports: string[];
+  targets: string[];
+  models: string[];
+  modelCards: ModelCard[];
+  containment: string[];
+} {
   const offered = offeredHarnesses(probe);
   return {
     transports: allowedTransports(offered, chosen.harness),
     targets: allowedTargets(offered, chosen.harness),
+    // The fifth leg, here for this function's whole reason (PLAN-NEXT 3.3). It narrows
+    // nothing on a mission composed without containment; on one composed with it, an
+    // empty list is the difference between a refusal at validation and every task dying
+    // at dispatch.
+    containment: availableContainment(probe),
     ...(chosen.workerModel === undefined
       ? { models: allowedModels(offered) }
       : { models: allowedModels(offered, { model: chosen.workerModel }) }),

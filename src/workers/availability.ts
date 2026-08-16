@@ -21,7 +21,10 @@
 // already being red. The *real* prerequisite is the underlying agent CLI: the adapter is
 // a protocol shim over `claude` or `codex`, and it is those that have to be installed and
 // authed. That is what is probed.
+import { type Envelope } from "../domain/envelope.js";
+import { currentUser, type Containment } from "../runtime/contained.js";
 import { acpTargets } from "./acp/registry.js";
+import { buildWorkerEnv } from "./childEnv.js";
 import { AVAILABLE_TRANSPORTS, CLI_TARGETS } from "./transport.js";
 
 /** Everything the availability question needs: the agent CLIs found on PATH
@@ -29,6 +32,90 @@ import { AVAILABLE_TRANSPORTS, CLI_TARGETS } from "./transport.js";
  *  `DiscoveredConfig`, so `workers/` does not learn about `config/`. */
 export interface ProbedAgents {
   readonly agents: readonly string[];
+  /** Container backends whose daemon answered (`discoverConfig().containers`). Absent
+   *  is a config built before containment existed, and reads as none. */
+  readonly containers?: readonly string[];
+  /** `ORCHESTRA_CONTAINER_IMAGE`, when set. There is no default and there must not be:
+   *  an image has to hold the agent CLI, logged in, and none has ever been verified for
+   *  this project (`runtime/contained.ts`). */
+  readonly containerImage?: string;
+}
+
+/**
+ * What the *backend CLI* needs to reach its own daemon — not the worker, and not the
+ * container.
+ *
+ * Beside the launch, like `CLAUDE_TRANSPORT_VARS`, and for a sharper reason than
+ * symmetry: the client's socket address is how this machine is administered, and a
+ * worker that learned it by being sandboxed could ask the daemon for a second container
+ * without one. It goes to the client only, never through `--env`.
+ */
+export const CONTAINER_CLIENT_VARS: readonly string[] = [
+  "PATH",
+  "HOME",
+  "DOCKER_HOST",
+  "DOCKER_CONFIG",
+  "DOCKER_CONTEXT",
+  "DOCKER_CERT_PATH",
+  "DOCKER_TLS_VERIFY",
+  // Podman's equivalents, and where a rootless one keeps its socket.
+  "CONTAINER_HOST",
+  "CONTAINERS_CONF",
+  "XDG_RUNTIME_DIR",
+];
+
+/**
+ * The container backends this machine can actually start work in, which needs *both*
+ * halves: a daemon answering and an image to run.
+ *
+ * Empty means containment is unavailable, and unlike `models` that is not "unknown" —
+ * a backend is running or it is not. A mission whose envelope demands containment is
+ * refused at validation against this list rather than discovering it at dispatch
+ * (`UnavailableContainmentError`, defect 21's shape one layer down).
+ */
+export function availableContainment(probe: ProbedAgents): string[] {
+  return probe.containerImage ? [...(probe.containers ?? [])] : [];
+}
+
+/**
+ * How a worker on this mission is contained, or `undefined` for the missions that are
+ * not — which is every mission whose envelope says `"none"`.
+ *
+ * Built at the composition root from the folded envelope, never from a spec: a task
+ * cannot choose to be let out (`inspectContainment`), and computing it per task would be
+ * one more place for the two answers to disagree.
+ */
+export function containmentFor(
+  envelope: Pick<Envelope, "containment">,
+  probe: ProbedAgents,
+  parentEnv: NodeJS.ProcessEnv = process.env,
+): Containment | undefined {
+  if (envelope.containment !== "container") return undefined;
+
+  const backend = availableContainment(probe)[0];
+  if (backend === undefined || probe.containerImage === undefined) {
+    // Throwing rather than returning `undefined`, and this is the whole reason the
+    // function is shaped this way: `undefined` means "not contained", so a machine that
+    // cannot contain would silently run the mission on itself — the envelope's one hard
+    // promise broken, with nothing in the log saying so. Synthesis refuses this mission
+    // long before here; what reaches this line is a mission staffed on a machine that
+    // could contain and resumed on one that cannot.
+    throw new Error(
+      `This mission's envelope requires every worker to run inside a container, and ` +
+        `this machine cannot start one ` +
+        `(${probe.containers?.length ? "no ORCHESTRA_CONTAINER_IMAGE set" : "no container backend answering"}). ` +
+        `Run 'orchestra doctor', fix the line it names, and resume — refusing to run is ` +
+        `the only alternative to running this mission uncontained.`,
+    );
+  }
+
+  const user = currentUser();
+  return {
+    backend,
+    image: probe.containerImage,
+    ...(user ? { user } : {}),
+    clientVars: buildWorkerEnv({ parent: parentEnv, transportVars: CONTAINER_CLIENT_VARS }),
+  };
 }
 
 /**

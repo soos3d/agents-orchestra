@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { type ModelCard } from "../providers/modelCard.js";
-import { checkChannel, checkProviders } from "./doctor.js";
+import { checkChannel, checkContainment, checkProviders } from "./doctor.js";
 
 describe("checkChannel", () => {
   test("no mirror is the default and passes", () => {
@@ -73,5 +73,38 @@ describe("checkProviders", () => {
     const check = checkProviders([card("a"), card("b")], { nebius: "k" }, [card("a")]);
     assert.equal(check.level, "ok");
     assert.match(check.detail, /1 of 2 cards verified/);
+  });
+});
+
+// PLAN-NEXT 3.3. Two halves fail differently and a single "containment unavailable"
+// would send someone to restart a daemon that is already running.
+describe("checkContainment", () => {
+  const base = {
+    cwd: "/repo",
+    stateDir: "/state",
+    worktreeRoot: "/wt",
+    agents: [],
+    orchestratorModel: "opus",
+    maxConcurrency: 4,
+  };
+
+  test("no backend is not a failure — containment is opt-in per mission", () => {
+    const check = checkContainment({ ...base, containers: [] });
+    assert.equal(check.level, "ok");
+    assert.match(check.detail, /run on this machine/);
+  });
+
+  test("a backend with no image warns, and names the variable rather than an image", () => {
+    const check = checkContainment({ ...base, containers: ["docker"] });
+    assert.equal(check.level, "warn");
+    assert.match(check.fix ?? "", /ORCHESTRA_CONTAINER_IMAGE/);
+    // No image is ever suggested: none has been verified to hold an agent CLI.
+    assert.equal(/docker\.io|ubuntu|alpine|node:/.test(check.fix ?? ""), false);
+  });
+
+  test("both halves present reports what a worker would actually run in", () => {
+    const check = checkContainment({ ...base, containers: ["docker"], containerImage: "org/worker" });
+    assert.equal(check.level, "ok");
+    assert.match(check.detail, /docker running org\/worker/);
   });
 });

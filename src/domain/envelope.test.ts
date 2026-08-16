@@ -89,6 +89,40 @@ describe("envelope", () => {
     assert.deepEqual(parsed.success && parsed.data.env, []);
   });
 
+  // PLAN-NEXT 3.2, and the one check that runs the other way: every rule above catches a
+  // request for *more* than was granted, this one catches a request for less protection
+  // than was imposed. Getting the direction wrong would let a spec out of the sandbox
+  // while the suite stayed green.
+  test("refuses a spec that asks to run outside a mission's container", () => {
+    const contained = anEnvelope({ containment: "container" });
+
+    assert.equal(contains(contained, { containment: "none" }), false);
+    assert.equal(contains(contained, { containment: "container" }), true);
+    // Absent is not a request: almost every spec omits the field and inherits.
+    assert.equal(contains(contained, {}), true);
+  });
+
+  test("a mission that contains nothing is not widened by a spec that says so", () => {
+    // The reverse direction is not a violation — there is nothing to be let out of, and
+    // the runtime is the envelope's to decide either way.
+    assert.equal(contains(anEnvelope({ containment: "none" }), { containment: "container" }), true);
+  });
+
+  test("an envelope written before containment existed folds as uncontained", () => {
+    const legacy = {
+      toolClasses: [],
+      domains: [],
+      fsRoots: ["/repo"],
+      network: "none",
+      maxSpend: { wallMs: 1000 },
+      approval: "local",
+    };
+    const parsed = envelopeSchema.safeParse(legacy);
+
+    assert.equal(parsed.success, true);
+    assert.equal(parsed.success && parsed.data.containment, "none");
+  });
+
   test("refuses network access when the envelope grants none", () => {
     assert.equal(contains(anEnvelope({ network: "none" }), { network: "allowlist" }), false);
   });

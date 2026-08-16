@@ -26,6 +26,7 @@ import {
   aMission,
   aMissionState,
   anAgentSpec,
+  anEnvelope,
   aPlannedTask,
   aProgressLedger,
   aReport,
@@ -604,6 +605,34 @@ describe("executeMission", () => {
     const deps = await buildLoopDeps(store, {} as Calls, config);
 
     assert.deepEqual(deps.modelCards?.map((entry) => entry.id), ["deepseek-ai/DeepSeek-V3"]);
+  });
+
+  // PLAN-NEXT 3.3, and the composition-root half of it. `containmentFor` refuses rather
+  // than returning "not contained", and that refusal is only worth anything if the root
+  // actually calls it — a mission composed with a container, resumed on a machine that
+  // has none, must stop here rather than quietly running every worker on the machine.
+  test("a contained mission refuses to build a loop on a machine that cannot contain", async () => {
+    const store = testStore([
+      missionCreated({ envelope: anEnvelope({ containment: "container" }) }),
+      ...planOnlyMission().slice(1),
+    ]);
+
+    await assert.rejects(
+      () => buildLoopDeps(store, {} as Calls, { ...config, containers: [] }),
+      /no container backend answering/,
+    );
+  });
+
+  test("the loop is told which backends can contain, so synthesis can refuse early", async () => {
+    const store = testStore(planOnlyMission());
+
+    const deps = await buildLoopDeps(store, {} as Calls, {
+      ...config,
+      containers: ["docker"],
+      containerImage: "org/worker",
+    });
+
+    assert.deepEqual(deps.containment, ["docker"]);
   });
 
   test("the loop is offered acp once a coding CLI with a pinned adapter is on PATH", async () => {

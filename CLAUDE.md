@@ -145,6 +145,24 @@ the Agent SDK; a second orchestrator harness is deferred because `queryOptions` 
 semantics (`settingSources: []`, the `tools`-vs-`allowedTools` trap) and `withSchema` assumes a
 model that follows a derived schema.
 
+**Containment is a third runtime that wraps the other two** (`runtime/contained.ts`, PLAN-NEXT 3).
+`Envelope.containment` is `"none" | "container"`, `.default("none")` like `Envelope.env`, and
+`containedCommand` rewrites `(cmd, args, env)` for `sh.ts` *and* `duplex.ts` — wiring only `cli`
+would be a sandbox whose door is whichever transport a model happened to pick. Four facts are
+load-bearing and none is guessable. **The mount path is identical inside and out** (`--mount
+type=bind,src=P,dst=P`, never a tidy `/workspace`), because `detectRepoEscape`, the `owns` lease
+check and the artifact path in the worker's prompt are all host paths, and remapping them makes
+every one of those compare a tree the worker never touched while still passing. **Values never
+reach the argv**: `--env NAME` copies from the backend CLI's own environment, so a key is not in
+`ps`. **`--entrypoint` is passed explicitly**, because an image with its own `ENTRYPOINT` treats
+`image claude -p …` as arguments *to that entrypoint* and returns its output as the worker's
+report. And **`docker info` exits 0 with the daemon stopped** — `probeContainers` uses `version
+--format {{.Server.Version}}` plus a non-empty check, or it would offer a backend that cannot start
+a container, which is defect 21 one layer down. There is **no default image** and there must not
+be: `ORCHESTRA_CONTAINER_IMAGE` or containment is unavailable. `containmentFor` *throws* rather
+than returning `undefined` when a contained mission meets a machine that cannot contain, because
+`undefined` means "not contained" and would run the mission on the bare machine silently.
+
 **`inspect()` checks the target and the model, and the second had no door at all before.**
 `AgentSpec.model` is a required non-empty string that becomes `--model` on a real CLI, written by a
 model and checked by nothing — an invented name passed validation, reached the log, and failed at

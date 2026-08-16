@@ -33,6 +33,7 @@ import { type Task } from "../domain/task.js";
 import { routeTransport } from "../workers/router.js";
 import { createAcpTransport } from "../workers/acp/transport.js";
 import { createPermissionPort, type PermissionPort } from "../workers/acp/permissionPort.js";
+import { containmentFor } from "../workers/availability.js";
 import { staffingOffer } from "../workers/harness.js";
 import { createCliReformatter, createCliTransport } from "../workers/transport.js";
 import { artifactRoot, loreDir, type DiscoveredConfig } from "../config/discover.js";
@@ -392,8 +393,15 @@ export async function buildLoopDeps(
   // switched off at the same time.
   const permissions = permissionPortFor(store, human, onWarn);
 
+  // Containment is the mission's, decided from the folded envelope once and handed to
+  // both runtimes (PLAN-NEXT 3.2). Both, and not only `cli`: wiring one of them is a
+  // sandbox with a door in it, and which door depends on how a model chose to staff a
+  // task. `undefined` is a mission composed without containment, which is every mission
+  // today; a mission that needs one and cannot have it throws here rather than running.
+  const contained = containmentFor(store.state().mission.capabilityEnvelope, config);
+
   const transport = routeTransport({
-    cli: createCliTransport(),
+    cli: createCliTransport(contained ? { contained } : {}),
     // Phase 7's second key. `requestPermission` is what closes defect 14: ACP's
     // permission channel replaces the blanket `--dangerously-skip-permissions`, and it
     // is only a replacement if the answer comes from a human rather than from a
@@ -401,6 +409,7 @@ export async function buildLoopDeps(
     acp: createAcpTransport({
       requestPermission: (taskId, request) => permissions.requestPermission(taskId, request),
       ...(onWarn ? { onWarn } : {}),
+      ...(contained ? { contained } : {}),
     }),
   });
   const verify = createVerifier({ calls });
