@@ -92,6 +92,21 @@ describe("saved agent profiles", () => {
       assert.deepEqual(loadProfiles(stateDir), [aProfile()]);
     });
 
+    // Defect 42. Those names were checked against the envelope of the mission that
+    // promoted them, and the missions offered this profile have their own — narrower,
+    // older, or about something else. A grant riding across on a name is a grant no
+    // human made, which is the same argument `offer.ts` makes about tools.
+    test("drops the environment variables the promoted spec was granted", () => {
+      const promoted = aProfile({ spec: anAgentSpec({ env: ["XERO_TOKEN"] }) });
+
+      const file = saveProfile(stateDir, promoted);
+
+      assert.doesNotMatch(fs.readFileSync(file, "utf8"), /XERO_TOKEN/);
+      assert.equal(loadProfiles(stateDir)[0]?.spec.env, undefined);
+      // And the caller's own object is untouched — the strip is a copy, not a mutation.
+      assert.deepEqual(promoted.spec.env, ["XERO_TOKEN"]);
+    });
+
     test("refuses a name that is really a path", () => {
       for (const name of ["../escape", "a/b", "a\\b", ""]) {
         assert.throws(() => saveProfile(stateDir, aProfile({ name })), /not a profile name/);

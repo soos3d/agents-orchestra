@@ -503,6 +503,14 @@ to edit, fix, or clean up the repository. If the task's goal cannot be done with
 changing tracked files, it was planned as the wrong kind: say so in \`role\` and keep
 the tools read-only, rather than granting \`Write\` and letting it try.
 
+\`env\` is optional and names the environment variables this task needs — names only,
+never values, and only names the \`envelope.env\` list in the input already grants. A
+name outside it is refused at validation exactly like a tool outside the catalogue, and
+widening the envelope is a human decision, so the retry cannot grant it either. Leave
+it out unless the work genuinely cannot be done without the value: the worker is given
+whatever its transport needs to start and authenticate regardless, so a task almost
+never needs this.
+
 \`outputPath\` is optional and names a file *inside* that directory — \`"report.md"\`,
 \`"findings/summary.md"\`. It is relative, always: the runtime decides the directory and
 a spec that names an absolute path, or one that climbs out with \`..\`, is refused at

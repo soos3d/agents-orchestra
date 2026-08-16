@@ -10,8 +10,9 @@ import { type WorkerRun, type WorkerTransport } from "../loop/dispatch.js";
 import { renderSchema } from "../runtime/json.js";
 import { workerPrompt } from "./prompt.js";
 import { type Reformatter } from "./report.js";
-import { runClaudeCode } from "./claudeCode.js";
-import { runCodex } from "./codex.js";
+import { buildWorkerEnv } from "./childEnv.js";
+import { CLAUDE_TRANSPORT_VARS, runClaudeCode } from "./claudeCode.js";
+import { CODEX_TRANSPORT_VARS, runCodex } from "./codex.js";
 
 /**
  * The registry: the transports that are actually built, as opposed to the five §7
@@ -34,6 +35,11 @@ export interface CliTransportOptions {
   /** Injected so what a worker is *told* is assertable without spawning a CLI — the
    *  same reason `createCliReformatter` takes one (defect 18). */
   runners?: { claude: typeof runClaudeCode; codex: typeof runCodex };
+  /** The environment this process was started with, from which a worker's own is
+   *  *constructed* (defect 42). Injected for the reason `runners` is: what a worker
+   *  receives has to be assertable without spawning anything, and a test cannot put a
+   *  fake secret in the real `process.env`. */
+  parentEnv?: NodeJS.ProcessEnv;
 }
 
 export interface ReformatterOptions {
@@ -45,6 +51,8 @@ export interface ReformatterOptions {
   /** Injected so what the restating session is *told* is assertable without spawning
    *  a CLI — the same reason `queryOptions` is a function (defect 18). */
   run?: typeof runClaudeCode;
+  /** The environment its own is constructed from (defect 42). See `CliTransportOptions`. */
+  parentEnv?: NodeJS.ProcessEnv;
 }
 
 /** Restating a JSON object is not the work, so it gets a cheap model and minutes
@@ -92,9 +100,16 @@ says nothing. Do not invent artifacts, claims, or a summary the worker did not g
     // `.text` only: restating one object is not the mission's work, and folding its
     // tokens into the task's figure would price a parse failure as part of the task
     // that suffered it. It rides the subscription either way (§9.5).
+    // Restating one object is still a CLI session in the mission's directory, so it
+    // gets a constructed environment like any other (defect 42) — and never a task's
+    // granted variables, since it is not doing the task's work.
     const outcome = await (options.run ?? runClaudeCode)(prompt, options.cwd, {
       model: options.model ?? REFORMAT_MODEL,
       timeoutMs: options.timeoutMs ?? REFORMAT_TIMEOUT_MS,
+      env: buildWorkerEnv({
+        parent: options.parentEnv ?? process.env,
+        transportVars: CLAUDE_TRANSPORT_VARS,
+      }),
     });
     return outcome.text;
   };
@@ -131,12 +146,24 @@ export function createCliTransport(options: CliTransportOptions = {}): WorkerTra
     // CLI and ACP paths cannot drift into two contracts (`prompt.ts`).
     const prompt = workerPrompt(task, artifactDir);
     const runners = options.runners ?? { claude: runClaudeCode, codex: runCodex };
-    const run = transport.target === "codex" ? runners.codex : runners.claude;
+    const codex = transport.target === "codex";
+    const run = codex ? runners.codex : runners.claude;
+
+    // Constructed, never filtered (defect 42): what the CLI needs to start plus the
+    // variables this task's envelope granted it, and nothing else this process happens
+    // to hold. `agentSpec.env` was checked against the envelope at synthesis, so by
+    // here the only question left is which of those names the machine actually has.
+    const env = buildWorkerEnv({
+      parent: options.parentEnv ?? process.env,
+      transportVars: codex ? CODEX_TRANSPORT_VARS : CLAUDE_TRANSPORT_VARS,
+      ...(task.agentSpec.env ? { allowed: task.agentSpec.env } : {}),
+    });
 
     const startedAt = Date.now();
     const outcome = await run(prompt, cwd, {
       model: transport.model ?? model,
       timeoutMs: options.timeoutMs ?? task.budget.wallMs,
+      env,
       ...(signal ? { signal } : {}),
     });
 

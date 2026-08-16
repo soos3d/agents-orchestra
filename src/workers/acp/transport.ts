@@ -44,6 +44,7 @@ import { StringDecoder } from "node:string_decoder";
 import { type Task } from "../../domain/task.js";
 import { type WorkerRun, type WorkerTransport } from "../../loop/dispatch.js";
 import { spawnDuplex, type DuplexExit, type DuplexProcess } from "../../runtime/duplex.js";
+import { buildWorkerEnv } from "../childEnv.js";
 import { workerPrompt } from "../prompt.js";
 import { decidePermission, type PermissionRequest } from "./permissions.js";
 import { estimateFromWire, readSessionUsage, sessionLogPath } from "./usage.js";
@@ -103,10 +104,41 @@ export interface AcpTransportDeps {
    *  counts come from (§9.5, `usage.ts`). Injected for the same reason `resolveAgent`
    *  is: a test must be able to point it at a fixture rather than at the real home. */
   home?: string;
+  /** The environment this process was started with, from which the adapter's own is
+   *  constructed (defect 42). Injected for the same reason `home` is: a test must be
+   *  able to put a fake secret in a fake parent environment and assert it does not
+   *  reach the child. */
+  parentEnv?: NodeJS.ProcessEnv;
   clientInfo?: ClientInfo;
 }
 
 const DEFAULT_CLIENT_INFO: ClientInfo = { name: "orchestra", version: "0.1.0" };
+
+/**
+ * Everything the adapter's process will be able to see (defect 42).
+ *
+ * Constructed, never filtered: what this adapter needs to start, plus the variables the
+ * mission envelope granted this task, plus whatever the launch sets outright — and
+ * nothing else the orchestrator happens to hold. `CLAUDECODE` is absent because nothing
+ * names it, which is what replaced the present-and-`undefined` strip the registry used
+ * to carry.
+ *
+ * Pure and exported for the `agentCalls.ts` reason: this is below the fixture harness,
+ * a spawn's environment is invisible to every test that does not read it here, and the
+ * variable that leaks is the one nobody wrote an assertion about.
+ */
+export function acpChildEnv(
+  launch: AcpLaunch,
+  task: Task,
+  parentEnv: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  return buildWorkerEnv({
+    parent: parentEnv,
+    ...(launch.inherits ? { transportVars: launch.inherits } : {}),
+    ...(task.agentSpec.env ? { allowed: task.agentSpec.env } : {}),
+    ...(launch.env ? { literals: launch.env } : {}),
+  });
+}
 
 /**
  * The `acp` transport (§7's registry, second row).
@@ -139,11 +171,13 @@ export function createAcpTransport(deps: AcpTransportDeps): WorkerTransport {
       );
     }
 
+    const env = acpChildEnv(launch, task, deps.parentEnv ?? process.env);
+
     const startedAt = Date.now();
     const proc = spawnDuplex(launch.command, launch.args, {
       cwd,
       timeoutMs: task.budget.wallMs,
-      ...(launch.env ? { env: launch.env } : {}),
+      env,
       ...(signal ? { signal } : {}),
     });
 

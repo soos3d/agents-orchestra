@@ -25,6 +25,18 @@ export interface RunResult {
 
 export interface RunOptions {
   cwd?: string;
+  /**
+   * The child's **entire** environment, not an overlay on this process's (defect 42).
+   *
+   * It used to be `{ ...process.env, ...opts.env }`, which made every worker inherit
+   * every credential the orchestrator was started with and made "no env" the loudest
+   * possible grant. Now a caller that says nothing gets the parent environment — which
+   * is right for git plumbing, `doctor` probes and a project's own verify command,
+   * all of which are the operator's own tools running as the operator — and a caller
+   * that hands one over gets exactly that and nothing more. Merging over the parent is
+   * still possible and now has to be written out (`{ ...process.env, X: "1" }`), which
+   * is the point: it is a decision rather than the default.
+   */
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
   input?: string;
@@ -68,7 +80,7 @@ export function run(cmd: string, args: readonly string[], opts: RunOptions = {})
     const startedAt = Date.now();
     const child = spawn(cmd, [...args], {
       cwd: opts.cwd,
-      env: { ...process.env, ...opts.env },
+      env: opts.env ?? process.env,
       stdio: ["pipe", "pipe", "pipe"],
     });
 

@@ -3,13 +3,14 @@
 // request should still be refused.
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { contains, describeViolations, violations } from "./envelope.js";
+import { contains, describeViolations, envelopeSchema, violations } from "./envelope.js";
 import { anEnvelope } from "../testing/fixtures.js";
 
 const envelope = anEnvelope({
   toolClasses: ["fs.read", "browser.read"],
   domains: ["xero.com", "ramp.com"],
   fsRoots: ["/repo/src"],
+  env: ["XERO_TOKEN"],
   network: "allowlist",
 });
 
@@ -53,6 +54,39 @@ describe("envelope", () => {
 
   test("refuses a path that escapes a root by traversal", () => {
     assert.equal(contains(envelope, { fsPaths: ["/repo/src/../../etc/passwd"] }), false);
+  });
+
+  test("admits an environment variable the envelope names", () => {
+    assert.equal(contains(envelope, { env: ["XERO_TOKEN"] }), true);
+  });
+
+  // The actual leak shape (defect 42): the variable is sitting in `process.env` and
+  // the spec asked for it by name. Whether the machine has it is not the question.
+  test("refuses an environment variable the envelope never named", () => {
+    assert.deepEqual(violations(envelope, { env: ["AWS_SECRET_ACCESS_KEY"] }), [
+      { field: "env", requested: "AWS_SECRET_ACCESS_KEY" },
+    ]);
+  });
+
+  test("an envelope granting no variables refuses every one of them", () => {
+    assert.equal(contains(anEnvelope({ env: [] }), { env: ["HOME"] }), false);
+  });
+
+  // Every `mission_created` written before the field existed embeds an envelope
+  // without it, and those logs still have to fold.
+  test("an envelope recorded before env existed parses as granting none", () => {
+    const legacy = {
+      toolClasses: ["fs.read"],
+      domains: [],
+      fsRoots: ["/repo"],
+      network: "none",
+      maxSpend: { wallMs: 1000 },
+      approval: "local",
+    };
+    const parsed = envelopeSchema.safeParse(legacy);
+
+    assert.equal(parsed.success, true);
+    assert.deepEqual(parsed.success && parsed.data.env, []);
   });
 
   test("refuses network access when the envelope grants none", () => {

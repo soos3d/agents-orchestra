@@ -6,11 +6,36 @@
 // channel is Phase 7 (defect 14).
 import { isEmptyUsage, type TokenUsage } from "../domain/budget.js";
 import { run } from "../runtime/sh.js";
+import { PROCESS_BASELINE_VARS } from "./childEnv.js";
+
+/**
+ * What `claude` needs from the environment to start and find its own credentials
+ * (defect 42), beside the launch that needs it.
+ *
+ * The CLI authenticates from `~/.claude` on a logged-in machine, which is why `HOME`
+ * carries most of the weight — but an API key or a gateway override is a legitimate
+ * way to run it too, and a worker that cannot see one fails as an authentication error
+ * three layers down rather than as a missing variable. `CLAUDECODE` is deliberately
+ * absent and must stay absent: see the header of `acp/registry.ts`.
+ */
+export const CLAUDE_TRANSPORT_VARS: readonly string[] = [
+  ...PROCESS_BASELINE_VARS,
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_BASE_URL",
+  "ANTHROPIC_MODEL",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "CLAUDE_CONFIG_DIR",
+];
 
 export interface CliWorkerOptions {
   model: string;
   timeoutMs?: number;
   signal?: AbortSignal;
+  /** The child's entire environment (defect 42). Constructed by the transport from the
+   *  task's granted names plus `CLAUDE_TRANSPORT_VARS`; omitted only by callers that
+   *  are not running mission work, who then inherit this process's. */
+  env?: NodeJS.ProcessEnv;
 }
 
 /**
@@ -116,6 +141,7 @@ export async function runClaudeCode(
       cwd: worktree,
       timeoutMs: options.timeoutMs ?? DEFAULT_WORKER_TIMEOUT_MS,
       signal: options.signal,
+      ...(options.env ? { env: options.env } : {}),
     },
   );
 

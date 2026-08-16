@@ -21,11 +21,24 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { run } from "../runtime/sh.js";
+import { PROCESS_BASELINE_VARS } from "./childEnv.js";
 import {
   DEFAULT_WORKER_TIMEOUT_MS,
   type CliOutcome,
   type CliWorkerOptions,
 } from "./claudeCode.js";
+
+/** What `codex` needs from the environment to start and find its own credentials
+ *  (defect 42), beside the launch that needs it. It authenticates from `~/.codex` on a
+ *  logged-in machine — `CODEX_HOME` moves that directory — and an API key is the other
+ *  supported way in. Same list-beside-the-launch rule as `CLAUDE_TRANSPORT_VARS`: an
+ *  adapter's credential is that adapter's business and no other worker's. */
+export const CODEX_TRANSPORT_VARS: readonly string[] = [
+  ...PROCESS_BASELINE_VARS,
+  "OPENAI_API_KEY",
+  "OPENAI_BASE_URL",
+  "CODEX_HOME",
+];
 
 /** The exact command line, so the flags are assertable without spawning anything. */
 export function codexArgs(task: string, model: string, outFile: string): string[] {
@@ -66,6 +79,7 @@ export async function runCodex(
       cwd: worktree,
       timeoutMs: options.timeoutMs ?? DEFAULT_WORKER_TIMEOUT_MS,
       signal: options.signal,
+      ...(options.env ? { env: options.env } : {}),
     },
   );
 

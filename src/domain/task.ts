@@ -70,6 +70,14 @@ export const agentSpecSchema = z.object({
   // reason `tools` is `z.array(z.string())`: an illegal declaration has to be
   // *representable* or the refusal is untestable.
   outputPath: z.string().optional(),
+  // The environment variables this task needs, by name and never by value (defect 42).
+  // The third capability on this spec, and it is checked the same way the other two
+  // are: `tools` against the envelope's classes, `owns` against the other tasks'
+  // leases, `env` against the envelope's granted names. Absent means the task gets
+  // none of the mission's variables, which is the right answer for almost every task
+  // — a worker still receives whatever its transport needs to start, and that list
+  // lives beside the launch in `workers/`, not here and not in the envelope.
+  env: z.array(z.string().min(1)).optional(),
   model: z.string().min(1),
   verify: verifySpecSchema,
 });

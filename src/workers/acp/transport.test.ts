@@ -25,6 +25,7 @@ import { type PermissionRequest } from "./permissions.js";
 import { type AcpLaunch } from "./registry.js";
 import { sessionLogPath } from "./usage.js";
 import {
+  acpChildEnv,
   acpToolName,
   containedPath,
   createAcpTransport,
@@ -422,6 +423,48 @@ describe("the acp transport", () => {
     // the warnings this test is about rather than over all of them.
     const drift = warnings.filter((message) => message.includes("thinking_out_loud"));
     assert.equal(drift.length, 1);
+  });
+
+  // Defect 42. Every session above spawns a real subprocess through this function, so
+  // they are the evidence that a constructed environment still *starts* an agent; what
+  // they cannot see is which variables it holds once it has. That is what these assert,
+  // and the case that matters is a secret sitting in the orchestrator's own environment
+  // that no envelope granted anybody.
+  describe("what the adapter's process can see", () => {
+    const parentEnv: NodeJS.ProcessEnv = {
+      PATH: "/usr/bin",
+      HOME: "/Users/someone",
+      CLAUDECODE: "1",
+      AWS_SECRET_ACCESS_KEY: "leak-me",
+      XERO_TOKEN: "granted-by-envelope",
+    };
+    const launch: AcpLaunch = { command: "npx", args: ["-y", "adapter"], inherits: ["PATH", "HOME"] };
+
+    test("holds what the launch names and nothing else the orchestrator has", () => {
+      const env = acpChildEnv(launch, anAcpTask(), parentEnv);
+
+      assert.deepEqual(env, { PATH: "/usr/bin", HOME: "/Users/someone" });
+    });
+
+    test("carries a variable this task's envelope granted it", () => {
+      const task = aCodeTask({
+        agentSpec: anAgentSpec({ transport: { id: "acp", target: "claude" }, env: ["XERO_TOKEN"] }),
+      });
+
+      assert.equal(acpChildEnv(launch, task, parentEnv)["XERO_TOKEN"], "granted-by-envelope");
+    });
+
+    // The registry's oldest rule, now expressed as an absence rather than as a strip:
+    // an adapter that inherits CLAUDECODE believes it is nested inside a session.
+    test("never carries CLAUDECODE, whatever the orchestrator is running under", () => {
+      assert.equal("CLAUDECODE" in acpChildEnv(launch, anAcpTask(), parentEnv), false);
+    });
+
+    test("a launch's own values are set outright", () => {
+      const env = acpChildEnv({ ...launch, env: { ADAPTER_MODE: "acp" } }, anAcpTask(), parentEnv);
+
+      assert.equal(env["ADAPTER_MODE"], "acp");
+    });
   });
 });
 

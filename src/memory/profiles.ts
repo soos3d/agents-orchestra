@@ -131,6 +131,21 @@ function assertName(name: string): void {
   }
 }
 
+/**
+ * A promoted spec, minus the environment variables it was granted (defect 42).
+ *
+ * The same argument `offer.ts` makes about tools and transports, one capability
+ * further: those names were checked against the envelope of the mission that promoted
+ * them, and this profile will be offered to missions whose envelopes are narrower,
+ * older, or about something else entirely. A grant that rides across on a name is a
+ * grant no human made. Dropped at the write rather than at the read so a profile on
+ * disk — which a human is invited to edit — never *looks* like it carries one.
+ */
+const withoutEnv = (profile: Profile): Profile => {
+  const { env: _granted, ...spec } = profile.spec;
+  return { ...profile, spec };
+};
+
 /** Atomic and owner-only, like every other write in the system. */
 export function saveProfile(stateDir: string, profile: Profile): string {
   assertName(profile.name);
@@ -138,7 +153,7 @@ export function saveProfile(stateDir: string, profile: Profile): string {
   const dir = ensurePrivateDir(profilesDir(stateDir));
   const file = path.join(dir, `${profile.name}.md`);
   const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, renderProfile(profile), { mode: FILE_MODE });
+  fs.writeFileSync(tmp, renderProfile(withoutEnv(profile)), { mode: FILE_MODE });
   fs.chmodSync(tmp, FILE_MODE);
   fs.renameSync(tmp, file);
   return file;

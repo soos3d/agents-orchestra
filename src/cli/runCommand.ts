@@ -155,6 +155,10 @@ export function defaultEnvelope(config: DiscoveredConfig, budget: Budget): Envel
     toolClasses: [...DEFAULT_TOOL_CLASSES],
     domains: [],
     fsRoots: [config.repoRoot ?? config.cwd],
+    // No mission variables (defect 42). A worker gets the vars its transport needs to
+    // start — those live beside the launch in `workers/` — and nothing else until a
+    // human names one here, which is the same act as widening any other capability.
+    env: [],
     network: "none",
     maxSpend: budget,
     approval: "local",

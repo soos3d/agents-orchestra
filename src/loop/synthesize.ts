@@ -432,6 +432,9 @@ function inspect(
   const capability = inspectTools(spec.tools, envelope, catalogue);
   if (capability) return capability;
 
+  const environment = inspectEnv(spec.env ?? [], envelope);
+  if (environment) return environment;
+
   // Defect 27: the judge reads files on disk (§3), so a judge-verified agent must be
   // able to leave one behind. A rubric about files and a toolset that cannot make one
   // is a task that fails however well the work is done — and it was found exactly that
@@ -534,6 +537,38 @@ function inspectTools(
     ]
       .filter(Boolean)
       .join(" "),
+  };
+}
+
+/**
+ * The environment half of the same ceiling (defect 42).
+ *
+ * A separate check from `inspectTools` rather than one more field folded into it,
+ * because the sentence a model needs back is different: a denied tool is answered by
+ * choosing another tool from the catalogue, and a denied variable cannot be answered by
+ * choosing another variable — the work either can be done without it or the envelope is
+ * too narrow, which is the human decision `raise` parks on. It reports as `capability`
+ * for exactly that reason: same door, same event, same question.
+ */
+function inspectEnv(requested: readonly string[], envelope: Envelope): SpecProblem | undefined {
+  const outside = violations(envelope, { env: [...requested] });
+  if (outside.length === 0) return undefined;
+
+  const denied = outside.map((violation) => violation.requested);
+  const granted =
+    envelope.env.length > 0
+      ? `This envelope grants: ${envelope.env.join(", ")}.`
+      : `This envelope grants no environment variables at all.`;
+
+  return {
+    kind: "capability",
+    requested: denied.join(", "),
+    retry:
+      `These environment variables are not granted by the mission envelope — ` +
+      `${denied.join(", ")}. ${granted} A worker is given the variables its transport ` +
+      `needs to start and nothing else, so naming one here that the envelope does not ` +
+      `list fails validation. Ask for none unless the task genuinely cannot be done ` +
+      `without the value, and never put a value in the spec — only names.`,
   };
 }
 

@@ -28,6 +28,7 @@ export const anEnvelope = (patch: Partial<Envelope> = {}): Envelope => ({
   toolClasses: [...DEFAULT_TOOL_CLASSES],
   domains: [],
   fsRoots: ["/repo"],
+  env: [],
   network: "none",
   maxSpend: { wallMs: 4 * 60 * 60_000 },
   approval: "local",

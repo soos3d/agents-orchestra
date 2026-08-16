@@ -36,6 +36,9 @@ export interface DuplexExit {
 
 export interface DuplexOptions {
   cwd: string;
+  /** The child's **entire** environment when given, not an overlay on this process's
+   *  — the same change `sh.ts` carries and for the same reason (defect 42). Omitted
+   *  inherits the parent, which no worker path does. */
   env?: NodeJS.ProcessEnv;
   /** Hard ceiling on the whole session. Terminates the child; `timedOut` records it. */
   timeoutMs: number;
@@ -82,7 +85,7 @@ export function spawnDuplex(
 
   const child = spawn(command, [...args], {
     cwd: opts.cwd,
-    env: { ...process.env, ...opts.env },
+    env: opts.env ?? process.env,
     stdio: ["pipe", "pipe", "pipe"],
   });
 

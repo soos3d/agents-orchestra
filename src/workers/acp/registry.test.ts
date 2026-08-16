@@ -2,10 +2,10 @@
 // spawned, and is only found out by a mission that dies at dispatch.
 //
 // Two of these assertions look pedantic and are not. The version pin is exact because a
-// floating tag is what the OpenClaw spike caught pointing at a 0.0.0 stub, and the
-// `CLAUDECODE` entry has to survive as a *present key with an undefined value* — that is
-// the shape `child_process` strips from the child's environment, and a test asserting only
-// `env.CLAUDECODE === undefined` would pass just as happily if the key were dropped.
+// floating tag is what the OpenClaw spike caught pointing at a 0.0.0 stub; and since
+// defect 42 the child environment is built from `inherits` alone, so a launch that
+// forgets `PATH` cannot start `npx` at all and one that names `CLAUDECODE` puts the
+// spike's nesting bug back — both of those are properties of this table, checked here.
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { acpAgentCommand, acpTargets } from "./registry.js";
@@ -40,13 +40,29 @@ describe("the acp agent registry", () => {
   });
 
   // The spike's finding: claude-code-acp inherits `CLAUDECODE=1` when the mission itself
-  // runs under Claude Code, and the adapter then behaves as though it were nested.
-  test("claude's env strips CLAUDECODE rather than setting it", () => {
-    const launch = acpAgentCommand("claude");
+  // runs under Claude Code, and the adapter then behaves as though it were nested. Under
+  // a constructed environment the fix is an absence, so that is what is asserted — and
+  // for both targets, since the next adapter added is the one that gets it wrong.
+  test("no launch inherits CLAUDECODE", () => {
+    for (const target of acpTargets()) {
+      const launch = acpAgentCommand(target);
 
-    assert.ok(launch?.env);
-    assert.ok("CLAUDECODE" in launch.env, "the key must be present for spawn to strip it");
-    assert.equal(launch.env["CLAUDECODE"], undefined);
+      assert.ok(launch);
+      assert.equal(launch.inherits?.includes("CLAUDECODE") ?? false, false, target);
+      assert.equal("CLAUDECODE" in (launch.env ?? {}), false, target);
+    }
+  });
+
+  // Nothing is inherited by default any more, so a launch that names nothing is a
+  // launch whose `npx` cannot be found and whose CLI cannot find its own credentials.
+  test("every launch inherits what it needs to start and authenticate", () => {
+    for (const target of acpTargets()) {
+      const launch = acpAgentCommand(target);
+
+      assert.ok(launch?.inherits, `${target} inherits nothing and cannot start`);
+      assert.ok(launch.inherits.includes("PATH"), `${target} cannot resolve ${launch.command}`);
+      assert.ok(launch.inherits.includes("HOME"), `${target} cannot find its credentials`);
+    }
   });
 
   // Not built rather than not chosen: the transport turns `undefined` into an error

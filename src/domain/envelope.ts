@@ -16,6 +16,14 @@ export const envelopeSchema = z.object({
   // too broad to mean anything, approved by a human who read it as specific.
   domains: z.array(z.string().min(1)),
   fsRoots: z.array(z.string().min(1)),
+  // Environment variable *names*, never values (defect 42). The envelope governs what a
+  // worker may do; without this it governed nothing about what a worker may read, and
+  // both spawn paths handed every child the whole of `process.env` — so a `research`
+  // task that needs no credential inherited every one the orchestrator was started with.
+  // `.default([])` rather than `.optional()`: the envelope is embedded in
+  // `mission_created`, so every log written before this field existed has to keep
+  // folding, and "granted nothing" is the honest reading of a mission that never said.
+  env: z.array(z.string().min(1)).default([]),
   network: z.enum(["none", "allowlist"]),
   maxSpend: budgetSchema,
   // "This mission's gates never leave this machine" is a blast-radius property and
@@ -29,11 +37,14 @@ export interface CapabilityRequest {
   toolClasses?: string[];
   domains?: string[];
   fsPaths?: string[];
+  /** Variable names a spec asked to be given. Names only — a value here would put a
+   *  secret in the event log, which is the failure this field exists to prevent. */
+  env?: string[];
   network?: Envelope["network"];
 }
 
 export interface EnvelopeViolation {
-  field: "toolClasses" | "domains" | "fsPaths" | "network";
+  field: "toolClasses" | "domains" | "fsPaths" | "env" | "network";
   requested: string;
 }
 
@@ -56,6 +67,7 @@ export function violations(
 ): readonly EnvelopeViolation[] {
   const allowedClasses = new Set(envelope.toolClasses);
   const allowedHosts = new Set(envelope.domains);
+  const allowedVars = new Set(envelope.env);
 
   return [
     ...(request.toolClasses ?? [])
@@ -69,6 +81,12 @@ export function violations(
     ...(request.fsPaths ?? [])
       .filter((target) => outsideRoots(target, envelope.fsRoots))
       .map((requested) => ({ field: "fsPaths" as const, requested })),
+    // Set containment on names, exactly like tool classes: a variable the envelope
+    // never named is a widening request whatever it happens to be called, and whether
+    // or not this machine's environment has it.
+    ...(request.env ?? [])
+      .filter((name) => !allowedVars.has(name))
+      .map((requested) => ({ field: "env" as const, requested })),
     ...(request.network === "allowlist" && envelope.network === "none"
       ? [{ field: "network" as const, requested: "allowlist" }]
       : []),

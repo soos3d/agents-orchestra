@@ -364,6 +364,70 @@ describe("synthesis against the envelope", () => {
     assert.match((asked as { question: string }).question, /Bash/);
   });
 
+  // Defect 42's half of the ceiling. The leak shape it refuses is specific: the
+  // variable is sitting in `process.env` right now, the spec asked for it by name, and
+  // before this check there was nothing between the two.
+  test("re-asks once when a spec names a variable the envelope does not grant", async () => {
+    const store = testStore([missionCreated({ envelope: anEnvelope({ env: ["XERO_TOKEN"] }) })]);
+    const { calls, seen } = scriptedSynthesize([
+      anAgentSpec({ env: ["XERO_TOKEN", "AWS_SECRET_ACCESS_KEY"] }),
+      anAgentSpec({ env: ["XERO_TOKEN"] }),
+    ]);
+
+    const added = await synthesizeTasks(deps(store, calls), [aPlannedTask()], 0);
+
+    assert.equal(added, 1);
+    assert.equal(seen.length, 2);
+    assert.match(seen[1]!.rejected ?? "", /AWS_SECRET_ACCESS_KEY/);
+    // What *is* granted, so the retry can be answered rather than only refused.
+    assert.match(seen[1]!.rejected ?? "", /XERO_TOKEN/);
+  });
+
+  test("accepts a spec that names only variables the envelope granted", async () => {
+    const store = testStore([missionCreated({ envelope: anEnvelope({ env: ["XERO_TOKEN"] }) })]);
+    const { calls } = scriptedSynthesize([anAgentSpec({ env: ["XERO_TOKEN"] })]);
+
+    assert.equal(await synthesizeTasks(deps(store, calls), [aPlannedTask()], 0), 1);
+  });
+
+  // The common case: no envelope names a variable, so every spec that asks for one is
+  // refused, and the retry says the list is empty rather than implying a near-miss.
+  test("an envelope granting no variables refuses a spec that names one", async () => {
+    const store = testStore([missionCreated()]);
+    const { calls, seen } = scriptedSynthesize([
+      anAgentSpec({ env: ["DATABASE_URL"] }),
+      anAgentSpec({ env: [] }),
+    ]);
+
+    await synthesizeTasks(deps(store, calls), [aPlannedTask()], 0);
+
+    assert.match(seen[1]!.rejected ?? "", /grants no environment variables/);
+  });
+
+  // Same door as an out-of-envelope tool: widening is a human decision either way, so
+  // it parks with a question rather than going back to the planner.
+  test("a variable outside the envelope reaches the human like any other capability", async () => {
+    const store = testStore([missionCreated()]);
+    const { calls } = scriptedSynthesize([
+      anAgentSpec({ env: ["DATABASE_URL"] }),
+      anAgentSpec({ env: ["DATABASE_URL"] }),
+    ]);
+
+    await assert.rejects(
+      () => synthesizeTasks(deps(store, calls), [aPlannedTask()], 0),
+      (error: Error) => {
+        assert.ok(error instanceof EnvelopeViolationError);
+        assert.match(error.message, /DATABASE_URL/);
+        return true;
+      },
+    );
+
+    assert.ok(store.inputs.find((event) => event.type === "envelope_violation"));
+    const asked = store.inputs.find((event) => event.type === "question_asked");
+    assert.ok(asked);
+    assert.match((asked as { question: string }).question, /DATABASE_URL/);
+  });
+
   // A transport or a lease problem is the planner's to fix, so neither one belongs in
   // an inbox nobody can act on.
   test("does not ask the human about a transport it can replan around", async () => {

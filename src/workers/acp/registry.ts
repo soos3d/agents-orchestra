@@ -16,24 +16,34 @@
 // captures — and `protocol.ts`'s schemas are the test that the new version still speaks
 // the dialect we parse.
 //
-// **`CLAUDECODE: undefined` is a strip, not a set.** `child_process` drops an env entry
-// whose value is `undefined`, so the key has to be *present* for the variable to be
-// removed from the child. The spike hit this directly: an orchestrator that is itself
-// running under Claude Code exports `CLAUDECODE=1`, the inherited variable convinces
-// `claude-code-acp` it is nested inside a session, and the adapter behaves accordingly.
-// A mission that only ever runs from a plain shell would never see it, which is exactly
-// the kind of environment-shaped bug that surfaces on someone else's machine.
+// **`CLAUDECODE` must never reach the adapter, and it no longer needs stripping.** The
+// spike hit this directly: an orchestrator that is itself running under Claude Code
+// exports `CLAUDECODE=1`, the inherited variable convinces `claude-code-acp` it is
+// nested inside a session, and the adapter behaves accordingly. A mission that only ever
+// runs from a plain shell would never see it, which is exactly the kind of
+// environment-shaped bug that surfaces on someone else's machine. This used to be a
+// present-and-`undefined` key removing a variable from an inherited environment; since
+// defect 42 the child environment is *constructed* (`workers/childEnv.ts`), so the
+// variable is absent because `inherits` never names it. Keep it that way — adding
+// `CLAUDECODE` to a list here would put the bug back with no strip left to catch it.
 //
 // Everything here is pure data and a lookup: the transport turns an unknown target into
 // an error naming the fix, because an unbuilt transport target is a planning problem
 // (defect 21) and the planner has to be told which ids exist to plan differently.
+import { CLAUDE_TRANSPORT_VARS } from "../claudeCode.js";
+import { CODEX_TRANSPORT_VARS } from "../codex.js";
 
-/** A launch, in the shape `spawnDuplex` takes. `env` is *merged over* the parent
- *  environment, so an `undefined` value removes a variable rather than blanking it. */
+/** A launch, in the shape `spawnDuplex` takes. The child environment is built from
+ *  `inherits` and `env` alone (`workers/childEnv.ts`) — nothing is inherited by
+ *  default, so a variable this launch needs and does not name will not be there. */
 export interface AcpLaunch {
   readonly command: string;
   readonly args: readonly string[];
-  readonly env?: Record<string, string | undefined>;
+  /** Variable *names* copied from the orchestrator's environment: what this adapter
+   *  needs to start, resolve its package, and find its credentials. */
+  readonly inherits?: readonly string[];
+  /** Values this launch sets outright, whatever the parent has. */
+  readonly env?: Record<string, string>;
 }
 
 /** Captured against these exact versions — see `src/testing/acp-transcripts/README.md`. */
@@ -55,12 +65,15 @@ const ACP_AGENTS: Readonly<Record<string, AcpLaunch>> = {
   claude: {
     command: "npx",
     args: ["-y", CLAUDE_CODE_ACP],
-    // Present-and-undefined: see the header. Do not "tidy" this into an omitted key.
-    env: { CLAUDECODE: undefined },
+    // The adapter is a shim over the same CLI, so it needs what that CLI needs — the
+    // list lives in `claudeCode.ts` beside the direct launch rather than being copied,
+    // since the two authenticate against the same files and the same keys.
+    inherits: CLAUDE_TRANSPORT_VARS,
   },
   codex: {
     command: "npx",
     args: ["-y", CODEX_ACP],
+    inherits: CODEX_TRANSPORT_VARS,
   },
 };
 
