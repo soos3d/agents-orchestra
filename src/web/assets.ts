@@ -63,3 +63,53 @@ export function readBundle(moduleUrl: string): string {
     throw new MissingBundleError(bundlePath);
   }
 }
+
+/** What the bundle route answers with, and what the terminal should be told. */
+export interface BundleResponse {
+  readonly status: number;
+  readonly headers: Readonly<Record<string, string>>;
+  readonly body: string;
+  /** Present when something is wrong the operator has to fix. */
+  readonly warn?: string;
+}
+
+/**
+ * The bundle route's whole decision, as a value.
+ *
+ * It is here rather than inline in `server.ts` for the reason that file's own header
+ * gives: `server.ts` sits below the fixture harness, so a branch inside its request
+ * handler is a branch a green suite says nothing about — and the branch that mattered
+ * was the failing one. A missing bundle is the common first-run mistake, and answering
+ * `200 ""` or a bare 404 turns it into a blank page whose cause is one line in a
+ * console nobody opens.
+ *
+ * 503 rather than 404: the route exists and the artefact does not yet, which is a
+ * server that is not ready — and it is the status that stops a proxy or a browser
+ * caching the emptiness. `no-store` for the same reason the served bundle carries it:
+ * the next request may come after `npm run build:web --watch` has fixed this.
+ */
+export function bundleResponse(read: () => string): BundleResponse {
+  let bundle: string;
+  try {
+    bundle = read();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      status: 503,
+      headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
+      body: message,
+      // On the wire and on the terminal both (§2a rule 5): whoever is looking at the
+      // blank tab and whoever is looking at the server log are often not the same person.
+      warn: message,
+    };
+  }
+
+  return {
+    status: 200,
+    headers: {
+      "content-type": "text/javascript; charset=utf-8",
+      "cache-control": "no-store",
+    },
+    body: bundle,
+  };
+}

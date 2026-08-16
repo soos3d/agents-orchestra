@@ -1,7 +1,7 @@
 # ACP transcripts — captured, not documented
 
 Raw JSON-RPC frames from real ACP sessions on this machine, 2026-08-10, captured for the Phase 7
-spike (§12, ROADMAP Phase 7). Every `.jsonl` here is **captured traffic**, not documentation-derived
+spike (§12, Phase 7). Every `.jsonl` here is **captured traffic**, not documentation-derived
 shapes — that distinction matters, because `agentCalls.ts`'s lesson is that a green suite says
 nothing about what a real counterparty actually sends.
 
@@ -32,4 +32,6 @@ node spike-client.mjs <out.jsonl> <cwd> <agent-command> [args...]
 ACP_PERMISSION=reject  ACP_PROMPT="..."  ACP_TIMEOUT_MS=240000   # optional
 ```
 
-Note: unset `CLAUDECODE` before spawning `claude-code-acp` — see the spike record in ROADMAP.md.
+Note: `claude-code-acp` must never see `CLAUDECODE` — it reads it as being nested inside a session.
+A capture run by hand has to unset it; the shipped path constructs the child environment and simply
+never names it (`src/workers/childEnv.ts`, and the header of `src/workers/acp/registry.ts`).

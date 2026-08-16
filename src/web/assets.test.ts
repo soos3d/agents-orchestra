@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { bundlePathFrom, MissingBundleError, readBundle } from "./assets.js";
+import { bundlePathFrom, bundleResponse, MissingBundleError, readBundle } from "./assets.js";
 
 const urlFor = (...segments: string[]): string =>
   pathToFileURL(path.join("/tmp", "orchestra", ...segments)).href;
@@ -53,5 +53,62 @@ describe("readBundle", () => {
     assert.ok(thrown instanceof MissingBundleError);
     assert.ok(thrown.message.includes("npm run build"), "the message does not say what to type");
     assert.ok(thrown.message.includes("app.js"), "the message does not say what is missing");
+  });
+});
+
+// The route's failing branch lives in `server.ts`, which sits below the fixture harness
+// — so it is decided here, where a test can see it. The server test asserts the 200; a
+// blank first run is the case that was never asserted anywhere.
+describe("the bundle route's answer", () => {
+  test("serves the built bundle as javascript, uncached", () => {
+    const answer = bundleResponse(() => "console.log(1)");
+
+    assert.equal(answer.status, 200);
+    assert.match(answer.headers["content-type"] ?? "", /javascript/);
+    // `npm run build:web -- --watch` rebuilds under a page somebody is looking at.
+    assert.equal(answer.headers["cache-control"], "no-store");
+    assert.equal(answer.body, "console.log(1)");
+    assert.equal(answer.warn, undefined);
+  });
+
+  test("a missing bundle is 503 with the command to type, not an empty 200", () => {
+    const answer = bundleResponse(() => {
+      throw new MissingBundleError("/repo/dist/web/app.js");
+    });
+
+    // The route exists and the artefact does not yet: a server that is not ready.
+    assert.equal(answer.status, 503);
+    assert.match(answer.headers["content-type"] ?? "", /text\/plain/);
+    assert.match(answer.body, /npm run build/);
+    assert.match(answer.body, /app\.js/);
+  });
+
+  // Two people, two places to look: whoever has the blank tab and whoever has the log.
+  test("a missing bundle also tells the terminal", () => {
+    const answer = bundleResponse(() => {
+      throw new MissingBundleError("/repo/dist/web/app.js");
+    });
+
+    assert.match(answer.warn ?? "", /npm run build/);
+  });
+
+  // Nothing should cache the emptiness: the next request may come after the build.
+  test("the failure is never cached", () => {
+    const answer = bundleResponse(() => {
+      throw new MissingBundleError("/repo/dist/web/app.js");
+    });
+
+    assert.equal(answer.headers["cache-control"], "no-store");
+  });
+
+  // A layout error is not a MissingBundleError, and answering it with a bare `[object
+  // Object]` would hide the one message that says how to fix the build.
+  test("any other failure still reaches the operator as text", () => {
+    const answer = bundleResponse(() => {
+      throw new Error("expected this module to live in dist/web or src/web");
+    });
+
+    assert.equal(answer.status, 503);
+    assert.match(answer.body, /dist\/web or src\/web/);
   });
 });

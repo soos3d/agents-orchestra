@@ -20,7 +20,7 @@
 import http from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import { type Event } from "../events/schema.js";
-import { BUNDLE_ROUTE, readBundle } from "./assets.js";
+import { BUNDLE_ROUTE, bundleResponse, readBundle } from "./assets.js";
 import { FONT_ROUTE, fontPathFrom, readFont } from "./fonts.js";
 import { shellHtml } from "./shell.html.js";
 import {
@@ -137,23 +137,12 @@ export async function startWebServer(deps: WebServerDeps): Promise<RunningServer
     const path = (request.url ?? "/").split("?")[0];
 
     if (path === BUNDLE_ROUTE) {
-      let bundle: string;
-      try {
-        bundle = readBundle(import.meta.url);
-      } catch (error) {
-        // A missing bundle is a contributor who has not run `npm run build`, and the
-        // worst possible report of it is a blank page with a console error. Say what
-        // is wrong and what to type, on the wire and on the terminal (§2a rule 5).
-        const message = error instanceof Error ? error.message : String(error);
-        warn(message);
-        response.writeHead(503, { "content-type": "text/plain; charset=utf-8" }).end(message);
-        return;
-      }
-      response.writeHead(200, {
-        "content-type": "text/javascript; charset=utf-8",
-        "cache-control": "no-store",
-      });
-      response.end(bundle);
+      // The decision — including what a missing bundle answers with — is a pure
+      // function with a test, because this handler is below the fixture harness and a
+      // branch here is a branch nothing asserts (`assets.ts`).
+      const answer = bundleResponse(() => readBundle(import.meta.url));
+      if (answer.warn) warn(answer.warn);
+      response.writeHead(answer.status, answer.headers).end(answer.body);
       return;
     }
 
