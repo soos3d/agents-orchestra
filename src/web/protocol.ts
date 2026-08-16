@@ -80,7 +80,9 @@ export interface HealthFrame {
 export interface OfferedHarness {
   readonly id: string;
   readonly models: readonly string[];
-  /** False on `acp`, where the adapter picks its own model and is never told ours. The
+  /** False on `acp/claude` and `acp/codex`, where the adapter picks its own model and is
+   *  never told ours — but true on `acp/opencode`, which is sent one and refuses a name
+   *  it does not have. Per row, from the launch that runs it (`AcpLaunch`). The
    *  page shows this as a note rather than hiding the control, because the choice is
    *  still recorded and still honoured the moment the same mission runs over `cli`. */
   readonly honoursModel: boolean;

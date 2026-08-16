@@ -90,33 +90,17 @@ function checkAgents(config: DiscoveredConfig): Check {
 function checkAcp(config: DiscoveredConfig): Check {
   const targets = runnableAcpTargets(config);
   if (targets.length > 0) {
-    return { name: "acp", level: "ok", detail: `${targets.join(", ")} (adapters fetched by npx)` };
+    // `opencode` is its own adapter and is not fetched — the note is about the two
+    // that are, so it names them rather than claiming npx for all three.
+    const npx = targets.filter((target) => target !== "opencode");
+    const how = npx.length > 0 ? ` (${npx.join(", ")} adapters fetched by npx)` : "";
+    return { name: "acp", level: "ok", detail: `${targets.join(", ")}${how}` };
   }
   return {
     name: "acp",
     level: "warn",
     detail: "no agent with a pinned ACP adapter on PATH — workers fall back to the cli transport",
     fix: "npm i -g @anthropic-ai/claude-code && claude   # log in once, then quit",
-  };
-}
-
-/**
- * OpenCode, reported and never required.
- *
- * ROADMAP Phase 7 names it as the first protocol-native ACP target, arriving for free
- * once the transport exists — and free still means *probed*. Being on PATH is worth
- * saying; it is not an `acp` target until a session against a real binary has been
- * captured into `acp-transcripts/`, so this line never claims one and never fails
- * (§2a: an optional extra that can fail `doctor` is a prerequisite wearing a disguise).
- */
-function checkOpenCode(config: DiscoveredConfig): Check {
-  const present = (config.optionalAgents ?? []).includes("opencode");
-  return {
-    name: "opencode",
-    level: "ok",
-    detail: present
-      ? "on PATH — optional; not yet an acp target, its launch is uncaptured"
-      : "not installed — optional extra, nothing here needs it",
   };
 }
 
@@ -211,7 +195,6 @@ export function doctor(
     checkVerify(config),
     checkAgents(config),
     checkAcp(config),
-    checkOpenCode(config),
     checkStateDir(config),
     checkIgnored(config),
     checkChannel(config.gatewayUrl),

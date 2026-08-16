@@ -209,30 +209,26 @@ describe("doctor", () => {
     });
   });
 
-  describe("the opencode line", () => {
-    test("never fails, because an optional extra is not a prerequisite", () => {
-      for (const optionalAgents of [[], ["opencode"]]) {
-        const report = doctor({ ...base, optionalAgents }, "v23.11.0");
-        assert.notEqual(report.checks.find((c) => c.name === "opencode")?.level, "fail");
-        assert.equal(report.ready, true);
-      }
+  // It was a reported extra until its session was captured; now it is a target, and a
+  // machine holding only it is a machine that can run ACP work.
+  describe("opencode as an acp target", () => {
+    test("is enough on its own for the acp line", () => {
+      const report = doctor({ ...base, agents: ["opencode"] }, "v23.11.0");
+
+      assert.equal(report.checks.find((c) => c.name === "acp")?.level, "ok");
+      assert.equal(report.ready, true);
     });
 
-    test("says so when it is installed", () => {
-      const check = doctor({ ...base, optionalAgents: ["opencode"] }, "v23.11.0").checks.find(
-        (c) => c.name === "opencode",
+    // The npx note is about the two adapters that are downloaded. `opencode acp` is the
+    // agent's own subcommand, and a line claiming otherwise sends someone hunting a
+    // package that does not exist.
+    test("is not described as an npx-fetched adapter", () => {
+      const check = doctor({ ...base, agents: ["opencode"] }, "v23.11.0").checks.find(
+        (c) => c.name === "acp",
       );
 
-      assert.match(check?.detail ?? "", /on PATH/);
-    });
-
-    // It is not an acp target until a session against a real binary has been captured
-    // (`acp/registry.ts`), and saying otherwise would ship a command line no capture
-    // backs.
-    test("does not claim it as an acp target on its own", () => {
-      const report = doctor({ ...base, agents: [], optionalAgents: ["opencode"] }, "v23.11.0");
-
-      assert.equal(report.checks.find((c) => c.name === "acp")?.level, "warn");
+      assert.match(check?.detail ?? "", /opencode/);
+      assert.doesNotMatch(check?.detail ?? "", /npx/);
     });
   });
 

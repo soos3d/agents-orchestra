@@ -155,6 +155,17 @@ function handle(message) {
       });
     case "session/new":
       return send({ jsonrpc: "2.0", id: message.id, result: { sessionId: SESSION_ID } });
+    // Accepted like OpenCode's, and refused the same way for a model the agent does not
+    // have — the refusal arrives before the prompt, which is the point of sending it early.
+    case "session/set_model":
+      if (message.params?.modelId === process.env.FAKE_ACP_UNKNOWN_MODEL) {
+        return send({
+          jsonrpc: "2.0",
+          id: message.id,
+          error: { code: -32602, message: `Invalid params: model not found: ${message.params.modelId}` },
+        });
+      }
+      return send({ jsonrpc: "2.0", id: message.id, result: {} });
     case "session/prompt":
       void runPrompt(message.id);
       return;

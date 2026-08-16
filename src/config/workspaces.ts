@@ -29,7 +29,6 @@ import { repoRoot } from "../git/repo.js";
 import {
   discoverVerifyCommand,
   probeAgents,
-  probeOptionalAgents,
   type DiscoveredConfig,
 } from "./discover.js";
 import { FILE_MODE, ensurePrivateDir } from "./hygiene.js";
@@ -60,7 +59,6 @@ export interface WorkspaceProbe {
   repoRoot?: string;
   verify?: { command: string; source: string };
   agents: readonly string[];
-  optionalAgents: readonly string[];
   /** Where this workspace's missions will be written. The serve process's, always. */
   stateDir: string;
   /** Already registered — adding it again is a no-op, and the card should say so. */
@@ -129,7 +127,7 @@ export async function probeWorkspace(
   const isDirectory = stat?.isDirectory() ?? false;
 
   const root = exists && isDirectory ? await repoRoot(resolved) : undefined;
-  const [agents, optionalAgents] = await Promise.all([probeAgents(), probeOptionalAgents()]);
+  const agents = await probeAgents();
 
   return {
     path: resolved,
@@ -140,7 +138,6 @@ export async function probeWorkspace(
     ...(root ? { repoRoot: root } : {}),
     ...(root ? { verify: discoverVerifyCommand(root) } : {}),
     agents,
-    optionalAgents,
     stateDir,
     registered: known.some((workspace) => workspace.id === id),
     ...(exists && !isDirectory

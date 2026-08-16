@@ -5,9 +5,11 @@
 //
 // So the transcripts in `src/testing/acp-transcripts/` are executable fixtures rather
 // than reading material: every test below feeds *captured* frames through the parsers,
-// and a real frame that fails `safeParse` fails the suite. Two agents are covered
-// (claude-code-acp 0.16.2 and codex-acp 0.16.0), which is what makes an
-// over-tightened optional field visible.
+// and a real frame that fails `safeParse` fails the suite. Three agents are covered
+// (claude-code-acp 0.16.2, codex-acp 0.16.0 and opencode 1.18.18), which is what makes an
+// over-tightened optional field visible — and what proved these are three dialects and
+// not one: OpenCode answers `session/new` with `configOptions` and no `models`, and its
+// permission options are `once`/`always`/`reject` rather than Claude's ids.
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -386,16 +388,20 @@ describe("acp session/update", () => {
 });
 
 describe("acp agent-initiated requests", () => {
-  test("every captured session/request_permission parses, options included", () => {
+  // The ids were asserted literally here until OpenCode was captured, which offers the
+  // same three options under the ids `once`, `always` and `reject`. That made the old
+  // assertion an assertion about Claude's vocabulary rather than about the protocol —
+  // and the ids are exactly what `pickPermissionOption` refuses to invent. What every
+  // agent must offer, and what the transport actually selects on, is the `kind`.
+  test("every captured session/request_permission parses, with a single-use option of each sign", () => {
     const requests = inboundRequests("session/request_permission");
-    assert.equal(requests.length, 3);
+    assert.equal(requests.length, 6);
 
     for (const frame of requests) {
       const params = parseRequestPermissionParams(frame["params"]);
-      assert.deepEqual(
-        params.options.map((option) => option.optionId),
-        ["allow_always", "allow", "reject"],
-      );
+      const kinds = params.options.map((option) => option.kind);
+      assert.ok(kinds.includes("allow_once"), `no allow_once among ${kinds.join(", ")}`);
+      assert.ok(kinds.includes("reject_once"), `no reject_once among ${kinds.join(", ")}`);
       assert.ok(params.toolCall.title.length > 0);
       assert.equal(typeof params.toolCall.toolCallId, "string");
     }

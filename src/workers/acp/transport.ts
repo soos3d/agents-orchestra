@@ -64,6 +64,7 @@ import {
   readTextFileResponse,
   sessionNewRequest,
   sessionPromptRequest,
+  sessionSetModelRequest,
   writeTextFileResponse,
   type AcpFrame,
   type ClientInfo,
@@ -187,6 +188,7 @@ export function createAcpTransport(deps: AcpTransportDeps): WorkerTransport {
         task,
         cwd,
         ...(artifactDir ? { artifactDir } : {}),
+        honoursModel: launch.honoursModel === true,
         clientInfo,
         onWarn,
         requestPermission: deps.requestPermission,
@@ -211,6 +213,8 @@ interface SessionInput {
   readonly cwd: string;
   /** The task's artifact directory, absolute and already created (P2). */
   readonly artifactDir?: string;
+  /** Whether this target's registry row says `AgentSpec.model` reaches it. */
+  readonly honoursModel: boolean;
   readonly clientInfo: ClientInfo;
   readonly onWarn: (message: string) => void;
   readonly requestPermission: AcpTransportDeps["requestPermission"];
@@ -242,13 +246,24 @@ async function runSession(input: SessionInput): Promise<SessionOutcome> {
 
   parseInitializeResult(await client.request((id) => initializeRequest(id, input.clientInfo)));
   const opened = parseSessionNewResult(await client.request((id) => sessionNewRequest(id, input.cwd)));
+
+  // Only where the registry says the model reaches this agent. Sending it to one that
+  // ignores it would be worse than not sending it: the spec's model would then look
+  // honoured everywhere the harness row says it is not.
+  const asked = input.honoursModel ? input.task.agentSpec.model : undefined;
+  if (asked !== undefined && asked !== "") {
+    await client.request((id) => sessionSetModelRequest(id, opened.sessionId, asked));
+  }
+
   const prompt = workerPrompt(input.task, input.artifactDir);
   parseSessionPromptResult(
     await client.request((id) => sessionPromptRequest(id, opened.sessionId, prompt)),
   );
 
   const raw = client.text();
-  const ranOn = opened.models?.currentModelId;
+  // What the agent said it would run, or — where we set it and it did not refuse — what
+  // we told it to. Never the spec's model on a target that ignores it.
+  const ranOn = opened.models?.currentModelId ?? asked;
 
   return {
     raw,
@@ -468,8 +483,32 @@ function note(method: string, params: unknown, ctx: FrameContext): void {
     return;
   }
   if (update.kind === "tool_call" || update.kind === "tool_call_update") {
-    if (update.toolName !== undefined) ctx.toolNames.set(update.toolCallId, acpToolName(update.toolName));
+    rememberToolName(ctx.toolNames, update);
   }
+}
+
+/**
+ * Which tool a `toolCallId` belongs to, learned from the announcement that names it.
+ *
+ * Two agents, two places the name lives, and the second cost a whole real mission. Claude
+ * tags it in `_meta.claudeCode.toolName`; OpenCode has no `_meta` and puts the tool in the
+ * `tool_call`'s `title` — but every following `tool_call_update` **rewrites that title to
+ * what the tool is doing**: `bash` becomes `ls -la`, `write` becomes `hello.txt`. So the
+ * first announcement wins and later ones never overwrite it.
+ *
+ * Getting it wrong is not a cosmetic bug. The permission request itself carries no tool
+ * name, so this map is what `decidePermission` judges: with the title taken from an
+ * update, a granted `Bash` call arrived as a tool called `pwd`, matched no class, and went
+ * to a human who — on an unattended run — is nobody. Three tasks in a row were refused the
+ * shell they had been granted, reported nothing, and failed their checks.
+ */
+export function rememberToolName(
+  names: Map<string, string>,
+  update: { toolCallId: string; toolName?: string; title?: string; kind: string },
+): void {
+  const named = update.toolName ?? (update.kind === "tool_call" ? update.title : undefined);
+  if (named === undefined || names.has(update.toolCallId)) return;
+  names.set(update.toolCallId, acpToolName(named));
 }
 
 // ── agent-initiated requests ─────────────────────────────────────────────────────

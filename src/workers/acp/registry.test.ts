@@ -29,8 +29,13 @@ describe("the acp agent registry", () => {
 
   // A range would resolve to whatever is published on the day a mission runs, against an
   // adapter whose frames `protocol.ts` is written from captures of (§0's dist-tag lesson).
-  test("every pinned version is exact, never a range", () => {
-    for (const target of acpTargets()) {
+  // Only for the launches that download something: `opencode acp` is a subcommand of a
+  // binary the human installed, and there is no package spec in it to pin.
+  test("every downloaded adapter is pinned exact, never a range", () => {
+    const downloaded = acpTargets().filter((target) => acpAgentCommand(target)?.command === "npx");
+    assert.ok(downloaded.length > 0);
+
+    for (const target of downloaded) {
       const launch = acpAgentCommand(target);
       const spec = launch?.args.find((arg) => arg.includes("@zed-industries/"));
 
@@ -65,10 +70,25 @@ describe("the acp agent registry", () => {
     }
   });
 
-  // Not built rather than not chosen: the transport turns `undefined` into an error
-  // naming the target and the ones that exist, which is a planning problem (§9.4).
-  test("opencode is not registered until its ACP invocation has been probed", () => {
-    assert.equal(acpAgentCommand("opencode"), undefined);
+  // Registered on 2026-08-16, when `opencode-write-file-approved.jsonl` was captured.
+  // The two facts that came with it and are asserted rather than described: the model
+  // control is real (`session/set_model` refused an invented id before the prompt), and
+  // the permission channel only exists because the launch turns it on — OpenCode's
+  // default agent writes with its own tools and asks nobody.
+  test("opencode launches its own acp subcommand, honouring the model", () => {
+    const launch = acpAgentCommand("opencode");
+
+    assert.equal(launch?.command, "opencode");
+    assert.deepEqual(launch?.args, ["acp"]);
+    assert.equal(launch?.honoursModel, true);
+    assert.match(launch?.env?.["OPENCODE_PERMISSION"] ?? "", /"edit":"ask"/);
+  });
+
+  // `acp/claude` is the counter-example the flag exists for: the adapter picks its own
+  // model and is never told ours, so a page must not imply a control that does nothing.
+  test("a launch that ignores the spec's model does not claim to honour it", () => {
+    assert.notEqual(acpAgentCommand("claude")?.honoursModel, true);
+    assert.notEqual(acpAgentCommand("codex")?.honoursModel, true);
   });
 
   test("an unknown target resolves to nothing", () => {
@@ -77,6 +97,6 @@ describe("the acp agent registry", () => {
   });
 
   test("the target list is what an error message can offer a planner", () => {
-    assert.deepEqual([...acpTargets()].sort(), ["claude", "codex"]);
+    assert.deepEqual([...acpTargets()].sort(), ["claude", "codex", "opencode"]);
   });
 });

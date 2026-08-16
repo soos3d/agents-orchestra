@@ -2,12 +2,12 @@
 // was never independent (§7, UI plan).
 //
 // A worker's runtime is two fields on its spec: `transport.id` (`cli` or `acp`) and
-// `transport.target` (`claude` or `codex`). They read like two choices and they are not:
-// `acp/codex` is a different thing from `cli/codex` in exactly one way a person cares
-// about, and `acp/opencode` does not exist however plausible the cross-product looks.
-// So the pair is named once, as `<transport>/<target>`, which is the vocabulary the
-// project already used in prose before it existed in code — five real missions "ran over
-// `acp/claude`".
+// `transport.target` (`claude`, `codex` or `opencode`). They read like two choices and
+// they are not: `acp/codex` is a different thing from `cli/codex` in exactly one way a
+// person cares about, and `cli/opencode` does not exist however plausible the
+// cross-product looks. So the pair is named once, as `<transport>/<target>`, which is the
+// vocabulary the project already used in prose before it existed in code — five real
+// missions "ran over `acp/claude`".
 //
 // Everything here is a pure function over what `discoverConfig` probed, for the reason
 // `availability.ts` is: what a machine is *offered* has to be assertable with no PATH, no
@@ -16,29 +16,28 @@
 //
 // **Two facts here are load-bearing and neither is guessable from the design.**
 //
-// The first is that `AgentSpec.model` never reaches an ACP agent. `acp/transport.ts`
-// sends no model in `session/new`; the adapter picks its own, and
-// `sessionNewResultSchema.models.currentModelId` is the only place the client learns
-// which — in the captured session a task specced `claude-sonnet-4-5` ran on
-// `claude-opus-4-6`. So a model chosen for an `acp` harness is a preference nothing
-// honours, and `honoursModel` says so rather than letting a page imply otherwise. The
-// figure that is true either way is `spend_recorded.model`, which records what ran.
+// The first is that whether `AgentSpec.model` reaches an ACP agent is *per agent*, and
+// only a capture can say. `acp/claude` is never told our model: nothing is sent in
+// `session/new`, the adapter picks its own, and `models.currentModelId` is the only place
+// the client learns which — in the captured session a task specced `claude-sonnet-4-5`
+// ran on `claude-opus-4-6`. `acp/opencode` is the opposite: `session/set_model` is
+// accepted for a model it has and refused `-32602` for one it does not, before the prompt
+// and before any spend. So `honoursModel` is read off the launch row
+// (`AcpLaunch.honoursModel`) rather than derived from the transport id, and a page says
+// which control is real. The figure that is true either way is `spend_recorded.model`,
+// which records what ran.
 //
 // The second is why `openai` has an empty model list. There is no probe for "which models
 // does this CLI accept" and `codex --model` takes whatever it is given, so a list here
-// would be invented — the same mistake `acp/registry.ts` refuses to make for `opencode`,
-// where being on PATH makes a target visible rather than usable. An empty list means
-// *unknown*, never *none*: nothing is offered as a menu and nothing is refused at
-// validation. Absent stays absent, exactly as it does for token usage (§9.5).
-import { acpTargets } from "./acp/registry.js";
+// would be invented. An empty list means *unknown*, never *none*: nothing is offered as a
+// menu and nothing is refused at validation. Absent stays absent, exactly as it does for
+// token usage (§9.5). `opencode` is empty for a neighbouring reason — its menu is the
+// human's account, and it arrives on the wire.
+import { acpAgentCommand, acpTargets } from "./acp/registry.js";
 import { type ProbedAgents } from "./availability.js";
-import { AVAILABLE_TRANSPORTS } from "./transport.js";
+import { AVAILABLE_TRANSPORTS, CLI_TARGETS } from "./transport.js";
 
-export type Vendor = "anthropic" | "openai";
-
-/** The agent CLIs `createCliTransport` can actually spawn — `runners` in
- *  `CliTransportOptions`, which is the list this has to stay equal to. */
-const CLI_TARGETS: readonly string[] = ["claude", "codex"];
+export type Vendor = "anthropic" | "openai" | "opencode";
 
 /** Who makes the models a target runs, which is what decides the model menu. A target
  *  with no entry has no vendor and is not offered — the same refusal `acpAgentCommand`
@@ -46,6 +45,10 @@ const CLI_TARGETS: readonly string[] = ["claude", "codex"];
 const VENDOR_OF_TARGET: Readonly<Record<string, Vendor>> = {
   claude: "anthropic",
   codex: "openai",
+  // Not a model maker: OpenCode is a gateway, and the models it can reach are whatever
+  // the human's own account and config offer. That is why it is its own vendor rather
+  // than being filed under one of the others — see `MODELS_BY_VENDOR`.
+  opencode: "opencode",
 };
 
 /**
@@ -65,6 +68,14 @@ const VENDOR_OF_TARGET: Readonly<Record<string, Vendor>> = {
 export const MODELS_BY_VENDOR: Readonly<Record<Vendor, readonly string[]>> = {
   anthropic: ["opus", "sonnet", "haiku"],
   openai: [],
+  // Empty for a *different* reason than `openai`, and the difference is worth naming.
+  // There is no list to write down: OpenCode's menu is whatever the human's account and
+  // config resolve to, it arrives on the wire in `session/new`'s `configOptions`, and it
+  // differed between two machines in the capture notes. Empty is "unknown" here as
+  // everywhere — nothing offered, nothing refused — and the refusal that matters happens
+  // at the agent: `session/set_model` rejects a model it does not have, before the
+  // prompt. Stage 2's model cards are what fills this in with something verified.
+  opencode: [],
 };
 
 /** A way work can run, named once. `id` is what a message carries and a page renders;
@@ -110,7 +121,10 @@ export function builtHarnesses(): Harness[] {
           transport,
           target,
           vendor,
-          honoursModel: transport !== "acp",
+          // Per target, from the row that launches it — `acp/claude` is never told our
+          // model and `acp/opencode` refuses one it does not have. A rule keyed on the
+          // transport alone was true only while every ACP adapter behaved the same way.
+          honoursModel: transport === "acp" ? acpAgentCommand(target)?.honoursModel === true : true,
         },
       ];
     });

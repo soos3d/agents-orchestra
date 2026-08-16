@@ -54,7 +54,8 @@ const USAGE = `orchestra — a looping orchestrator for any kind of task
     --unattended       skip sign-off. Requires --saved or --force.
     --harness <id>     how the workers run: <transport>/<agent>, e.g. acp/claude.
                        Defaults to whatever this machine offers — see 'doctor'.
-    --worker-model <m> the model workers run on. An acp adapter picks its own.
+    --worker-model <m> the model workers run on. acp/claude and acp/codex pick their
+                       own and ignore this; acp/opencode honours it.
     --orchestrator-model <m>
                        the model the decision points run on, for this mission only
 

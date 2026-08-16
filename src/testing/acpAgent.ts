@@ -42,6 +42,9 @@ export interface FakeAcpAgentOptions {
   readonly rejectedText?: string;
   /** The path the `permission` scenario asks the client to write. */
   readonly writePath?: string;
+  /** A model id this agent does not have: `session/set_model` refuses it `-32602`, as
+   *  OpenCode does, before the turn starts and before anything is spent. */
+  readonly unknownModel?: string;
 }
 
 export interface FakeAcpAgent {
@@ -62,6 +65,7 @@ export function fakeAcpAgent(options: FakeAcpAgentOptions): FakeAcpAgent {
   if (options.finalText !== undefined) env["FAKE_ACP_FINAL_TEXT"] = options.finalText;
   if (options.rejectedText !== undefined) env["FAKE_ACP_REJECTED_TEXT"] = options.rejectedText;
   if (options.writePath !== undefined) env["FAKE_ACP_WRITE_PATH"] = options.writePath;
+  if (options.unknownModel !== undefined) env["FAKE_ACP_UNKNOWN_MODEL"] = options.unknownModel;
 
   // The scenario rides on argv as well as the env so a failing spawn is readable in a
   // process listing rather than being a bare `node <path>`.

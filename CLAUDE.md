@@ -92,21 +92,38 @@ runtime; `workers/availability.ts` narrows the built list to what *this machine*
 
 **A harness is `<transport>/<target>` and it is one choice, not two** (`workers/harness.ts`).
 `acp/claude`, `cli/codex` — the pair was never independent, and the cross-product is not the menu:
-`acp/opencode` does not exist, and a machine with only `codex` on PATH must never be shown a
+`cli/opencode` does not exist, and a machine with only `codex` on PATH must never be shown a
 `claude` row. `staffingOffer` is the **one** function every composition root calls for
 `{transports, targets, models}`; three separately-derived lists across four roots is twelve chances
 to wire two of them. `harness.test.ts` pins its unpinned transport answer to `availableTransports`
 so the two cannot drift. The choice lives on `mission_created.runtime` — optional, folded like
 `quick` — so a resume runs on what was chosen rather than on what the process defaults to.
 
-Three facts about it are load-bearing and none is guessable. **`AgentSpec.model` never reaches an
-ACP agent**: the adapter picks its own, and `sessionNewResultSchema.models.currentModelId` is the
-only place the client learns which — in the capture, a task specced `claude-sonnet-4-5` ran on
-`claude-opus-4-6`. So `Harness.honoursModel` is false there and the compose card says so instead of
-implying a control that does nothing. **`MODELS_BY_VENDOR.openai` is empty and that is the answer,
+Three facts about it are load-bearing and none is guessable. **Whether `AgentSpec.model` reaches an
+ACP agent is per agent, and only a capture can say.** It does not reach `acp/claude` or `acp/codex`:
+the adapter picks its own, and `sessionNewResultSchema.models.currentModelId` is the only place the
+client learns which — in the capture, a task specced `claude-sonnet-4-5` ran on `claude-opus-4-6`.
+It does reach `acp/opencode`, whose `session/set_model` is refused `-32602` for a model it does not
+have, before the prompt. So `Harness.honoursModel` is read off the launch row
+(`AcpLaunch.honoursModel`), never derived from the transport id, and the compose card says which
+control is real instead of implying one that does nothing. **`MODELS_BY_VENDOR.openai` is empty and that is the answer,
 not a gap**: no list of `codex` models has been verified, and empty means *unknown* everywhere it
-is read — nothing offered, nothing refused. Inventing one is the mistake `acp/registry.ts` refuses
-for `opencode`. And **the orchestrator gets a model and no harness**, because `runViaAgentSdk` *is*
+is read — nothing offered, nothing refused. `MODELS_BY_VENDOR.opencode` is empty for a neighbouring
+reason: its menu is the human's own account and arrives on the wire in `session/new`'s
+`configOptions`, so there is no list to write down.
+
+**`acp/opencode` landed 2026-08-16 (PLAN-NEXT stage 1)** and is the first ACP row that is not an
+`npx` adapter — `opencode acp` is the agent's own subcommand, so there is no package to pin and an
+upgrade changes the wire with nothing to review but `protocol.ts`'s schemas. Two facts came out of
+the capture and both are in the launch row rather than in prose: `OPENCODE_PERMISSION` is set as a
+literal because OpenCode's default agent writes with its own tools and never opens the permission
+channel this transport exists for; and its tool names are lower case, which is why `classOf` matches
+case-insensitively. A real mission is what caught the third: the permission frame carries no tool
+name, OpenCode's later `tool_call_update`s rewrite the title to *what the tool is doing*
+(`bash` → `ls -la`), and three granted shell calls arrived as `pwd`, `git` and `python3`, matched no
+class, and were refused. `rememberToolName` keeps the first announcement.
+
+And **the orchestrator gets a model and no harness**, because `runViaAgentSdk` *is*
 the Agent SDK; a second orchestrator harness is deferred because `queryOptions` encodes Agent-SDK
 semantics (`settingSources: []`, the `tools`-vs-`allowedTools` trap) and `withSchema` assumes a
 model that follows a derived schema.

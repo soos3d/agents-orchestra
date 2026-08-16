@@ -20,8 +20,17 @@ describe("availableTransports", () => {
     assert.deepEqual(availableTransports({ agents: [] }), []);
   });
 
+  // The inverse of the case above, and the one that arrived with `opencode`: an agent
+  // that speaks ACP and has no `cli` launcher offers `acp` and *not* `cli`. Offering
+  // `cli` here would staff every task with a transport holding no target — defect 21
+  // rebuilt out of its own fix.
+  test("an acp-only agent offers acp and not cli", () => {
+    assert.deepEqual(availableTransports({ agents: ["opencode"] }), ["acp"]);
+  });
+
   test("an agent with no pinned adapter offers cli and not acp", () => {
-    assert.deepEqual(availableTransports({ agents: ["opencode"] }), ["cli"]);
+    assert.deepEqual(availableTransports({ agents: ["gemini", "claude"] }), ["cli", "acp"]);
+    assert.deepEqual(availableTransports({ agents: ["gemini"] }), []);
   });
 
   test("the offer is a subset of what the build ships, in the build's order", () => {
@@ -36,6 +45,6 @@ describe("runnableAcpTargets", () => {
   });
 
   test("an unpinned agent is not an acp target however installed it is", () => {
-    assert.deepEqual(runnableAcpTargets({ agents: ["opencode"] }), []);
+    assert.deepEqual(runnableAcpTargets({ agents: ["gemini"] }), []);
   });
 });

@@ -125,6 +125,19 @@ export function sessionNewRequest(id: number, cwd: string): JsonRpcRequest {
   return { jsonrpc: "2.0", id, method: "session/new", params: { cwd, mcpServers: [] } };
 }
 
+/**
+ * Ask the agent to run this session on a named model — sent only to a target whose
+ * registry row says it honours one (`AcpLaunch.honoursModel`).
+ *
+ * A model the agent does not have comes back `-32602` here, which is a refusal *before*
+ * the prompt and therefore before any spend. That is the point of sending it early: the
+ * alternative is a task that runs to completion on a model nobody chose and is priced
+ * against one that never ran.
+ */
+export function sessionSetModelRequest(id: number, sessionId: string, modelId: string): JsonRpcRequest {
+  return { jsonrpc: "2.0", id, method: "session/set_model", params: { sessionId, modelId } };
+}
+
 export function sessionPromptRequest(id: number, sessionId: string, text: string): JsonRpcRequest {
   return {
     jsonrpc: "2.0",
@@ -363,8 +376,24 @@ const updateEnvelopeSchema = z.object({
   update: z.object({ sessionUpdate: z.string() }).loose(),
 });
 
-/** Variants we knowingly drop, so they never reach the warning path. */
-const IGNORED_UPDATES = new Set(["available_commands_update", "current_mode_update", "plan"]);
+/**
+ * Variants we knowingly drop, so they never reach the warning path.
+ *
+ * The last two are OpenCode's and each is dropped for its own reason.
+ * `agent_thought_chunk` is reasoning, not the turn's answer — appending it to `raw` would
+ * put the model's second thoughts in front of `parseWorkerReport` alongside the report it
+ * eventually wrote. `usage_update` is a running context total (`used`, `size`, `cost`) and
+ * not the turn's accounting: the numbers this transport reports come from
+ * `session/prompt`'s own `usage` or from the agent's session log, and a mid-turn gauge
+ * read as a total would double-count. Neither is unknown; both are declined.
+ */
+const IGNORED_UPDATES = new Set([
+  "available_commands_update",
+  "current_mode_update",
+  "plan",
+  "agent_thought_chunk",
+  "usage_update",
+]);
 
 /**
  * Parse one `session/update` notification's params.

@@ -22,7 +22,7 @@
 // a protocol shim over `claude` or `codex`, and it is those that have to be installed and
 // authed. That is what is probed.
 import { acpTargets } from "./acp/registry.js";
-import { AVAILABLE_TRANSPORTS } from "./transport.js";
+import { AVAILABLE_TRANSPORTS, CLI_TARGETS } from "./transport.js";
 
 /** Everything the availability question needs: the agent CLIs found on PATH
  *  (`discoverConfig().agents`). Narrowed to this rather than taking a
@@ -55,7 +55,10 @@ export function runnableAcpTargets(probe: ProbedAgents): string[] {
  * spawn error.
  */
 export function availableTransports(probe: ProbedAgents): string[] {
-  const hasCli = probe.agents.length > 0;
+  // Not "any agent on PATH": `opencode` is probed like the others and has no `cli`
+  // launcher, so a machine holding only it would otherwise be offered a `cli` transport
+  // with no target behind it — defect 21 rebuilt out of the fix for defect 21.
+  const hasCli = CLI_TARGETS.some((target) => probe.agents.includes(target));
   const hasAcp = runnableAcpTargets(probe).length > 0;
 
   return AVAILABLE_TRANSPORTS.filter((id) => {

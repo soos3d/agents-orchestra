@@ -17,11 +17,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { after, describe, test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { type WorkerRun } from "../../loop/dispatch.js";
 import { type Task } from "../../domain/task.js";
 import { fakeAcpAgent, type FakeAcpAgentOptions } from "../../testing/acpAgent.js";
 import { aBudget, aCodeTask, anAgentSpec } from "../../testing/fixtures.js";
 import { type PermissionRequest } from "./permissions.js";
+import { parseRequestPermissionParams, parseSessionUpdate } from "./protocol.js";
 import { type AcpLaunch } from "./registry.js";
 import { sessionLogPath } from "./usage.js";
 import {
@@ -29,7 +31,9 @@ import {
   acpToolName,
   containedPath,
   createAcpTransport,
+  permissionRequestOf,
   pickPermissionOption,
+  rememberToolName,
   type AcpTransportDeps,
 } from "./transport.js";
 
@@ -45,11 +49,14 @@ after(() => {
   for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-function anAcpTask(patch: { tools?: string[]; wallMs?: number; target?: string } = {}): Task {
+function anAcpTask(
+  patch: { tools?: string[]; wallMs?: number; target?: string; model?: string } = {},
+): Task {
   return aCodeTask({
     agentSpec: anAgentSpec({
       transport: { id: "acp", target: patch.target ?? "claude" },
       tools: patch.tools ?? ["Read", "Write", "Edit"],
+      ...(patch.model === undefined ? {} : { model: patch.model }),
     }),
     budget: aBudget({ wallMs: patch.wallMs ?? 10_000 }),
   });
@@ -77,6 +84,20 @@ function transportFor(
   });
 }
 
+/** The same scripted agent, on a launch whose registry row says the model reaches it —
+ *  `acp/opencode`'s row, which is the only one that does. */
+function honouringLaunch(options: FakeAcpAgentOptions): AcpLaunch {
+  const fake = fakeAcpAgent(options);
+  return {
+    command: fake.command,
+    args: fake.args,
+    env: fake.env as Record<string, string>,
+    honoursModel: true,
+  };
+}
+
+const TRANSCRIPTS = fileURLToPath(new URL("../../testing/acp-transcripts/", import.meta.url));
+
 const REPORT = JSON.stringify({ outcome: "completed", summary: "did it" });
 
 /** What the scripted agent answers `session/new` with — the id its usage would be
@@ -94,6 +115,50 @@ describe("the acp transport", () => {
     // Streamed as three chunks by the agent; the report is only parseable once joined.
     assert.equal(run.raw, REPORT);
     assert.ok(run.elapsedMs >= 0);
+  });
+
+  /**
+   * `AgentSpec.model` reaches an agent only where the launch says it does, and the two
+   * halves of that fail differently (`workers/harness.ts`).
+   *
+   * Sending it to an adapter that ignores it would be the worse bug of the two: the spec's
+   * model would then look honoured everywhere the harness row says it is not, and the
+   * mission would be priced against a model that never ran.
+   */
+  describe("the model, where it is honoured", () => {
+    test("is set on the session and reported as what ran", async () => {
+      const run = await transportFor(honouringLaunch({ scenario: "happy", finalText: REPORT }))({
+        task: anAcpTask({ model: "deepseek-v4" }),
+        cwd: tmpDir(),
+      });
+
+      assert.equal(run.raw, REPORT);
+      assert.equal(run.ranOn, "deepseek-v4");
+    });
+
+    // The invented-`--model` defect closed on the agent's side of the wire: the refusal
+    // arrives before `session/prompt`, so nothing is spent on a model nobody chose.
+    test("a model the agent does not have fails the task rather than running on another", async () => {
+      const transport = transportFor(
+        honouringLaunch({ scenario: "happy", finalText: REPORT, unknownModel: "not-a-model" }),
+      );
+
+      await assert.rejects(
+        transport({ task: anAcpTask({ model: "not-a-model" }), cwd: tmpDir() }),
+        /model not found/,
+      );
+    });
+
+    test("is not sent to an adapter that picks its own", async () => {
+      const run = await transportFor({ scenario: "happy", finalText: REPORT })({
+        task: anAcpTask({ model: "deepseek-v4" }),
+        cwd: tmpDir(),
+      });
+
+      // The scripted agent names no model in `session/new`, so anything here would be the
+      // spec's own preference echoed back as fact.
+      assert.equal(run.ranOn, undefined);
+    });
   });
 
   // No frame carries usage (`protocol.ts`), so what a dispatch cost is read afterwards
@@ -181,6 +246,53 @@ describe("the acp transport", () => {
 
   // Real missions came back with "Unterminated string in JSON" worker reports, and a
   // long final message crossing stdio chunk boundaries was the suspect. These two are
+  /**
+   * Which tool a gate is about, replayed from the captured traffic of both agents.
+   *
+   * This is the transport's half of the permission decision and it is the half a unit
+   * test with a scripted agent cannot see: the request frame carries no tool name, so
+   * everything depends on what the updates before it said. A real mission is what caught
+   * it — three granted `bash` calls arrived as `pwd`, `git` and `python3`, matched no
+   * class, and were refused.
+   */
+  describe("naming the tool a gate is about", () => {
+    function toolOfGate(file: string): string {
+      const lines = fs
+        .readFileSync(path.join(TRANSCRIPTS, file), "utf8")
+        .split("\n")
+        .filter((line) => line.trim() !== "")
+        .map((line) => JSON.parse(line) as { dir: string; frame: Record<string, unknown> });
+
+      const names = new Map<string, string>();
+      for (const line of lines) {
+        if (line.dir !== "in") continue;
+        if (line.frame["method"] === "session/update") {
+          const update = parseSessionUpdate(line.frame["params"], () => undefined);
+          if (update.kind === "tool_call" || update.kind === "tool_call_update") {
+            rememberToolName(names, update);
+          }
+        }
+        if (line.frame["method"] === "session/request_permission") {
+          return permissionRequestOf(parseRequestPermissionParams(line.frame["params"]), names).tool;
+        }
+      }
+      throw new Error(`no permission request captured in ${file}`);
+    }
+
+    // OpenCode names the tool once, in the `tool_call`, and every `tool_call_update`
+    // after it rewrites the title to what the tool is *doing* — `bash` becomes `ls -la`.
+    test("opencode: the first announcement names it, later updates do not rename it", () => {
+      assert.equal(toolOfGate("opencode-bash-execute-approved.jsonl"), "bash");
+      assert.equal(toolOfGate("opencode-write-file-approved.jsonl"), "write");
+    });
+
+    // Claude tags it in `_meta`, wrapped as an MCP tool. Unchanged by the fix above.
+    test("claude: the tagged name wins over the title", () => {
+      assert.equal(toolOfGate("claude-write-file-approved.jsonl"), "Write");
+      assert.equal(toolOfGate("claude-bash-execute-approved.jsonl"), "Bash");
+    });
+  });
+
   // what that investigation turned into: reassembly is lossless across frame boundaries
   // — and was *not* lossless across character ones.
   describe("a long final message", () => {

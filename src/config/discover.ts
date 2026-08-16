@@ -17,10 +17,6 @@ export interface DiscoveredConfig {
   worktreeRoot: string;
   verify?: { command: string; source: string };
   agents: string[];
-  /** Tools that are useful when present and never required (§2a): `opencode` today.
-   *  Kept apart from `agents` on purpose — `agents` is what the `workers` check fails
-   *  on, and a machine holding only an optional extra is not a ready machine. */
-  optionalAgents?: string[];
   orchestratorModel: string;
   maxConcurrency: number;
   /** An OpenClaw Gateway to mirror the inbox to, if the user runs one (§2). Never
@@ -66,13 +62,10 @@ export function discoverVerifyCommand(root: string): DiscoveredConfig["verify"] 
   return undefined;
 }
 
-const KNOWN_AGENTS = ["claude", "codex"] as const;
-
-/** Probed and reported, never required (§2a). `opencode` speaks ACP natively and
- *  installs with no services, so it is a free extra target — but the launch it needs
- *  has not been captured against a real binary, so being on PATH makes it visible
- *  rather than usable (`workers/acp/registry.ts`). */
-const OPTIONAL_AGENTS = ["opencode"] as const;
+/** `opencode` joined the list on 2026-08-16, when a session against a real binary was
+ *  captured and it became a launchable `acp` target rather than a reported extra
+ *  (`workers/acp/registry.ts`). It has no `cli` launcher — see `CLI_TARGETS`. */
+const KNOWN_AGENTS = ["claude", "codex", "opencode"] as const;
 
 async function probe(names: readonly string[]): Promise<string[]> {
   const found = await Promise.all(
@@ -85,8 +78,6 @@ async function probe(names: readonly string[]): Promise<string[]> {
 }
 
 export const probeAgents = (): Promise<string[]> => probe(KNOWN_AGENTS);
-
-export const probeOptionalAgents = (): Promise<string[]> => probe(OPTIONAL_AGENTS);
 
 const num = (value: string | undefined, fallback: number): number => {
   const parsed = Number(value);
@@ -114,7 +105,6 @@ export async function discoverConfig(cwd = process.cwd()): Promise<DiscoveredCon
       : path.join(base, "..", ".orchestra-worktrees"),
     verify: root ? discoverVerifyCommand(root) : undefined,
     agents: await probeAgents(),
-    optionalAgents: await probeOptionalAgents(),
     // An alias rather than a pinned id, so the default follows the latest build the
     // SDK resolves it to. §14 notes nothing in the design depends on a specific
     // model; `ORCHESTRATOR_MODEL` is the override when it does.

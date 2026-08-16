@@ -30,6 +30,12 @@ import { CODEX_TRANSPORT_VARS, runCodex } from "./codex.js";
  */
 export const AVAILABLE_TRANSPORTS: readonly string[] = ["cli", "acp"];
 
+/** The agent CLIs `createCliTransport` can actually spawn — beside `runners` below,
+ *  which is the list it has to stay equal to. Not every probed agent has a `cli`
+ *  launcher: `opencode` speaks ACP and nothing else here, so a machine holding only it
+ *  has no `cli` transport at all. */
+export const CLI_TARGETS: readonly string[] = ["claude", "codex"];
+
 export interface CliTransportOptions {
   timeoutMs?: number;
   /** Injected so what a worker is *told* is assertable without spawning a CLI — the

@@ -69,8 +69,15 @@ export const TOOL_CATALOGUE: readonly ToolClass[] = [
 ];
 
 const byClass = new Map(TOOL_CATALOGUE.map((entry) => [entry.id, entry]));
+// Keyed lowercase, because the tool name arrives from whichever agent is running: Claude
+// Code says `Write`, OpenCode says `write`, and the catalogue's own spelling is one of
+// the two. A case-sensitive lookup made every OpenCode edit an unrecognised tool, which
+// `permissions.ts` correctly turns into a question for a human — so a granted `fs.write`
+// envelope still stopped on every file, and gate fatigue is what makes the gates that
+// matter get tapped through (§11). No two entries differ only by case; if two ever do,
+// this collapses them and the assertion below is where that shows up.
 const byTool = new Map(
-  TOOL_CATALOGUE.flatMap((entry) => entry.tools.map((tool) => [tool, entry.id] as const)),
+  TOOL_CATALOGUE.flatMap((entry) => entry.tools.map((tool) => [tool.toLowerCase(), entry.id] as const)),
 );
 
 /** Every concrete tool the given classes grant, deduplicated and in catalogue order.
@@ -85,8 +92,9 @@ export function resolveClasses(classes: readonly string[]): string[] {
   return [...granted];
 }
 
-/** The class a tool belongs to, or `undefined` if we do not ship it. */
-export const classOf = (tool: string): string | undefined => byTool.get(tool);
+/** The class a tool belongs to, or `undefined` if we do not ship it. Case-insensitive —
+ *  see `byTool`. */
+export const classOf = (tool: string): string | undefined => byTool.get(tool.toLowerCase());
 
 /** What a class grants, in one line, for the synthesis prompt. */
 export function describeClasses(classes: readonly string[]): string[] {

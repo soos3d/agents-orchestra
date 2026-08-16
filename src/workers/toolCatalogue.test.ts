@@ -50,7 +50,18 @@ describe("the tool catalogue", () => {
   // something we do not ship, and that has to be refusable.
   test("a tool we do not ship has no class", () => {
     assert.equal(classOf("Frobnicate"), undefined);
-    assert.equal(classOf("read"), undefined);
+    assert.equal(classOf(""), undefined);
+  });
+
+  // `classOf("read")` was asserted `undefined` here, and that was right while every
+  // worker was Claude Code. OpenCode names the same tools in lower case — `write`,
+  // `bash` — and an unrecognised tool becomes a question for a human, so a granted
+  // `fs.write` envelope stopped on every single file. Same tool, different spelling.
+  test("an agent's own casing resolves to the same class", () => {
+    assert.equal(classOf("read"), "fs.read");
+    assert.equal(classOf("write"), "fs.write");
+    assert.equal(classOf("bash"), "shell.run");
+    assert.equal(classOf("webfetch"), "net.read");
   });
 
   test("round-trips: every tool in the catalogue maps back to the class that granted it", () => {
