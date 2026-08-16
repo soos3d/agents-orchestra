@@ -505,6 +505,15 @@ work actually needs. Note that an \`acp\` adapter selects its own model and is n
 told yours: on that transport the field is recorded rather than obeyed, so it is not
 worth reaching for \`acp\` to get a particular model.
 
+\`modelCards\` appears when this machine has probed a model provider, and lists models
+that were actually reached, one per line, as
+\`id (tier, context window, input/output price per million tokens) via provider\`. It is
+a reference, not a second allowlist: when \`models\` is non-empty that list still decides
+what is legal, and a card is only worth naming where the harness you chose can reach the
+provider it names. Use it to pick deliberately when \`models\` is empty — a \`worker\` or
+\`fast\` tier card for mechanical work, a \`strong\` or \`frontier\` one for work that has
+to be right the first time — rather than naming a model from memory.
+
 \`owns\` is required when \`worker\` is \`code\` and must be left out otherwise. It is
 the set of file globs this task will write, e.g.
 \`["src/routes/health.ts", "test/health.test.ts"]\`. Two workers are running in

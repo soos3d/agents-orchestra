@@ -113,6 +113,50 @@ describe("synthesizeTasks", () => {
     assert.ok(!(seen[0]!.roster ?? "").includes(ROLE_BODY));
   });
 
+  // Model cards, the same seam and the same rule (PLAN-NEXT 2.4): rendered lines, never
+  // objects. What they change is what synthesis is *shown* — `models` is still the
+  // allowlist it is checked against, and a card id is a name at some provider's API
+  // rather than one this harness is known to accept.
+  test("offers verified model cards as rendered lines and never as an allowlist", async () => {
+    const store = testStore([missionCreated()]);
+    const { calls, seen } = scriptedSynthesize([anAgentSpec()]);
+
+    await synthesizeTasks(
+      {
+        ...deps(store, calls),
+        models: ["sonnet"],
+        modelCards: [
+          {
+            id: "deepseek-ai/DeepSeek-V3",
+            provider: "nebius",
+            access: "api-key",
+            tier: "worker",
+            contextK: 128,
+            costInPer1M: 0.13,
+            costOutPer1M: 0.4,
+            verifiedBy: "probes/v3.json",
+          },
+        ],
+      },
+      [aPlannedTask()],
+      0,
+    );
+
+    assert.equal(typeof seen[0]!.modelCards, "string");
+    assert.match(seen[0]!.modelCards ?? "", /deepseek-ai\/DeepSeek-V3 \(worker, 128k context/);
+    // The door is unmoved: a card is a reference beside the allowlist, not an entry in it.
+    assert.deepEqual(seen[0]!.models, ["sonnet"]);
+  });
+
+  test("omits the card menu when no provider has been probed", async () => {
+    const store = testStore([missionCreated()]);
+    const { calls, seen } = scriptedSynthesize([anAgentSpec()]);
+
+    await synthesizeTasks(deps(store, calls), [aPlannedTask()], 0);
+
+    assert.equal(seen[0]!.modelCards, undefined);
+  });
+
   test("omits the roster entirely when there is none, rather than sending an empty list", async () => {
     const store = testStore([missionCreated()]);
     const { calls, seen } = scriptedSynthesize([anAgentSpec()]);

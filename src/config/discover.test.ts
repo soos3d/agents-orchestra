@@ -6,7 +6,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { after, beforeEach, describe, test } from "node:test";
-import { artifactDir, discoverConfig, discoverVerifyCommand, missionDir } from "./discover.js";
+import {
+  artifactDir,
+  discoverConfig,
+  discoverVerifyCommand,
+  missionDir,
+  readProviderKeys,
+} from "./discover.js";
 import { doctor, formatReport } from "./doctor.js";
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "orchestra-config-"));
@@ -235,5 +241,28 @@ describe("doctor", () => {
   test("the report ends by saying whether it is ready", () => {
     assert.match(formatReport(doctor({ ...base, agents: [] }, "v18.0.0")), /Not ready/);
     assert.match(formatReport(doctor({ ...base, repoRoot: "/work" }, "v23.11.0")), /Ready\./);
+  });
+});
+
+// Zero required environment variables stays the rule: a provider nobody configured is
+// absent from the record rather than present and empty, so `probeProviders` skips it,
+// `doctor` reports "none configured", and nothing about a mission changes. A blank
+// string mapped to a provider would instead be a key that fails authentication.
+describe("readProviderKeys", () => {
+  test("an unset or blank variable is not a configured provider", () => {
+    assert.deepEqual(readProviderKeys({}), {});
+    assert.deepEqual(readProviderKeys({ NEBIUS_API_KEY: "" }), {});
+  });
+
+  test("a set key lands under the provider's own name, not the variable's", () => {
+    assert.deepEqual(readProviderKeys({ NEBIUS_API_KEY: "abc", OLLAMA_API_KEY: "def" }), {
+      nebius: "abc",
+      "ollama-cloud": "def",
+    });
+  });
+
+  test("discoverConfig populates it, which is the only producer there is", async () => {
+    const config = await discoverConfig(process.cwd());
+    assert.ok(config.providerKeys !== undefined);
   });
 });

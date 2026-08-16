@@ -5,6 +5,13 @@
 // that cannot tell you what to type next has not helped.
 import fs from "node:fs";
 import path from "node:path";
+import {
+  type ModelCard,
+  loadModelCards,
+  localProvidersDir,
+  providersDir,
+  staffableCards,
+} from "../providers/modelCard.js";
 import { runnableAcpTargets } from "../workers/availability.js";
 import { type DiscoveredConfig } from "./discover.js";
 
@@ -104,6 +111,51 @@ function checkAcp(config: DiscoveredConfig): Check {
   };
 }
 
+/**
+ * Model providers: which have a key, and how many of their cards a probe has answered
+ * for (PLAN-NEXT 2.3).
+ *
+ * The line reports the *narrowing*, which is the fact a mission depends on: a card with
+ * no transcript is not on any menu, exactly as an ACP target with no binary is not. Never
+ * a failure — no provider configured is the normal case and changes nothing about a
+ * mission — but a configured provider whose cards are all unverified is a warning, because
+ * that is a key somebody set expecting models to appear.
+ */
+export function checkProviders(
+  cards: readonly ModelCard[],
+  keys: Readonly<Record<string, string>>,
+  verified: readonly ModelCard[],
+): Check {
+  const configured = Object.keys(keys).sort();
+  if (configured.length === 0 && cards.length === 0) {
+    return { name: "providers", level: "ok", detail: "none configured — model cards are optional" };
+  }
+
+  if (verified.length > 0) {
+    return {
+      name: "providers",
+      level: "ok",
+      detail:
+        `${configured.join(", ") || "no key"}: ${verified.length} of ${cards.length} ` +
+        `card${cards.length === 1 ? "" : "s"} verified`,
+    };
+  }
+
+  return {
+    name: "providers",
+    level: "warn",
+    detail:
+      configured.length === 0
+        ? `${cards.length} model card${cards.length === 1 ? "" : "s"} on disk and no ` +
+          `provider key set — none are offered`
+        : `${configured.join(", ")} configured, no card verified — none are offered`,
+    fix:
+      cards.length === 0
+        ? "write a card into <stateDir>/providers/<provider>.json, then re-run 'orchestra doctor'"
+        : "set the provider's API key and re-run 'orchestra doctor' — it probes each card once",
+  };
+}
+
 function checkStateDir(config: DiscoveredConfig): Check {
   const parent = config.stateDir;
   try {
@@ -189,12 +241,14 @@ export function doctor(
   config: DiscoveredConfig,
   nodeVersion: string = process.version,
 ): DoctorReport {
+  const cards = loadModelCards([providersDir(), localProvidersDir(config.stateDir)]);
   const checks = [
     checkNode(nodeVersion),
     checkRepo(config),
     checkVerify(config),
     checkAgents(config),
     checkAcp(config),
+    checkProviders(cards, config.providerKeys ?? {}, staffableCards(config.stateDir)),
     checkStateDir(config),
     checkIgnored(config),
     checkChannel(config.gatewayUrl),

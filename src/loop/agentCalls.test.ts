@@ -594,6 +594,29 @@ describe("createAgentCalls", () => {
       assert.match(seen.systemPrompts[0]!, /"owns"/);
     });
 
+    // The prompt-and-validation rule, for the card menu. `modelCards` widens nothing —
+    // `models` is still the allowlist — so the prompt has to say that, or a model reads
+    // a list of ids beside a list of ids and picks from the wrong one. The card menu
+    // itself reaching the call is asserted at the seam in `synthesize.test.ts`.
+    test("says the card menu is a reference and not a second allowlist", async () => {
+      const { run, seen } = transport([JSON.stringify(anAgentSpec())]);
+      const calls = createAgentCalls({ config, runQuery: run });
+
+      await calls.synthesize({
+        task: aPlannedTask(),
+        envelope: {} as never,
+        toolCatalogue: ["Read"],
+        transports: ["cli"],
+        targets: ["claude"],
+        models: ["sonnet"],
+        modelCards: "- some/model (worker, 128k context, $1/$2 per 1M in/out) via nebius",
+      });
+
+      assert.match(seen.prompts[0]!, /some\/model/);
+      assert.match(seen.systemPrompts[0]!, /modelCards/);
+      assert.match(seen.systemPrompts[0]!, /not a second allowlist/);
+    });
+
     // Defect 22 one level up. §3 gives the judge artifact paths and nothing else, and
     // nothing told synthesis that — so against a real model three of four tasks came
     // back with a rubric grading "the final message", which no judge can open. Every

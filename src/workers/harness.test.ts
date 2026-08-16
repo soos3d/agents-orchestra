@@ -145,7 +145,12 @@ test("staffingOffer carries the human's harness and model through to one object"
     workerModel: "haiku",
   });
 
-  assert.deepEqual(offer, { transports: ["acp"], targets: ["claude"], models: ["haiku"] });
+  assert.deepEqual(offer, {
+    transports: ["acp"],
+    targets: ["claude"],
+    models: ["haiku"],
+    modelCards: [],
+  });
 });
 
 test("staffingOffer on an unequipped machine offers nothing to staff with", () => {
@@ -153,5 +158,31 @@ test("staffingOffer on an unequipped machine offers nothing to staff with", () =
     transports: [],
     targets: [],
     models: [],
+    modelCards: [],
   });
+});
+
+// The distinction the whole card layer rests on, asserted rather than left to the
+// comment: a card is a *menu* the synthesize call is shown, never an entry in the
+// allowlist it is checked against. A card id is a name at some provider's API, and
+// whether the harness a task was staffed with can reach that provider is a fact about
+// somebody's account. Letting one into `models` would offer a Nebius DeepSeek id to
+// `cli/claude` — defect 21 built back out of the fix for defect 21.
+test("a verified card is offered as a menu and never widens the model allowlist", () => {
+  const card = {
+    id: "deepseek-ai/DeepSeek-V3",
+    provider: "nebius",
+    access: "api-key" as const,
+    tier: "worker" as const,
+    contextK: 128,
+    costInPer1M: 0.13,
+    costOutPer1M: 0.4,
+    verifiedBy: "probes/nebius-v3.json",
+  };
+
+  const offer = staffingOffer({ agents: ["claude"] }, {}, [card]);
+
+  assert.deepEqual(offer.modelCards, [card]);
+  assert.ok(!offer.models.includes(card.id));
+  assert.deepEqual(offer.models, [...MODELS_BY_VENDOR.anthropic]);
 });

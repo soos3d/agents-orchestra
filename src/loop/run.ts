@@ -10,6 +10,7 @@
 // the criteria freeze, the budget, the ready set, and the stall rule all live here,
 // and none of them is ever a model's judgment.
 import { type OfferedRole } from "../agents/offer.js";
+import { type ModelCard } from "../providers/modelCard.js";
 import { budgetExceeded, type Budget } from "../domain/budget.js";
 import { type Criterion } from "../domain/ledger.js";
 import { LIMITS, type Limits, type MissionStatus } from "../domain/mission.js";
@@ -63,6 +64,11 @@ export interface LoopDeps {
    *  machine can start are different lists — offering the second one is defect 21.
    *  Absent falls back to everything built, which is what a test wants. */
   transports?: readonly string[];
+  /** The model cards a probe answered for on this machine (PLAN-NEXT 2.1), arriving in
+   *  the same object the transports do (`staffingOffer`). Shown to synthesis as a menu;
+   *  the allowlist it is checked against is still `models`. Absent is a machine with no
+   *  provider configured, which is every machine until one is. */
+  modelCards?: readonly ModelCard[];
   /** Absent means nobody can be asked, which is what `--unattended` amounts to here. */
   requestExtension?(request: ExtendRequest): Promise<Budget | undefined>;
   limits?: Partial<Limits>;

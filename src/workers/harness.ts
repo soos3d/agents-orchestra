@@ -33,6 +33,7 @@
 // menu and nothing is refused at validation. Absent stays absent, exactly as it does for
 // token usage (§9.5). `opencode` is empty for a neighbouring reason — its menu is the
 // human's account, and it arrives on the wire.
+import { type ModelCard } from "../providers/modelCard.js";
 import { acpAgentCommand, acpTargets } from "./acp/registry.js";
 import { type ProbedAgents } from "./availability.js";
 import { AVAILABLE_TRANSPORTS, CLI_TARGETS } from "./transport.js";
@@ -209,7 +210,20 @@ export function staffingOffer(
   // rather than every caller rebuilding it field by field under
   // `exactOptionalPropertyTypes` — which is a rebuild that can drop a field silently.
   chosen: { harness?: string | undefined; workerModel?: string | undefined } = {},
-): { transports: string[]; targets: string[]; models: string[] } {
+  // Verified model cards (PLAN-NEXT 2.1), already narrowed to the ones a probe answered
+  // for. They ride in the offer rather than in a `Deps` field of their own for this
+  // function's whole reason: one object is one chance to wire it, four separately-passed
+  // lists at three composition roots is twelve.
+  //
+  // **They are a menu the synthesize call is shown, not an allowlist it is checked
+  // against**, and the difference is deliberate. `models` narrows what a spec may name;
+  // a card's `id` is a name at some *provider's* API, and whether a given harness can
+  // reach it is a fact about that harness's account, not about this list. Putting card
+  // ids into `models` would offer a Nebius DeepSeek id to `cli/claude` — defect 21 built
+  // out of the fix for defect 21. The door for a card id is the provider path
+  // (PLAN-NEXT 4.2), where the card list genuinely *is* the complete menu.
+  cards: readonly ModelCard[] = [],
+): { transports: string[]; targets: string[]; models: string[]; modelCards: ModelCard[] } {
   const offered = offeredHarnesses(probe);
   return {
     transports: allowedTransports(offered, chosen.harness),
@@ -217,6 +231,7 @@ export function staffingOffer(
     ...(chosen.workerModel === undefined
       ? { models: allowedModels(offered) }
       : { models: allowedModels(offered, { model: chosen.workerModel }) }),
+    modelCards: [...cards],
   };
 }
 

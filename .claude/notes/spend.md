@@ -79,3 +79,34 @@ after the run, folded from `spend_recorded`. Restoring a prediction means first 
 the four kinds it is of** and deriving coefficients from committed logs — and the receipt in
 `src/testing/receipts/` cannot do that, because it records every spend as `phase: "orchestration"`
 with no kinds at all.
+
+## Model cards and what they may price (PLAN-NEXT 2.1–2.5)
+
+`src/providers/modelCard.ts` makes a model a resource with rates: `{id, provider, access, tier,
+contextK, costInPer1M, costOutPer1M, verifiedBy}`, loaded from a shipped `providers/` directory and
+`<stateDir>/providers/` with the roster's merge (later wins by id, an unparseable file skipped with a
+warning). **`verifiedBy` is required at parse** and names a probe transcript relative to
+`<stateDir>/providers/` — `probePath` refuses an absolute path or a `..`, because a card is a
+hand-edited JSON file and either one turns "verified" into "this path happens to exist".
+
+`orchestra doctor` is the only place a card becomes offerable: `probeProviders` calls each card's
+model for one token through `openaiCompatible.ts`, writes the transcript atomically at 0600, and
+`verifiedModelCards` narrows the offer to the cards with one on disk. A failed probe writes nothing
+— evidence that outlived the thing it was evidence of would keep offering a withdrawn model. A
+provider with no key is skipped entirely rather than reported as failed. `staffableCards` does load
+and narrow together and is what every composition root calls.
+
+**Three rules on pricing, and the third is the one that will be got wrong.**
+
+- `costUsd` is **absent, never zero**, and only when *both* `input` and `output` are present. Half a
+  usage report is not half a bill.
+- It is priced against `modelByPhase` — what actually ran — and never `AgentSpec.model`. That
+  distinction has already cost a 5× error once: a task specced `claude-sonnet-4-5` ran on
+  `claude-opus-4-6` because ACP is not told the spec's choice.
+- **A card prices the call this orchestrator makes to that provider, and nothing else.** A worker
+  running under `acp/opencode` on a DeepSeek model is billed on *OpenCode's* contract; the card's
+  rates are a claim about the provider's own API. In practice the id mismatch does the work — an
+  opencode route id is not a nebius model id — but the rule is the reason, not the mechanism.
+
+Nothing is priced today: every current spend path is a subscription CLI or ACP. The first card-priced
+spend is stage 4's provider call path, and `missionMetrics(state, cards)` is already shaped for it.

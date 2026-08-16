@@ -35,6 +35,7 @@ import { describeViolations, violations, type Envelope } from "../domain/envelop
 import { type PlannedTask } from "../domain/ledger.js";
 import { type AgentSpec, type WorkerKind } from "../domain/task.js";
 import { type EventInput } from "../events/schema.js";
+import { type ModelCard, modelCardIndex } from "../providers/modelCard.js";
 import { allowedTargets, builtHarnesses } from "../workers/harness.js";
 import { AVAILABLE_TRANSPORTS } from "../workers/transport.js";
 import { classOf, resolveClasses } from "../workers/toolCatalogue.js";
@@ -55,6 +56,13 @@ export interface SynthesizeDeps {
    *  Absent is the same as empty: a `Deps` that leaves it off checks nothing, which is
    *  the optional-dependency footgun and the reason the composition roots are tested. */
   models?: readonly string[];
+  /** The verified model cards this machine can reach (PLAN-NEXT 2.1), carried in the
+   *  same object `transports`, `targets` and `models` arrive in (`staffingOffer`).
+   *  They change what the model is *shown* — id, tier, context, rates — and nothing
+   *  about what it may return: `models` is still the allowlist, and a card id is a name
+   *  at a provider's API rather than a name this harness is known to accept. Absent is a
+   *  machine with no probed provider, which is every machine until one is configured. */
+  modelCards?: readonly ModelCard[];
   /** The roles this mission may staff from (§7, amended): the documented roster plus
    *  anything a human promoted, already merged by `agents/offer.ts`. They change what
    *  the model is *shown* and nothing about what it is allowed to return — every check
@@ -429,6 +437,7 @@ async function staff(
   const catalogue = resolveClasses(envelope.toolClasses);
   const roles = deps.roles ?? [];
   const index = rosterIndex(roles);
+  const cards = modelCardIndex(deps.modelCards ?? []);
 
   const request = (rejected?: string) =>
     deps.calls.synthesize({
@@ -441,6 +450,7 @@ async function staff(
       // Omitted rather than sent empty: a prompt carrying "roster: []" spends context
       // telling the model about a library that does not exist.
       ...(index === "" ? {} : { roster: index }),
+      ...(cards === "" ? {} : { modelCards: cards }),
       ...(rejected ? { rejected } : {}),
     });
 

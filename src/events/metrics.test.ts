@@ -180,3 +180,72 @@ describe("missionMetrics", () => {
     assert.equal(totals.dispatches, 3);
   });
 });
+
+// Pricing is the fourth rule and it is the same rule as the other three wearing a
+// currency symbol: **absent, never zero**. Most of this system's spend is on subscription
+// CLIs and over ACP, neither of which any card prices, so a `costUsd: 0` on a mission
+// that cost real money would be the exact claim `unmeasured` exists to refuse.
+//
+// The other half is *which* model a phase is priced against. `modelByPhase` records what
+// actually ran, and it has already differed from what was specced by a factor of five —
+// a task asking for `claude-sonnet-4-5` ran on `claude-opus-4-6` because ACP is never
+// told the spec's choice. Pricing from `AgentSpec.model` would have looked precise.
+describe("missionMetrics pricing", () => {
+  const card = {
+    id: "deepseek-ai/DeepSeek-V3",
+    provider: "nebius",
+    access: "api-key" as const,
+    tier: "worker" as const,
+    contextK: 128,
+    costInPer1M: 1,
+    costOutPer1M: 2,
+    verifiedBy: "probes/v3.json",
+  };
+
+  const priceable = (over: Partial<Spend["tokens"]> = {}): Spend => ({
+    ...zeroSpend(),
+    wallMs: 100,
+    dispatches: 1,
+    tokens: {
+      measured: 3_000_000,
+      estimated: 0,
+      unmeasured: 0,
+      input: 2_000_000,
+      output: 1_000_000,
+      ...over,
+    },
+  });
+
+  const stateWith = (tokens: Partial<Spend["tokens"]> = {}, ranOn = card.id) =>
+    aMissionState({
+      mission: aMission({
+        spendByPhase: { [spendPhase("plan")]: priceable(tokens) },
+        modelByPhase: { [spendPhase("plan")]: ranOn },
+      }),
+    });
+
+  test("a call on a carded model is priced from what actually ran", () => {
+    const figures = missionMetrics(stateWith(), [card]);
+
+    assert.equal(figures.calls[0]?.costUsd, 4);
+    assert.equal(figures.totals.costUsd, 4);
+  });
+
+  test("no card for the model that ran leaves the cost absent, not zero", () => {
+    const figures = missionMetrics(stateWith({}, "claude-opus-4-6"), [card]);
+
+    assert.equal(figures.calls[0]?.costUsd, undefined);
+    assert.equal(figures.totals.costUsd, undefined);
+  });
+
+  test("half a usage report is not half a bill", () => {
+    // `output` absent — a transport that reported only its input has not reported a cost.
+    const figures = missionMetrics(stateWith({ output: undefined }), [card]);
+
+    assert.equal(figures.calls[0]?.costUsd, undefined);
+  });
+
+  test("with no cards a mission reports exactly what it reported before", () => {
+    assert.equal(missionMetrics(stateWith()).totals.costUsd, undefined);
+  });
+});

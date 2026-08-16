@@ -26,6 +26,7 @@ import {
 } from "../config/discover.js";
 import { readLore } from "../memory/lore.js";
 import { loadSavedMission, seedFromSaved, type SavedMission } from "../memory/savedMission.js";
+import { staffableCards } from "../providers/modelCard.js";
 import { staffingOffer } from "../workers/harness.js";
 import { DEFAULT_TOOL_CLASSES } from "../workers/toolCatalogue.js";
 import { type ClientMessage } from "../web/protocol.js";
@@ -395,7 +396,9 @@ export async function runMission(
       // approved plan inside `prepareMission`, so the offer has to be here as well as
       // in the loop's replan — one of the two wired is a mission staffed against a
       // transport that cannot spawn, discovered one dispatch at a time.
-      ...staffingOffer(config, options.runtime),
+      ...staffingOffer(config, options.runtime, staffableCards(config.stateDir, (message) =>
+        io.err(message),
+      )),
       onWarn: (message) => io.err(message),
     }));
 

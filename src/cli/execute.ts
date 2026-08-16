@@ -37,6 +37,7 @@ import { staffingOffer } from "../workers/harness.js";
 import { createCliReformatter, createCliTransport } from "../workers/transport.js";
 import { artifactRoot, loreDir, type DiscoveredConfig } from "../config/discover.js";
 import { loadProfiles } from "../memory/profiles.js";
+import { staffableCards } from "../providers/modelCard.js";
 import { offeredRoles, type OfferedRole } from "../agents/offer.js";
 import { loadRoster, localRosterDir, rosterDir } from "../agents/roster.js";
 import { recordLearnings } from "../memory/writeBack.js";
@@ -195,7 +196,9 @@ export async function executeMission(deps: ExecuteDeps): Promise<ExecuteResult> 
       // And the machine's transports, for the same reason (§7, defect 21): this is
       // where a resumed `--plan-only` mission is staffed, so a mission approved here
       // against the built list would be staffed with a transport nothing can start.
-      ...staffingOffer(deps.config, state.mission.runtime),
+      ...staffingOffer(deps.config, state.mission.runtime, staffableCards(deps.config.stateDir, (message) =>
+        deps.io.err(message),
+      )),
       unattended: state.mission.unattended,
     });
 
@@ -423,7 +426,7 @@ export async function buildLoopDeps(
     // The replan's half of the honest offer (§7). Passed always, including empty: an
     // omitted list would fall back to everything the build ships, which is the exact
     // claim this is here to stop making.
-    ...staffingOffer(config, store.state().mission.runtime),
+    ...staffingOffer(config, store.state().mission.runtime, staffableCards(config.stateDir, onWarn)),
     checkCriterion: createCriterionChecker({ calls }),
     dispatch: (task: Task, state: MissionState): Promise<DispatchOutcome> =>
       dispatch(

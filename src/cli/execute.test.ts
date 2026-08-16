@@ -578,6 +578,34 @@ describe("executeMission", () => {
     assert.deepEqual(deps.transports, []);
   });
 
+  // The optional-`Deps` trap, for the card layer. `staffableCards` loads *and* narrows in
+  // one call precisely so a root cannot wire half of it, but a root that calls neither is
+  // the older failure — a feature finished and switched off at once. This asserts the
+  // replan's root reaches the disk, and that an unprobed card never arrives.
+  test("the loop is offered the cards this machine verified, and no others", async () => {
+    const store = testStore(planOnlyMission());
+    const card = {
+      id: "deepseek-ai/DeepSeek-V3",
+      provider: "nebius",
+      access: "api-key",
+      tier: "worker",
+      contextK: 128,
+      costInPer1M: 0.13,
+      costOutPer1M: 0.4,
+      verifiedBy: "probes/v3.json",
+    };
+    fs.mkdirSync(path.join(config.stateDir, "providers", "probes"), { recursive: true });
+    fs.writeFileSync(
+      path.join(config.stateDir, "providers", "nebius.json"),
+      JSON.stringify([card, { ...card, id: "unprobed", verifiedBy: "probes/nope.json" }]),
+    );
+    fs.writeFileSync(path.join(config.stateDir, "providers", "probes", "v3.json"), "{}");
+
+    const deps = await buildLoopDeps(store, {} as Calls, config);
+
+    assert.deepEqual(deps.modelCards?.map((entry) => entry.id), ["deepseek-ai/DeepSeek-V3"]);
+  });
+
   test("the loop is offered acp once a coding CLI with a pinned adapter is on PATH", async () => {
     const store = testStore(planOnlyMission());
 

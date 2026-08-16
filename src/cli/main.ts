@@ -14,6 +14,13 @@ import { createAgentCalls } from "../loop/agentCalls.js";
 import { type HumanPort } from "../loop/human.js";
 import { resilientCalls, type ResilientCallsDeps } from "../loop/resilience.js";
 import { saveProfile } from "../memory/profiles.js";
+import {
+  loadModelCards,
+  localProvidersDir,
+  providersDir,
+  staffableCards,
+} from "../providers/modelCard.js";
+import { probeProviders } from "../providers/probe.js";
 import { saveMission } from "../memory/savedMission.js";
 import { resumeMission } from "./resumeCommand.js";
 import { parseRunArgs, runMission, type RunDeps } from "./runCommand.js";
@@ -98,7 +105,9 @@ function metrics(missionId: string, asJson: boolean, config: DiscoveredConfig, i
     return 1;
   }
 
-  const figures = missionMetrics(fold(events));
+  // Priced against the cards this machine has verified: a task that ran on a carded
+  // model gets a dollar figure, everything else stays unpriced rather than zero (§9.5).
+  const figures = missionMetrics(fold(events), staffableCards(config.stateDir));
   io.out(asJson ? JSON.stringify(figures, null, 2) : renderMetrics(figures).join("\n"));
   return 0;
 }
@@ -223,6 +232,20 @@ export async function main(
 
   switch (command) {
     case "doctor": {
+      // The probe runs *before* the report, and only here: it is the one command whose
+      // job is finding out what works on this machine, and it is the only place a model
+      // card becomes offerable (PLAN-NEXT 2.3). A provider with no key is skipped, so on
+      // a machine with none this call reaches no network and costs nothing.
+      const probed = await probeProviders(
+        { stateDir: config.stateDir, keys: config.providerKeys ?? {} },
+        loadModelCards([providersDir(), localProvidersDir(config.stateDir)], (message) =>
+          io.err(message),
+        ),
+      );
+      for (const outcome of probed) {
+        if (!outcome.ok) io.err(`  ${outcome.card.id}: ${outcome.problem}`);
+      }
+
       const report = doctor(config);
       io.out(formatReport(report));
       return report.ready ? 0 : 1;

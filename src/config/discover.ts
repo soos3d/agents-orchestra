@@ -7,6 +7,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { repoRoot } from "../git/repo.js";
+import { PROVIDERS } from "../providers/openaiCompatible.js";
 import { run } from "../runtime/sh.js";
 
 export interface DiscoveredConfig {
@@ -22,6 +23,22 @@ export interface DiscoveredConfig {
   /** An OpenClaw Gateway to mirror the inbox to, if the user runs one (§2). Never
    *  required; refused unless loopback (§17). */
   gatewayUrl?: string;
+  /**
+   * API keys by provider name, for the providers that have one set (PLAN-NEXT 2.2).
+   *
+   * Read here because this is one of the two places `process.env` is read at all, and
+   * that is not becoming three: `providers/openaiCompatible.ts` knows the variable
+   * *names* and never the values, and `probeProviders` is handed what it needs. A
+   * provider with no key is absent from this record rather than present and empty —
+   * unconfigured is a configuration, and a blank string would be a key that fails
+   * authentication instead of a provider nobody asked for.
+   *
+   * Optional for the reason `gatewayUrl` is: a machine with no provider configured is
+   * the normal case, and every reader treats absent as "no providers". `discoverConfig`
+   * always sets it, which is what `discover.test.ts` asserts — there is one producer,
+   * so this is not the optional-`Deps` trap.
+   */
+  providerKeys?: Record<string, string>;
 }
 
 interface Candidate {
@@ -79,6 +96,25 @@ async function probe(names: readonly string[]): Promise<string[]> {
 
 export const probeAgents = (): Promise<string[]> => probe(KNOWN_AGENTS);
 
+/**
+ * Which model providers this machine has a key for, by provider name (PLAN-NEXT 2.2).
+ *
+ * Pure over an environment rather than reading `process.env` itself, so what a machine
+ * offers is assertable without mutating the process — the habit `availableTransports`
+ * follows for PATH. A provider whose variable is unset or blank is absent from the
+ * result: `probeProviders` skips it, `doctor` reports it as not configured, and nothing
+ * about a mission changes, which is the whole "no key present, nothing changes"
+ * requirement.
+ */
+export function readProviderKeys(env: NodeJS.ProcessEnv): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(PROVIDERS).flatMap(([name, provider]) => {
+      const value = env[provider.keyEnv];
+      return value === undefined || value === "" ? [] : [[name, value] as const];
+    }),
+  );
+}
+
 const num = (value: string | undefined, fallback: number): number => {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -110,6 +146,7 @@ export async function discoverConfig(cwd = process.cwd()): Promise<DiscoveredCon
     // model; `ORCHESTRATOR_MODEL` is the override when it does.
     orchestratorModel: process.env.ORCHESTRATOR_MODEL || "opus",
     maxConcurrency: num(process.env.MAX_CONCURRENCY, 4),
+    providerKeys: readProviderKeys(process.env),
     // The phone mirror's gateway, when one is configured at all (§2). Carried as
     // config so `doctor` can refuse a non-loopback URL before anything trusts it.
     ...(process.env.ORCHESTRA_GATEWAY_URL ? { gatewayUrl: process.env.ORCHESTRA_GATEWAY_URL } : {}),

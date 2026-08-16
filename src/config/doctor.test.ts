@@ -5,7 +5,8 @@
 // payment gates off this one.
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { checkChannel } from "./doctor.js";
+import { type ModelCard } from "../providers/modelCard.js";
+import { checkChannel, checkProviders } from "./doctor.js";
 
 describe("checkChannel", () => {
   test("no mirror is the default and passes", () => {
@@ -29,5 +30,48 @@ describe("checkChannel", () => {
 
   test("a string that is not a URL fails rather than passing by accident", () => {
     assert.equal(checkChannel("not a url").level, "fail");
+  });
+});
+
+// The providers line reports a *narrowing*, which is the only fact a mission depends on:
+// a card with no probe transcript is on no menu, exactly as an ACP target with no binary
+// is on none. The case worth catching is the middle one — a key set, cards on disk, and
+// nothing verified — because that is somebody who configured a provider and would
+// otherwise see a passing report with no models in it.
+describe("checkProviders", () => {
+  const card = (id: string): ModelCard => ({
+    id,
+    provider: "nebius",
+    access: "api-key",
+    tier: "worker",
+    contextK: 128,
+    costInPer1M: 0.13,
+    costOutPer1M: 0.4,
+    verifiedBy: `probes/${id}.json`,
+  });
+
+  test("no provider and no card is a pass, not a gap", () => {
+    const check = checkProviders([], {}, []);
+    assert.equal(check.level, "ok");
+    assert.equal(check.fix, undefined);
+  });
+
+  test("a key set and nothing verified warns with what to type", () => {
+    const check = checkProviders([card("a")], { nebius: "k" }, []);
+    assert.equal(check.level, "warn");
+    assert.match(check.detail, /none are offered/);
+    assert.ok(check.fix);
+  });
+
+  test("cards on disk with no key say so rather than blaming the probe", () => {
+    const check = checkProviders([card("a")], {}, []);
+    assert.equal(check.level, "warn");
+    assert.match(check.detail, /no provider key set/);
+  });
+
+  test("a verified card reports the narrowing it survived", () => {
+    const check = checkProviders([card("a"), card("b")], { nebius: "k" }, [card("a")]);
+    assert.equal(check.level, "ok");
+    assert.match(check.detail, /1 of 2 cards verified/);
   });
 });

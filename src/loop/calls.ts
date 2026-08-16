@@ -201,6 +201,21 @@ export interface SynthesizeInput {
    * nothing. Absent when the roster is empty or switched off.
    */
   roster?: string;
+  /**
+   * The verified model cards this machine can reach, rendered one line each by
+   * `providers/modelCard.ts` — id, tier, context window, and the two rates
+   * (PLAN-NEXT 2.4).
+   *
+   * A **rendered string** for `roster`'s reason: `describe()` JSON-dumps whatever it is
+   * given, and a list of card objects would spend context on field names the model does
+   * not have to read. Budgeted by `MODEL_CARD_INDEX_BUDGET` at the same seam.
+   *
+   * It is a menu, not a grant. `models` is still the allowlist a spec is checked
+   * against, and a card names a model at some provider's API rather than one this
+   * harness is known to accept — see `staffingOffer`. Absent when no provider has been
+   * probed on this machine, which is every machine until one is configured.
+   */
+  modelCards?: string;
   /** Present only on the one retry, quoting what was wrong with the last spec. */
   rejected?: string;
 }

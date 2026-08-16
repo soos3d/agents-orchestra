@@ -28,7 +28,7 @@ normal run needs.
 |---|---|
 | touch `src/web/**` | `.claude/notes/web.md` |
 | touch `src/workers/**`, dispatch, envelopes, git leases | `.claude/notes/workers.md` |
-| touch spend, tokens, `metrics`, `domain/budget.ts` | `.claude/notes/spend.md` |
+| touch spend, tokens, `metrics`, `domain/budget.ts`, `src/providers/**` | `.claude/notes/spend.md` |
 | touch `src/loop/**`, `src/agents/**`, decision points | `.claude/notes/loop.md` |
 | ask "why is it like this / has this been tried" | `PLAN.md` §4 decisions, §6 gotchas, §7 defects 1–42 |
 | plan work | `PLAN.md` §1 status, §2 next |
@@ -122,6 +122,23 @@ case-insensitively. A real mission is what caught the third: the permission fram
 name, OpenCode's later `tool_call_update`s rewrite the title to *what the tool is doing*
 (`bash` → `ls -la`), and three granted shell calls arrived as `pwd`, `git` and `python3`, matched no
 class, and were refused. `rememberToolName` keeps the first announcement.
+
+**A model card is evidence, and a menu is not an allowlist** (`src/providers/`, PLAN-NEXT 2.1–2.5).
+A card is `{id, provider, access, tier, contextK, costInPer1M, costOutPer1M, verifiedBy}` on disk;
+`verifiedBy` is required at parse and names a probe transcript under `<stateDir>/providers/`, which
+`orchestra doctor` writes by actually calling the model. No transcript, no offer — the
+`availability.ts` narrowing, one field along. **`staffableCards` loads and narrows in one call and
+every composition root calls it**, for `staffingOffer`'s reason. The bundled `providers/` directory
+ships empty, and the base URLs in `PROVIDERS` are addresses to knock at rather than verified claims.
+
+The half that is not guessable: **card ids are shown to synthesis and are not added to `models`.**
+`models` is what `inspect()` refuses against, and a card's id is a name at *its provider's* API —
+putting one in would offer a Nebius DeepSeek id to `cli/claude`, and constraining `acp/opencode` to
+nebius ids would refuse the models it actually runs. Cards go into the prompt as a rendered index
+(`modelCardIndex`, budgeted like `rosterIndex`); the door for a card id arrives with the provider
+call path. Pricing follows the same caution: `metrics` prices a phase only when `modelByPhase` — what
+*ran*, never `AgentSpec.model` — matches a card and both token kinds are present, so a worker billed
+on OpenCode's contract stays unpriced rather than charged at somebody else's rate.
 
 And **the orchestrator gets a model and no harness**, because `runViaAgentSdk` *is*
 the Agent SDK; a second orchestrator harness is deferred because `queryOptions` encodes Agent-SDK
