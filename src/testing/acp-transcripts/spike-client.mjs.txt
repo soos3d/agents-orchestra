@@ -1,25 +1,19 @@
-// Minimal ACP client that logs every JSON-RPC frame in both directions.
-// Usage: node client.mjs <outfile.jsonl> <cwd> <command> [args...]
+// spike-client.mjs + ACP_MODEL (session/set_model), and drops
+// available_commands_update frames (they carry the capturing machine's local skill list).
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
 const [outFile, sessionCwd, cmd, ...args] = process.argv.slice(2);
 const log = fs.createWriteStream(outFile, { flags: "w" });
-const rec = (dir, obj) =>
+const rec = (dir, obj) => {
+  const s = JSON.stringify(obj);
+  if (typeof s === "string" && s.includes("available_commands_update")) return;
   log.write(JSON.stringify({ t: new Date().toISOString(), dir, frame: obj }) + "\n");
+};
 
-const child = spawn(cmd, args, {
-  cwd: sessionCwd,
-  stdio: ["pipe", "pipe", "pipe"],
-  env: { ...process.env },
-});
-
-child.stderr.on("data", (d) => {
-  const s = d.toString();
-  rec("stderr", s);
-  process.stderr.write("[agent stderr] " + s);
-});
+const child = spawn(cmd, args, { cwd: sessionCwd, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env } });
+child.stderr.on("data", (d) => rec("stderr", d.toString()));
 
 let nextId = 1;
 const pending = new Map();
@@ -63,34 +57,27 @@ function handle(msg) {
     return;
   }
   if (msg.method && msg.id !== undefined) return handleServerRequest(msg);
-  // notification: nothing to do, already logged
 }
 
 function handleServerRequest(msg) {
   const reply = (result) => send({ jsonrpc: "2.0", id: msg.id, result });
-  const fail = (message) =>
-    send({ jsonrpc: "2.0", id: msg.id, error: { code: -32000, message } });
+  const fail = (message) => send({ jsonrpc: "2.0", id: msg.id, error: { code: -32000, message } });
   const p = msg.params ?? {};
   switch (msg.method) {
     case "session/request_permission": {
-      // Prefer allow_once so the turn can complete; capture the frame either way.
       const opts = p.options ?? [];
       const want = process.env.ACP_PERMISSION === "reject" ? "reject_once" : "allow_once";
-      const pick =
-        opts.find((o) => o.kind === want) ??
-        opts.find((o) => o.kind === "allow_always") ??
-        opts[0];
+      const pick = opts.find((o) => o.kind === want) ?? opts.find((o) => o.kind === "allow_always") ?? opts[0];
       if (!pick) return reply({ outcome: { outcome: "cancelled" } });
       return reply({ outcome: { outcome: "selected", optionId: pick.optionId } });
     }
-    case "fs/read_text_file": {
+    case "fs/read_text_file":
       try {
         return reply({ content: fs.readFileSync(p.path, "utf8") });
       } catch (e) {
         return fail(String(e));
       }
-    }
-    case "fs/write_text_file": {
+    case "fs/write_text_file":
       try {
         fs.mkdirSync(path.dirname(p.path), { recursive: true });
         fs.writeFileSync(p.path, p.content ?? "");
@@ -98,18 +85,13 @@ function handleServerRequest(msg) {
       } catch (e) {
         return fail(String(e));
       }
-    }
     default:
       return fail(`unhandled client method ${msg.method}`);
   }
 }
 
-const PROMPT =
-  process.env.ACP_PROMPT ??
-  "Create a file named hello.txt in the current directory containing exactly the text: hi";
-
+const PROMPT = process.env.ACP_PROMPT ?? "Create a file named hello.txt in the current directory containing exactly the text: hi";
 const timeout = setTimeout(() => {
-  console.error("TIMEOUT — killing agent");
   child.kill("SIGKILL");
   process.exit(3);
 }, Number(process.env.ACP_TIMEOUT_MS ?? 180000));
@@ -117,28 +99,22 @@ const timeout = setTimeout(() => {
 try {
   const init = await request("initialize", {
     protocolVersion: Number(process.env.ACP_PROTOCOL ?? 1),
-    clientCapabilities: {
-      fs: { readTextFile: true, writeTextFile: true },
-      terminal: false,
-    },
+    clientCapabilities: { fs: { readTextFile: true, writeTextFile: true }, terminal: false },
     clientInfo: { name: "fable-orchestra-spike", version: "0.0.0" },
   });
-  console.log("INITIALIZE:", JSON.stringify(init));
-
+  console.log("INITIALIZE:", JSON.stringify(init).slice(0, 200));
   const sess = await request("session/new", { cwd: sessionCwd, mcpServers: [] });
-  console.log("SESSION:", JSON.stringify(sess));
-
-  const res = await request("session/prompt", {
-    sessionId: sess.sessionId,
-    prompt: [{ type: "text", text: PROMPT }],
-  });
+  console.log("SESSION:", sess.sessionId);
+  if (process.env.ACP_MODEL) {
+    console.log("SET_MODEL:", JSON.stringify(await request("session/set_model", { sessionId: sess.sessionId, modelId: process.env.ACP_MODEL })));
+  }
+  const res = await request("session/prompt", { sessionId: sess.sessionId, prompt: [{ type: "text", text: PROMPT }] });
   console.log("PROMPT RESULT:", JSON.stringify(res));
 } catch (e) {
   console.error("ERROR:", JSON.stringify(e));
   rec("client-error", e);
 } finally {
   clearTimeout(timeout);
+  child.kill("SIGKILL");
   log.end();
-  child.kill("SIGTERM");
-  setTimeout(() => process.exit(0), 300);
 }
