@@ -14,6 +14,44 @@ export interface ParsedCommand {
 
 const SHELL_METACHARACTERS = /[|&;<>$`(){}[\]]/;
 
+/**
+ * The characters a backslash may escape *inside double quotes*, and the whole of defect
+ * 44 (2026-08-16).
+ *
+ * POSIX is specific here and the intuitive reading is wrong: within double quotes a
+ * backslash is an ordinary character unless the next one is `$`, a backtick, `"`, `\`, or
+ * a newline. Everywhere else it stays literal. This tokenizer treated it as a general
+ * escape, so it silently *deleted* the backslash before every other character — and the
+ * argument that reaches the program is then not the one the command said.
+ *
+ * It cost a real mission three criteria. A verification command carried the regex
+ * `r'-?\d+\.?\d*'` inside a `python3 -c "…"` argument; what ran was `r'-?d+.?d*'`, which
+ * matches nothing. The script under test was correct, printed `5.0`, and three criteria
+ * came back `false` with an assertion error quoting its own correct output. Nothing
+ * failed loudly, and the same command pasted into a shell passed.
+ *
+ * This is the trap the codebase already names twice — a scanner has to know what it is
+ * inside of. `needsShell` read a `=>` inside a quoted string as a redirect (defect 34);
+ * `extractJsonObject` stopped at a fence inside a JSON string (defect 38). Both failed on
+ * correct work. This is the third, and it is the quietest of them.
+ */
+const ESCAPABLE_IN_DOUBLE_QUOTES = new Set(['"', "\\", "$", "`", "\n"]);
+
+/**
+ * Whether a backslash at this position escapes the character after it.
+ *
+ * Shared by both walkers below rather than written twice, because they are documented as
+ * walking the same quote and escape states — and two copies of a rule this
+ * counter-intuitive would drift the moment one of them was corrected.
+ */
+function escapesNext(quote: '"' | "'" | undefined, next: string | undefined): boolean {
+  if (next === undefined) return false;
+  // Single quotes are literal all the way through, backslashes included.
+  if (quote === "'") return false;
+  if (quote === '"') return ESCAPABLE_IN_DOUBLE_QUOTES.has(next);
+  return true;
+}
+
 export function parseCommand(command: string): ParsedCommand {
   const tokens: string[] = [];
   let current = "";
@@ -32,9 +70,9 @@ export function parseCommand(command: string): ParsedCommand {
       quote = undefined;
       continue;
     }
-    // Backslash escapes only outside single quotes, matching POSIX closely enough
-    // that a copied command line behaves the way it looks.
-    if (char === "\\" && quote !== "'" && i + 1 < command.length) {
+    // A backslash that escapes something consumes the next character; one that does not
+    // falls through below and is kept, which is the half that was missing (defect 44).
+    if (char === "\\" && escapesNext(quote, command[i + 1])) {
       current += command[++i];
       started = true;
       continue;
@@ -84,7 +122,7 @@ export function needsShell(command: string): boolean {
       quote = undefined;
       continue;
     }
-    if (char === "\\" && quote !== "'" && i + 1 < command.length) {
+    if (char === "\\" && escapesNext(quote, command[i + 1])) {
       i++;
       continue;
     }

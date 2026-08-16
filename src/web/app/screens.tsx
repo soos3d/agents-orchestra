@@ -388,6 +388,26 @@ function Health({ view }: { view: View }) {
               ? health.transports.join(", ")
               : "none — no worker CLI on PATH, so nothing can be dispatched"}
           </dd>
+          {/* What work can run on, as pairs rather than as two lists — a page that
+              showed transports and targets separately would imply a cross-product that
+              does not exist. */}
+          <dt>harnesses</dt>
+          <dd>
+            {health.harnesses.length > 0
+              ? health.harnesses.map((harness) => harness.id).join(", ")
+              : "none — no agent CLI on PATH"}
+          </dd>
+          {/* "Which model is running this?" had no answer on the page at all. Both
+              rows are needed for it to be a true one: the default a mission inherits,
+              and the two nobody can change. */}
+          <dt>orchestrator</dt>
+          <dd>
+            {health.orchestratorModel} — Claude Agent SDK
+          </dd>
+          <dt>fixed models</dt>
+          <dd>
+            {health.fixedModels.map((fixed) => `${fixed.name}: ${fixed.model}`).join(", ")}
+          </dd>
         </dl>
         </div>
       </details>
@@ -439,6 +459,7 @@ function Compose({ view, send }: { view: View; send: Send }) {
           <input id="compose-quick" type="checkbox" /> quick — small job, skip the deep research
         </label>
       </div>
+      <Runtime health={view.health} />
       <div class="row">
         <input id="compose-budget" type="number" min="1" placeholder="budget minutes (240)" />
         <button
@@ -457,6 +478,12 @@ function Compose({ view, send }: { view: View; send: Send }) {
               goal,
               planOnly: planBox?.checked === true,
               quick: quickBox?.checked === true,
+              // Read off the three selects, each of which was populated from the
+              // server's own `health` frame — so what goes out is a value that came
+              // in, never a string this page composed. `""` is the "let the planner
+              // choose" option and is omitted rather than sent, because absent and
+              // "chose nothing" have to stay the same fact all the way to the log.
+              ...chosenRuntime(),
               // The one value that comes from the page's own state, and it is the
               // id of the workspace row that was clicked — the stated exception to
               // the containment rule, and an id rather than a path by design.
@@ -473,6 +500,106 @@ function Compose({ view, send }: { view: View; send: Send }) {
       ) : null}
     </div>
   );
+}
+
+/**
+ * The harness and model controls, and the reason they are behind a `<details>`.
+ *
+ * Home is a rail and a deck, and nothing on it was deleted — it was ranked. These three
+ * belong with the other rare controls: the defaults are right for nearly every mission,
+ * and four unlabelled dropdowns beside the box you type a goal into would make the goal
+ * box harder to find. Folded is not gone, and `screens.test.tsx` asserts each control is
+ * rendered for exactly that reason.
+ *
+ * The orchestrator gets a model and no harness because there is no second harness to
+ * offer: `runViaAgentSdk` *is* the Agent SDK. Saying so as a line of text is more honest
+ * than a dropdown with one entry, which reads like a choice.
+ *
+ * Every `<option>` comes from `health`, which the server computed from what it probed. A
+ * page that built its own list would be free-typing a string that becomes a spawned
+ * binary and a `--model` argument, and the server refuses one it did not offer
+ * (`isOfferedRuntime`) — this is the readable half of that contract, not the enforcing
+ * half.
+ */
+function Runtime({ health }: { health: View["health"] }) {
+  // Before the health frame arrives there is nothing truthful to offer, and a menu
+  // built from a guess is the one thing this must not do.
+  if (!health) return null;
+
+  const anyUnhonoured = health.harnesses.some((harness) => !harness.honoursModel);
+  const workerModels = [...new Set(health.harnesses.flatMap((harness) => [...harness.models]))];
+
+  return (
+    <details class="runtime">
+      <summary>harness and models — defaults are fine</summary>
+      <div class="runtime-grid">
+        <label for="compose-harness">how the workers run</label>
+        <select id="compose-harness">
+          <option value="">let the planner choose</option>
+          {health.harnesses.map((harness) => (
+            <option key={harness.id} value={harness.id}>
+              {harness.id}
+              {harness.honoursModel ? "" : " (picks its own model)"}
+            </option>
+          ))}
+        </select>
+
+        <label for="compose-worker-model">worker model</label>
+        <select id="compose-worker-model">
+          <option value="">let the planner choose</option>
+          {workerModels.map((model) => (
+            <option key={model} value={model}>
+              {model}
+            </option>
+          ))}
+        </select>
+
+        <label for="compose-orchestrator-model">orchestrator model</label>
+        <select id="compose-orchestrator-model">
+          <option value="">{health.orchestratorModel} (default)</option>
+          {health.orchestratorModels.map((model) => (
+            <option key={model} value={model}>
+              {model}
+            </option>
+          ))}
+        </select>
+      </div>
+      <p class="quiet">
+        The orchestrator runs on the Claude Agent SDK — planning, research and judging are
+        that model. {health.fixedModels.map((fixed) => `${fixed.name} runs on ${fixed.model}`).join("; ")}
+        , which is not adjustable.
+      </p>
+      {anyUnhonoured ? (
+        <p class="quiet">
+          An acp adapter selects its own model, so a worker model set here binds the cli
+          harnesses. What actually ran is recorded either way.
+        </p>
+      ) : null}
+    </details>
+  );
+}
+
+/** The three selects, read at click time and omitted when left on "let the planner
+ *  choose". Separate from the component so the button's handler stays one expression,
+ *  and next to it so the ids cannot drift apart. */
+function chosenRuntime(): {
+  harness?: string;
+  workerModel?: string;
+  orchestratorModel?: string;
+} {
+  const read = (id: string): string | undefined => {
+    const value = (document.getElementById(id) as HTMLSelectElement | null)?.value.trim();
+    return value ? value : undefined;
+  };
+  const harness = read("compose-harness");
+  const workerModel = read("compose-worker-model");
+  const orchestratorModel = read("compose-orchestrator-model");
+
+  return {
+    ...(harness === undefined ? {} : { harness }),
+    ...(workerModel === undefined ? {} : { workerModel }),
+    ...(orchestratorModel === undefined ? {} : { orchestratorModel }),
+  };
 }
 
 /** One mission, one row. It was a card with two rows of controls and a permanently

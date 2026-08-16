@@ -84,3 +84,57 @@ describe("needsShell", () => {
     assert.equal(needsShell('npm test "unclosed'), true);
   });
 });
+
+// Defect 44: the tokenizer deleted backslashes inside double quotes, so the argument the
+// program received was not the one the command said — silently, and only for commands
+// that are correct.
+//
+// It cost a real mission three criteria. The check carried `r'-?\d+\.?\d*'` inside a
+// `python3 -c "…"` argument; `r'-?d+.?d*'` ran, matched nothing, and the assertion failed
+// while quoting the correct output of a correct script. Pasted into a shell it passed.
+//
+// POSIX is specific and unintuitive: inside double quotes a backslash is literal unless
+// the next character is one of $ ` " \ or a newline.
+describe("backslashes inside double quotes", () => {
+  test("keeps a backslash that a shell would keep", () => {
+    const parsed = parseCommand(String.raw`python3 -c "re.findall(r'-?\d+\.?\d*', s)"`);
+
+    assert.deepEqual(parsed.args, ["-c", String.raw`re.findall(r'-?\d+\.?\d*', s)`]);
+  });
+
+  test("still consumes one a shell would consume", () => {
+    // The POSIX cases, each of which a shell does act on inside double quotes. Written
+    // with ordinary quotes rather than String.raw because one of them is a backtick,
+    // which cannot appear in a template literal.
+    assert.deepEqual(parseCommand('p "a\\$b"').args, ["a$b"]);
+    assert.deepEqual(parseCommand('p "a\\`b"').args, ["a`b"]);
+    assert.deepEqual(parseCommand('p "a\\"b"').args, ['a"b']);
+    assert.deepEqual(parseCommand('p "a\\\\b"').args, ["a\\b"]);
+  });
+
+  test("single quotes keep every backslash, as they always did", () => {
+    assert.deepEqual(parseCommand(String.raw`p 'a\db'`).args, [String.raw`a\db`]);
+  });
+
+  test("an unquoted backslash still escapes anything, as it always did", () => {
+    assert.deepEqual(parseCommand(String.raw`p a\ b`).args, ["a b"]);
+  });
+
+  test("a regex-bearing check is not mistaken for something needing a shell", () => {
+    // The command that failed, end to end: it has to tokenize *and* be allowed to run.
+    const command = String.raw`python3 -c "import re;assert re.findall(r'-?\d+\.?\d*','5.0')"`;
+
+    assert.equal(needsShell(command), false);
+    assert.equal(parseCommand(command).args[1], String.raw`import re;assert re.findall(r'-?\d+\.?\d*','5.0')`);
+  });
+
+  test("an escaped closing quote leaves the string unterminated, and that is refused", () => {
+    // `\"` is one of the five a shell does act on, so this string never closes. Refusing
+    // it is correct; the alternative would be inventing a terminator the command lacks.
+    assert.throws(() => parseCommand('p "a\\"'), SyntaxError);
+  });
+
+  test("a backslash at the very end of the command is kept", () => {
+    assert.deepEqual(parseCommand("p a\\").args, ["a\\"]);
+  });
+});

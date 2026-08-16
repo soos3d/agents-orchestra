@@ -407,6 +407,12 @@ of those is refused when it fires and the criterion can never be met, however go
 the work was. \`node --test test/foo.test.js\` is a check; a grep chained to a test
 run is two checks — write two criteria, or fold the logic into a judge rubric.
 
+Nothing in the string is expanded either. A quoted argument reaches the program
+exactly as written, so a \`\\n\` inside one stays a backslash followed by an \`n\`
+rather than becoming a line break — a \`-c\` program written with \`\\n\` between its
+statements is a syntax error, not a multi-line script. Keep a one-liner genuinely one
+line, separating statements with \`;\`, or check something a task has left on disk.
+
 ${SHAPE}`;
 
 const INTAKE_PROMPT = `You ask a human the few questions that would change how this
@@ -465,6 +471,11 @@ that needs any of those is refused when it fires and the criterion can never be 
 One program per check — split a chained check into several criteria, name a script a
 task has actually left behind, or use a judge rubric over artifacts.
 
+Nor is anything in the string expanded: a quoted argument reaches the program exactly
+as written, so a \`\\n\` inside one stays two characters instead of becoming a line
+break, and a \`-c\` program whose statements are separated that way fails to parse.
+Keep a one-liner genuinely one line, separating statements with \`;\`.
+
 ${SHAPE}`;
 
 const SYNTHESIZE_PROMPT = `You write the agent that will do one task: its role, its
@@ -480,10 +491,19 @@ least privilege: a task that only reads should not hold \`Write\` or \`Bash\`.
 ones that are actually built. Others exist in the design and would fail at dispatch,
 so choosing one costs the task a retry and the mission a replan. Both \`cli\` and
 \`acp\` run a coding CLI in the task's worktree and need \`transport.target\` set to
-the one that suits the task — \`claude\` or \`codex\` — whatever kind of work it is.
-Prefer \`acp\` where both are listed: it runs the same CLI over a session with a
+one of the \`targets\` listed in the input — those are the agents installed on this
+machine, and naming one that is absent fails the same way naming an unbuilt transport
+does. Prefer \`acp\` where both are listed: it runs the same CLI over a session with a
 permission channel, so a tool outside the grant is asked about instead of blanket-
 approved, and the toolset you grant here is actually enforced mid-run.
+
+\`model\` is required. When the input lists \`models\`, it must be one of them and
+nothing else — that list is either what this machine's agent can run or what the
+person who composed the mission chose, and neither is a default to improve on. When
+\`models\` is empty nothing is known about which names are valid, so name the model the
+work actually needs. Note that an \`acp\` adapter selects its own model and is never
+told yours: on that transport the field is recorded rather than obeyed, so it is not
+worth reaching for \`acp\` to get a particular model.
 
 \`owns\` is required when \`worker\` is \`code\` and must be left out otherwise. It is
 the set of file globs this task will write, e.g.
@@ -542,6 +562,11 @@ no redirects, no \`&&\`, no \`$()\`, no glob expansion, and no shell operators i
 refused at verification time and the task fails having done its work. Keep it to one
 program and its arguments — \`node --test test/range.test.js\`, not a pipeline; if the
 check needs logic, have the worker leave a script behind and name that.
+
+Nothing in the string is expanded either: a quoted argument reaches the program
+exactly as written, so a \`\\n\` inside one stays a backslash and an \`n\` rather than
+becoming a line break, and a \`-e\` or \`-c\` program written that way is a syntax
+error. Keep a one-liner genuinely one line, separating statements with \`;\`.
 
 The system prompt is for the worker, which sees no mission context. Write what it
 needs to do this task well and nothing about the mission around it.

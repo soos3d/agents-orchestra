@@ -126,6 +126,26 @@ export async function discoverConfig(cwd = process.cwd()): Promise<DiscoveredCon
   };
 }
 
+/**
+ * The mission's own orchestrator model laid over the process's, for the six decision
+ * points.
+ *
+ * `createCalls` takes a `DiscoveredConfig` and reads `orchestratorModel` off it, which
+ * is what makes a per-mission override this small: one substitution at the two roots
+ * that build the calls (`runCommand`, `resumeCommand`). `undefined` returns the config
+ * untouched rather than writing the default back over it, so "nothing was chosen" and
+ * "the default was chosen" stay different facts — the same reason `spend` keeps absent
+ * usage absent instead of zero (§9.5).
+ *
+ * `PROGRESS_MODEL` is deliberately not affected. It is a small judgment called every
+ * round on a cheaper model by design (§3), and a human choosing `opus` for planning is
+ * not asking for the round-by-round check to cost five times more.
+ */
+export const withOrchestratorModel = (
+  config: DiscoveredConfig,
+  model: string | undefined,
+): DiscoveredConfig => (model === undefined ? config : { ...config, orchestratorModel: model });
+
 export const missionDir = (stateDir: string, missionId: string): string =>
   path.join(stateDir, "missions", missionId);
 

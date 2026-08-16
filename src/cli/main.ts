@@ -52,6 +52,11 @@ const USAGE = `orchestra — a looping orchestrator for any kind of task
     --budget <minutes> wall-clock ceiling for the mission (default 240)
     --saved <name>     replay a saved mission. Scan and research run again.
     --unattended       skip sign-off. Requires --saved or --force.
+    --harness <id>     how the workers run: <transport>/<agent>, e.g. acp/claude.
+                       Defaults to whatever this machine offers — see 'doctor'.
+    --worker-model <m> the model workers run on. An acp adapter picks its own.
+    --orchestrator-model <m>
+                       the model the decision points run on, for this mission only
 
   metrics flags
     --json             the same figures as JSON, for diffing two runs`;

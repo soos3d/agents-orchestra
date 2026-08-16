@@ -32,6 +32,36 @@ export const estimateSchema = z.object({
   expectedGates: z.number().int().nonnegative(),
 });
 
+/**
+ * What the human chose about *how* this mission runs, as opposed to what it is for.
+ *
+ * Every field is optional and absent means "whatever this machine offers", which is the
+ * behaviour every mission had before a harness could be picked — and the reason a
+ * composed mission needs no choice made to start. Setup simplicity is a hard constraint
+ * (§2a), so this is an override and never a prerequisite.
+ *
+ * It lives on the mission rather than in a runtime option for the same reason `quick`
+ * does: `orchestra resume` rebuilds everything it knows by folding the log, so a choice
+ * held only in process memory would silently change what a mission runs on when it is
+ * carried on the next morning. Recording it is also what makes `orchestra metrics
+ * --json` worth diffing between two runs of one goal, which is the whole point of
+ * collecting the figures.
+ *
+ * `harness` is a `<transport>/<target>` id (`workers/harness.ts`) and never two fields,
+ * because the pair was never independent — `acp/opencode` does not exist however
+ * plausible the cross-product looks.
+ */
+export const missionRuntimeSchema = z.object({
+  harness: z.string().min(1).optional(),
+  /** A ceiling on `AgentSpec.model`, enforced in `loop/synthesize.ts`. Not honoured by
+   *  an `acp` adapter, which picks its own model and is never told ours — the figure
+   *  that stays true either way is `modelByPhase`, which records what ran. */
+  workerModel: z.string().min(1).optional(),
+  /** The model the six decision points run on, overriding `ORCHESTRATOR_MODEL` for this
+   *  mission only. `progress` still runs on its own cheaper model (§3). */
+  orchestratorModel: z.string().min(1).optional(),
+});
+
 export const missionSchema = z.object({
   id: z.string().min(1),
   goal: z.string().min(1), // the human's original words, verbatim
@@ -58,6 +88,9 @@ export const missionSchema = z.object({
    *  and a plan of one task rather than a decomposition. Folded from `mission_created`
    *  so a resumed mission keeps the shape it was started with. */
   quick: z.boolean(),
+  /** How this mission runs, as chosen at compose time. Defaulted rather than optional
+   *  so every reader gets an object and nothing has to ask whether it was recorded. */
+  runtime: missionRuntimeSchema.default({}),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -65,6 +98,7 @@ export const missionSchema = z.object({
 export type MissionStatus = z.infer<typeof missionStatusSchema>;
 export type Estimate = z.infer<typeof estimateSchema>;
 export type Mission = z.infer<typeof missionSchema>;
+export type MissionRuntime = z.infer<typeof missionRuntimeSchema>;
 
 // Defaults for the counters that live in code rather than in a prompt (§3).
 export const LIMITS = {

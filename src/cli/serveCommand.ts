@@ -38,9 +38,9 @@ import { type MissionStore } from "../loop/run.js";
 import { createFileStore } from "../loop/store.js";
 import { saveProfile } from "../memory/profiles.js";
 import { saveMission } from "../memory/savedMission.js";
-import { availableTransports } from "../workers/availability.js";
 import { createMissionRegistry } from "../web/registry.js";
-import { type ClientMessage } from "../web/protocol.js";
+import { healthFrame } from "../web/health.js";
+import { isOfferedRuntime, type ClientMessage } from "../web/protocol.js";
 import { startWebServer, type Handled, type RunningServer } from "../web/server.js";
 import { createWebHuman, type WebHuman } from "../web/webHuman.js";
 import { resumeMission } from "./resumeCommand.js";
@@ -114,7 +114,7 @@ export async function serve(
   // about the installation rather than about a mission. Re-running it on every publish
   // would spend a syscall storm to report a version number that cannot change while
   // the process is up.
-  const health = { ...doctor(config), transports: availableTransports(config) };
+  const health = healthFrame(config, doctor(config));
 
   /** One live mission per workspace, keyed by workspace id. */
   const sessions = new Map<string, LiveSession>();
@@ -324,6 +324,20 @@ export async function serve(
           problem: `mission ${held.missionId} is already running in ${workspace.path} — one at a time per directory.`,
         };
       }
+      // You cannot choose a harness you have not been shown — `workspace_add`'s rule,
+      // applied to the two strings that decide which binary gets spawned and what
+      // `--model` it is handed. Checked against the frame this process computed, so a
+      // page that made one up is refused with the offer named rather than obeyed.
+      const chosen = {
+        ...(message.harness === undefined ? {} : { harness: message.harness }),
+        ...(message.workerModel === undefined ? {} : { workerModel: message.workerModel }),
+        ...(message.orchestratorModel === undefined
+          ? {}
+          : { orchestratorModel: message.orchestratorModel }),
+      };
+      const offered = isOfferedRuntime(health, chosen);
+      if (!offered.ok) return offered;
+
       const runOptions: RunOptions = {
         goal: message.goal,
         planOnly: message.planOnly,
@@ -332,6 +346,7 @@ export async function serve(
         force: false,
         web: true,
         budgetMinutes: message.budgetMinutes ?? DEFAULT_BUDGET_MINUTES,
+        runtime: chosen,
       };
       const workspaceConfig = await configFor(workspace);
       // Detached deliberately: compose returns while the mission runs for hours. A

@@ -90,6 +90,43 @@ ACP over `runtime/duplex.ts` + `workers/acp/transport.ts`. Model and timeout com
 `AgentSpec` — never from a config singleton. `workers/router.ts` maps `TransportRef.id` to a
 runtime; `workers/availability.ts` narrows the built list to what *this machine* can start.
 
+**A harness is `<transport>/<target>` and it is one choice, not two** (`workers/harness.ts`).
+`acp/claude`, `cli/codex` — the pair was never independent, and the cross-product is not the menu:
+`acp/opencode` does not exist, and a machine with only `codex` on PATH must never be shown a
+`claude` row. `staffingOffer` is the **one** function every composition root calls for
+`{transports, targets, models}`; three separately-derived lists across four roots is twelve chances
+to wire two of them. `harness.test.ts` pins its unpinned transport answer to `availableTransports`
+so the two cannot drift. The choice lives on `mission_created.runtime` — optional, folded like
+`quick` — so a resume runs on what was chosen rather than on what the process defaults to.
+
+Three facts about it are load-bearing and none is guessable. **`AgentSpec.model` never reaches an
+ACP agent**: the adapter picks its own, and `sessionNewResultSchema.models.currentModelId` is the
+only place the client learns which — in the capture, a task specced `claude-sonnet-4-5` ran on
+`claude-opus-4-6`. So `Harness.honoursModel` is false there and the compose card says so instead of
+implying a control that does nothing. **`MODELS_BY_VENDOR.openai` is empty and that is the answer,
+not a gap**: no list of `codex` models has been verified, and empty means *unknown* everywhere it
+is read — nothing offered, nothing refused. Inventing one is the mistake `acp/registry.ts` refuses
+for `opencode`. And **the orchestrator gets a model and no harness**, because `runViaAgentSdk` *is*
+the Agent SDK; a second orchestrator harness is deferred because `queryOptions` encodes Agent-SDK
+semantics (`settingSources: []`, the `tools`-vs-`allowedTools` trap) and `withSchema` assumes a
+model that follows a derived schema.
+
+**`inspect()` checks the target and the model, and the second had no door at all before.**
+`AgentSpec.model` is a required non-empty string that becomes `--model` on a real CLI, written by a
+model and checked by nothing — an invented name passed validation, reached the log, and failed at
+dispatch with the task already staffed. `transport.target` was the same shape one field along: the
+prompt named "claude or codex" *in prose*, so a machine holding one of them still invited a spec
+for the other. Both park as planning problems now, and `SYNTHESIZE_PROMPT` changed with them — the
+standing rule that a prompt and its validation move together. A pinned model collapses
+`allowedModels` to one entry, which is how "run this on haiku" becomes a ceiling in code rather
+than a preference a model may reconsider.
+
+**A harness or model from a browser is checked against what the server offered.**
+`isOfferedRuntime` (`web/protocol.ts`) is `workspace_add`'s rule applied to a runtime: you cannot
+choose one you have not been shown. Pure, and tested in `server.test.ts`, because these strings
+decide which binary is spawned and what `--model` it gets — the same reason `compose` carries a
+`workspaceId` and never a path.
+
 **Adding an event type is a two-file change**: `events/schema.ts` (the union) then `events/fold.ts`
 (the handler table is a mapped type, so forgetting the second file is a compile error by design).
 See the `/add-event` skill.
@@ -140,9 +177,30 @@ Each of these has cost real time. The reasoning is in the notes file for its are
 - **`events/log.ts` `append` must stay synchronous** — gapless `seq` depends on an in-memory counter
   advanced only after the write returns.
 - **Every scanner over model output has to know what it is inside of.** `needsShell` read a `=>`
-  inside a quoted string as a redirect; `extractJsonObject` stopped at a fence inside a JSON string;
-  the ACP reader split a UTF-8 sequence across a chunk boundary. Three files, one mistake — and all
-  three failed on *correct* work, two of them quietly.
+  inside a quoted string as a redirect (34); `extractJsonObject` stopped at a fence inside a JSON
+  string (38); the ACP reader split a UTF-8 sequence across a chunk boundary (37); and
+  `parseCommand` deleted backslashes inside double quotes (44). Four files, one mistake — and all
+  four failed on *correct* work, three of them quietly. **44 is the one to read first**: POSIX keeps
+  a backslash literal inside double quotes unless the next char is `` $ ` " \ `` or a newline, so a
+  check carrying `r'-?\d+\.?\d*'` ran as `r'-?d+.?d*'`, matched nothing, and failed three criteria
+  while quoting the correct output of a correct script. The same string pasted into a shell passed.
+  **Fixing the tokenizer was only half of it.** Once it behaves like a shell, a check written with
+  `\n` between statements fails to parse — correctly, and just as fatally. All three calls that
+  author a `command` check (`research`, `plan`, `synthesize`) now say the argument reaches the
+  program *exactly as written*, because "no shell" does not tell a model that `\n` is two
+  characters. `agentCalls.test.ts` asserts the sentence is in all three; the real run is what
+  proved it works, and the same goal went from 4/7 criteria and blocked to 9/9 and complete.
+- **Derived output a worker cannot avoid writing is excluded, not blamed** (`git/excludes.ts`,
+  defect 43). A plan told a worker to verify with `python3 -m py_compile add.py`; CPython wrote
+  `__pycache__/add.cpython-314.pyc`, `git add -A` committed it, and `detectEscape` failed the task
+  **without retry** for a file the plan had asked for. The system obliged an artifact and then
+  punished it — the P2 collision (27 and 41) in its third shape. `ensureDerivedExcluded` writes a
+  delimited block into `$GIT_COMMON_DIR/info/exclude` at every `createWorktree`, which closes both
+  halves at once: `git add -A` will not stage an excluded file and `ls-files --others
+  --exclude-standard` will not report one. Never the user's tracked `.gitignore` — that is their
+  file and their history. **Keep `DERIVED_PATHS` short.** `dist/`, `build/` and `target/` are
+  deliberately absent: they are plausible names for real directories, and un-counting one turns a
+  genuine scope error into a file that vanishes with the worktree.
 - **`src/testing/receipts/` is a real mission's committed log**, replayed and folded by
   `receipt.test.ts`. Re-record it only from a real run.
 - **`src/testing/acp-transcripts/` are executable fixtures**, parsed by `acp/protocol.test.ts`.

@@ -126,8 +126,8 @@ dist
 # section number (§N) and by defect number, and those citations point at documents
 # that live outside this repository.
 /specs.md
-/ROADMAP.md
-/NEXT-PLAN.md
-/PHASE-8-PLAN.md
-/PHASE-2-PLAN.md
-/UI-PLAN.md
+/PLAN.md
+/_to_delete/
+plan-next.md
+specs-audit.md
+claude.md

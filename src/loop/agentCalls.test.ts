@@ -502,6 +502,40 @@ describe("createAgentCalls", () => {
       assert.equal(result.criteria?.length, 1);
     });
 
+    // Defect 44's other half. The tokenizer now behaves exactly like a shell, which
+    // means a check written with `\n` between statements fails to parse — correctly,
+    // and just as loudly as before. The only way that stops costing missions is if the
+    // three calls that author a `command` check are told the argument is passed
+    // verbatim. A real mission wrote `python3 -c "import sys;\nfor a in ...:"`, which
+    // no shell would have run either, and the criterion could never be met.
+    test("tells every call that authors a check that arguments are passed verbatim", async () => {
+      const { run, seen } = transport([
+        JSON.stringify({ brief: "b", confidence: "low", findings: [], criteria: [] }),
+        JSON.stringify({ tasks: [aPlannedTask()] }),
+        JSON.stringify(anAgentSpec()),
+      ]);
+      const calls = createAgentCalls({ config, runQuery: run });
+
+      await calls.research({ question: "q", sources: ["web"], depth: "deep" });
+      await calls.plan({ goal: "g", ledger: aProgressInput() as never, envelope: {} as never });
+      await calls.synthesize({
+        task: aPlannedTask(),
+        envelope: {} as never,
+        toolCatalogue: ["Read"],
+        transports: ["cli"],
+        targets: ["claude"],
+        models: [],
+      });
+
+      assert.equal(seen.systemPrompts.length, 3);
+      for (const prompt of seen.systemPrompts) {
+        assert.match(prompt, /exactly\s+as written/, "a check-authoring call was not told");
+        // The concrete consequence, not just the rule — a model that is told "no shell"
+        // still reads `\n` as a line break, because in most contexts it is one.
+        assert.match(prompt, /line\s+break/);
+      }
+    });
+
     test("plan returns tasks, and may carry a proposed criteria change", async () => {
       const { run } = transport([
         JSON.stringify({ tasks: [aPlannedTask()], criteria: [aCriterion()] }),
@@ -527,6 +561,8 @@ describe("createAgentCalls", () => {
         envelope: {} as never,
         toolCatalogue: [],
         transports: ["cli"],
+        targets: ["claude"],
+        models: [],
       });
 
       assert.equal(spec.role, "invoice-reconciler");
@@ -545,6 +581,8 @@ describe("createAgentCalls", () => {
         envelope: {} as never,
         toolCatalogue: ["Read", "Glob"],
         transports: ["cli"],
+        targets: ["claude"],
+        models: [],
       });
 
       assert.match(seen.prompts[0]!, /Read/);
@@ -569,6 +607,8 @@ describe("createAgentCalls", () => {
         envelope: {} as never,
         toolCatalogue: ["Read"],
         transports: ["cli"],
+        targets: ["claude"],
+        models: [],
       });
 
       const prompt = seen.systemPrompts[0]!;

@@ -70,7 +70,17 @@ function App() {
         if (frame.kind === "health") {
           setView((current) => ({
             ...current,
-            health: { checks: frame.checks, ready: frame.ready, transports: frame.transports },
+            // Copied field by field rather than spread, so a field added to the frame
+            // is a compile error here instead of arriving silently unrendered.
+            health: {
+              checks: frame.checks,
+              ready: frame.ready,
+              transports: frame.transports,
+              harnesses: frame.harnesses,
+              orchestratorModels: frame.orchestratorModels,
+              orchestratorModel: frame.orchestratorModel,
+              fixedModels: frame.fixedModels,
+            },
           }));
           return;
         }

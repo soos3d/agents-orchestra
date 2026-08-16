@@ -6,6 +6,7 @@
 // got different bases — and the second one's diff then contained the first one's work.
 import fs from "node:fs";
 import path from "node:path";
+import { ensureDerivedExcluded } from "./excludes.js";
 import { git, tryGit } from "./repo.js";
 
 export interface Worktree {
@@ -27,6 +28,14 @@ export async function createWorktree(
 ): Promise<Worktree> {
   fs.mkdirSync(root, { recursive: true, mode: DIR_MODE });
   const dir = path.join(root, worktreeDirName(branch));
+
+  // Derived output a worker cannot avoid writing (defect 43). Here rather than at a
+  // composition root, and re-asserted per worktree rather than once per run, because an
+  // optional step some entry point forgets is how a fix ends up switched off — the trap
+  // `requestExtension`, `owns` and `reformat` each fell into. Every dispatch that can
+  // produce a byte-cache goes through this function, so this is the one place it cannot
+  // be skipped. Best-effort: see `ensureDerivedExcluded`.
+  await ensureDerivedExcluded(repo);
 
   if (fs.existsSync(dir)) {
     throw new Error(

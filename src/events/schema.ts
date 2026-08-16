@@ -20,7 +20,7 @@ import {
   progressLedgerSchema,
   taskLedgerSchema,
 } from "../domain/ledger.js";
-import { estimateSchema, missionStatusSchema } from "../domain/mission.js";
+import { estimateSchema, missionRuntimeSchema, missionStatusSchema } from "../domain/mission.js";
 import {
   agentSpecSchema,
   taskSchema,
@@ -60,6 +60,15 @@ const missionLifecycle = [
     // Optional so a log written before this field replays unchanged, which is what
     // the committed receipt in `src/testing/receipts/` asserts.
     quick: z.boolean().optional(),
+    // How this mission runs — the harness, the worker model, the orchestrator model —
+    // as chosen by whoever composed it. Here rather than in a runtime option for the
+    // same reason `quick` is: `orchestra resume` rebuilds what it knows from the log,
+    // and a choice held only in process memory would change what a mission runs on
+    // when it is carried on the next morning.
+    //
+    // Optional so a log written before it replays unchanged, which is what the
+    // committed receipt in `src/testing/receipts/` asserts.
+    runtime: missionRuntimeSchema.optional(),
   }),
   withBase({
     type: z.literal("mission_status"),

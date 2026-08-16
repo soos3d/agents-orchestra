@@ -53,6 +53,105 @@ export interface HealthFrame {
   checks: readonly Check[];
   ready: boolean;
   transports: readonly string[];
+  /** The ways work can run on *this* machine, and the models each will accept
+   *  (`workers/harness.ts`). The compose card renders these and sends back one of them;
+   *  `isOfferedRuntime` refuses anything else. Same rule as `transports` above and for
+   *  the same reason — a menu built from what the build ships rather than what the
+   *  machine has is defect 21 as a display. */
+  harnesses: readonly OfferedHarness[];
+  /** The orchestrator's own model options. Separate from `harnesses` because the
+   *  orchestrator has no harness choice at all: `runViaAgentSdk` *is* the Agent SDK, so
+   *  the decision points are Anthropic-only and the page says so rather than showing an
+   *  empty dropdown. */
+  orchestratorModels: readonly string[];
+  /** What the orchestrator runs on when a mission chooses nothing — `ORCHESTRATOR_MODEL`
+   *  or its default. Reported because "which model is running this?" had no answer on
+   *  the page at all, and the two constants below are the rest of that answer. */
+  orchestratorModel: string;
+  /** The models a human cannot pick, and what they are for: `progress` is a small
+   *  judgment every round and `reformat` restates one JSON object, so both run cheap by
+   *  design (§3, §4.1). Shown so the doctor panel does not imply one model runs
+   *  everything. */
+  fixedModels: readonly { readonly name: string; readonly model: string }[];
+}
+
+/** One row of the harness menu, flattened for the page: it renders these and never
+ *  computes a cross-product of its own. */
+export interface OfferedHarness {
+  readonly id: string;
+  readonly models: readonly string[];
+  /** False on `acp`, where the adapter picks its own model and is never told ours. The
+   *  page shows this as a note rather than hiding the control, because the choice is
+   *  still recorded and still honoured the moment the same mission runs over `cli`. */
+  readonly honoursModel: boolean;
+}
+
+/**
+ * Whether a composed runtime is one the server actually offered.
+ *
+ * Pure and here rather than in `server.ts`, per this file's own rule: what the server
+ * *decides* is testable without a socket, and only the plumbing is not. The decision is
+ * worth isolating because of what these strings become — `harness` selects which binary
+ * is spawned and the two model fields become `--model` arguments and SDK options. A
+ * browser must not be able to name any of them freely, so each is checked for membership
+ * in a list this process computed, exactly as `workspace_add` is checked against the
+ * path the server last reported.
+ *
+ * An **empty** model list on a harness means nothing is known about that vendor's models
+ * (no `codex` menu has been verified), so a model may be named there and is not refused.
+ * That is the one place this is permissive, and it is the honest reading rather than an
+ * oversight: refusing every codex model to enforce the Anthropic half would fail correct
+ * work.
+ */
+export function isOfferedRuntime(
+  health: Pick<HealthFrame, "harnesses" | "orchestratorModels">,
+  chosen: { harness?: string; workerModel?: string; orchestratorModel?: string },
+): { ok: true } | { ok: false; problem: string } {
+  const harness =
+    chosen.harness === undefined
+      ? undefined
+      : health.harnesses.find((offered) => offered.id === chosen.harness);
+
+  if (chosen.harness !== undefined && !harness) {
+    const offered = health.harnesses.map((each) => each.id).join(", ");
+    return {
+      ok: false,
+      problem:
+        `no harness '${chosen.harness}' on this machine` +
+        (offered ? ` — available: ${offered}.` : ` — no agent CLI is installed at all.`),
+    };
+  }
+
+  if (chosen.workerModel !== undefined) {
+    // With no harness pinned, any offered harness that could run the model is enough:
+    // the mission is choosing a model, and synthesis still has to pick a harness that
+    // agrees with it.
+    const menus = harness ? [harness] : health.harnesses;
+    const known = menus.flatMap((each) => [...each.models]);
+    const unconstrained = menus.some((each) => each.models.length === 0);
+    if (!unconstrained && !known.includes(chosen.workerModel)) {
+      return {
+        ok: false,
+        problem:
+          `no worker model '${chosen.workerModel}' on offer` +
+          (known.length > 0 ? ` — available: ${[...new Set(known)].join(", ")}.` : `.`),
+      };
+    }
+  }
+
+  if (
+    chosen.orchestratorModel !== undefined &&
+    !health.orchestratorModels.includes(chosen.orchestratorModel)
+  ) {
+    return {
+      ok: false,
+      problem:
+        `no orchestrator model '${chosen.orchestratorModel}' on offer — available: ` +
+        `${health.orchestratorModels.join(", ")}.`,
+    };
+  }
+
+  return { ok: true };
 }
 
 export const clientMessageSchema = z.discriminatedUnion("kind", [
@@ -121,6 +220,19 @@ export const clientMessageSchema = z.discriminatedUnion("kind", [
     // permission — `writeOutcomeSpec` still refuses an unverifiable spec, and a
     // scan-derived spec that fails it escalates to the research call it skipped.
     quick: z.boolean().default(false),
+    // How this mission runs (`domain/mission.ts` `missionRuntimeSchema`). Three strings
+    // and the shape is where their safety comes from — the same argument that makes
+    // `workspaceId` an id and never a path.
+    //
+    // A model name reaches `--model` on a spawned CLI and a harness id decides which
+    // binary is spawned, so neither may be free text from a browser. They are checked
+    // against what the server itself computed and last sent in `HealthFrame`, which is
+    // `workspace_add`'s rule applied to a runtime: **you cannot choose a harness you
+    // have not been shown**. The check is `isOfferedRuntime` and it lives in this file,
+    // beside the schema, because the schema alone cannot know what this machine has.
+    harness: z.string().trim().min(1).optional(),
+    workerModel: z.string().trim().min(1).optional(),
+    orchestratorModel: z.string().trim().min(1).optional(),
     // Deliberately no `unattended` field: skipping sign-off stays a typed CLI flag
     // (§17 — the habitual-default risk), and the compose screen never offers it.
   }),

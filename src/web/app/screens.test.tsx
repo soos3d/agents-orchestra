@@ -13,6 +13,7 @@ import { type Criterion } from "../../domain/ledger.js";
 import { type PaneKey } from "./hud.js";
 import { Home, Screen } from "./screens.js";
 import { emptyView, type View } from "./state.js";
+import { type HealthFrame } from "../protocol.js";
 
 const noop = (): void => {};
 
@@ -183,7 +184,15 @@ describe("the briefing", () => {
       criteria: [criterion("c1")],
       guesses: [{ id: "g1", text: "the ledger is authoritative", confidence: "low" } as never],
       plan: [
-        { id: "t1", goal: "pull the ledger", worker: "code", dependsOn: [] } as never,
+        {
+          id: "t1",
+          goal: "pull the ledger",
+          worker: "code",
+          satisfies: ["c1"],
+          motivatedBy: [],
+          dependsOn: [],
+          estimatedWallMs: 240_000,
+        } as never,
       ],
     });
 
@@ -342,7 +351,8 @@ describe("criteria", () => {
     // once, and the run view keeps only the verdicts in sight of the board (U7).
     const html = draw({ status: "running", criteria: [criterion("c1", false)] }, "contract");
 
-    assert.ok(html.includes("check ▸ command: npm test"));
+    assert.ok(html.includes("check-kind"), "the kind of check is not shown");
+    assert.ok(html.includes("npm test"), "the literal command is not shown");
     assert.ok(html.includes("✗"), "a failed criterion is not marked");
   });
 
@@ -351,6 +361,48 @@ describe("criteria", () => {
 
     assert.ok(!html.includes("✗"));
     assert.ok(!html.includes("✓"));
+  });
+
+  // The one check kind that is a warning: a criterion with `none` can never be met,
+  // and it must not dress like the two kinds that can.
+  test("a criterion nobody can check is flagged, not styled like the others", () => {
+    const unchecked = {
+      id: "c9",
+      statement: "the report reads well",
+      check: { kind: "none", reason: "taste is not a command" },
+    } as Criterion;
+    const html = draw({ status: "running", criteria: [unchecked] }, "contract");
+
+    assert.ok(html.includes("check-none"), "the unchecked criterion is not flagged");
+    assert.ok(html.includes("taste is not a command"), "the reason it is unchecked is hidden");
+  });
+});
+
+describe("the plan on the contract", () => {
+  // The row answers why a task exists and what it waits on — the two questions the
+  // prose bullets buried.
+  test("a task row carries its worker, dependencies, and the criteria it satisfies", () => {
+    const html = draw(
+      {
+        status: "awaiting_signoff",
+        criteria: [criterion("c1")],
+        plan: [
+          {
+            id: "t2",
+            goal: "reconcile the totals",
+            worker: "code",
+            satisfies: ["c1"],
+            motivatedBy: [],
+            dependsOn: ["t1"],
+            estimatedWallMs: 300_000,
+          } as never,
+        ],
+      },
+    );
+
+    assert.ok(html.includes("reconcile the totals"));
+    assert.ok(html.includes("after t1"), "what the task waits on is not shown");
+    assert.ok(html.includes("satisfies c1"), "why the task exists is not shown");
   });
 });
 
@@ -400,6 +452,20 @@ describe("the mission listing", () => {
   });
 });
 
+/** A health frame with the machine's answers filled in, so a test names only the field
+ *  it is about. Added when the frame grew a harness menu: four more required fields
+ *  across four literals is four places to get bored and stop asserting. */
+const aHealth = (patch: Partial<HealthFrame> = {}): HealthFrame => ({
+  checks: [],
+  ready: true,
+  transports: ["cli"],
+  harnesses: [{ id: "cli/claude", models: ["opus", "sonnet", "haiku"], honoursModel: true }],
+  orchestratorModels: ["opus", "sonnet", "haiku"],
+  orchestratorModel: "opus",
+  fixedModels: [{ name: "progress", model: "sonnet" }],
+  ...patch,
+});
+
 // `doctor`, on the page. What matters is that the transports line reports what this
 // machine can *start* (defect 21) and that a failing check brings its fix with it.
 describe("the health panel", () => {
@@ -413,14 +479,14 @@ describe("the health panel", () => {
     );
 
   test("shows each check with the thing to type when it fails", () => {
-    const html = drawHealth({
+    const html = drawHealth(aHealth({
       ready: false,
       checks: [
         { name: "node", level: "ok", detail: "v22.4.0" },
         { name: "workers", level: "fail", detail: "no coding agent on PATH", fix: "npm i -g @anthropic-ai/claude-code" },
       ],
       transports: ["cli"],
-    });
+    }));
 
     assert.ok(html.includes("v22.4.0"));
     assert.ok(html.includes("no coding agent on PATH"));
@@ -429,7 +495,7 @@ describe("the health panel", () => {
   });
 
   test("says plainly when nothing can be dispatched", () => {
-    const html = drawHealth({ ready: false, checks: [], transports: [] });
+    const html = drawHealth(aHealth({ ready: false, checks: [], transports: [] }));
 
     assert.ok(html.includes("nothing can be dispatched"));
   });
@@ -483,15 +549,15 @@ describe("home, ranked", () => {
   test("the doctor report is summarised, and opens by itself when it is bad news", () => {
     const ready = drawHome({
       missions: [],
-      health: { ready: true, checks: [{ name: "node", level: "ok", detail: "v22.4.0" }], transports: ["cli"] },
+      health: aHealth({ ready: true, checks: [{ name: "node", level: "ok", detail: "v22.4.0" }] }),
     });
     const broken = drawHome({
       missions: [],
-      health: {
+      health: aHealth({
         ready: false,
         checks: [{ name: "workers", level: "fail", detail: "no coding agent on PATH", fix: "npm i -g x" }],
         transports: [],
-      },
+      }),
     });
 
     assert.ok(ready.includes("✓ ready"), "a healthy machine does not say so in one line");
@@ -549,5 +615,65 @@ describe("the plan-only toggle", () => {
 
     assert.ok(html.includes("plan only"), "there is no way to ask what a mission would take");
     assert.ok(!html.includes("unattended"));
+  });
+});
+
+// Folded and gone look identical in a diff, which is why every rare control on home has
+// an assertion that it is still rendered. These three are the newest of them: the
+// harness and the two models sit behind a `<details>` because the defaults suit nearly
+// every mission, and a dropped `<select>` would look exactly like a tidy-up.
+describe("the harness and model controls", () => {
+  const drawCompose = (health: View["health"]): string =>
+    render(<Home view={viewWith({ missions: [], health })} send={noop} onChoose={noop} />);
+
+  test("offers a harness and both models, folded", () => {
+    const html = drawCompose(aHealth());
+
+    assert.ok(html.includes('id="compose-harness"'), "the harness control was dropped");
+    assert.ok(html.includes('id="compose-worker-model"'), "the worker model control was dropped");
+    assert.ok(
+      html.includes('id="compose-orchestrator-model"'),
+      "the orchestrator model control was dropped",
+    );
+    assert.ok(html.includes("harness and models"), "the fold has no summary to click");
+  });
+
+  // Every option has to come from the frame the server sent. A page that composed its
+  // own would be free-typing the string that decides which binary gets spawned, and the
+  // server would refuse it — a menu whose entries are all rejected is worse than none.
+  test("every option offered is one the server sent", () => {
+    const html = drawCompose(
+      aHealth({
+        harnesses: [{ id: "acp/codex", models: ["gpt-x"], honoursModel: false }],
+        orchestratorModels: ["haiku"],
+      }),
+    );
+
+    assert.ok(html.includes("acp/codex"));
+    assert.ok(html.includes("gpt-x"));
+    assert.ok(!html.includes("cli/claude"), "offered a harness the server did not send");
+  });
+
+  test("says which harness will ignore the model choice", () => {
+    // The adapter picks its own model and is never told ours. A control that silently
+    // did nothing would be worse than no control.
+    const html = drawCompose(
+      aHealth({ harnesses: [{ id: "acp/claude", models: ["opus"], honoursModel: false }] }),
+    );
+
+    assert.ok(html.includes("picks its own model"));
+  });
+
+  test("draws nothing at all before the machine has been probed", () => {
+    // A menu built from a guess is the one thing this must not do.
+    const html = drawCompose(null);
+
+    assert.ok(!html.includes('id="compose-harness"'));
+  });
+
+  test("names the orchestrator's harness rather than offering a choice of one", () => {
+    const html = drawCompose(aHealth());
+
+    assert.ok(html.includes("Claude Agent SDK"));
   });
 });

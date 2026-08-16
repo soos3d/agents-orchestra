@@ -17,7 +17,12 @@ import { scriptedCalls } from "../testing/fixtures.js";
 import { aCodeTask, aCriterion, missionCreated, stamp } from "../testing/fixtures.js";
 import { resolveCriteriaChange } from "../loop/criteriaChange.js";
 import { createWebHuman } from "../web/webHuman.js";
-import { handleFromDashboard, runMission, type RunSurface } from "./runCommand.js";
+import {
+  handleFromDashboard,
+  parseRunArgs,
+  runMission,
+  type RunSurface,
+} from "./runCommand.js";
 import { type Io } from "./main.js";
 
 const orchestrator = { missionId: "m1", actor: "orchestrator" } as const;
@@ -241,7 +246,7 @@ describe("runMission under a surface", () => {
     // and the finally block still has to release.
     await assert.rejects(() =>
       runMission(
-        { goal: "wired?", planOnly: false, quick: false, unattended: false, force: false, web: true, budgetMinutes: 5 },
+        { goal: "wired?", planOnly: false, quick: false, unattended: false, force: false, web: true, budgetMinutes: 5, runtime: {} },
         config,
         quietIo,
         { createCalls: () => scriptedCalls({}), surface },
@@ -280,7 +285,7 @@ describe("runMission under a surface", () => {
 
     await assert.rejects(() =>
       runMission(
-        { goal: "what would this take?", planOnly: true, quick: false, unattended: false, force: false, web: true, budgetMinutes: 5 },
+        { goal: "what would this take?", planOnly: true, quick: false, unattended: false, force: false, web: true, budgetMinutes: 5, runtime: {} },
         config,
         quietIo,
         { createCalls: () => scriptedCalls({}), surface },
@@ -315,7 +320,7 @@ describe("runMission spend attribution", () => {
 
     await assert.rejects(() =>
       runMission(
-        { goal: "who spent it?", planOnly: true, quick: false, unattended: true, force: true, web: false, budgetMinutes: 5 },
+        { goal: "who spent it?", planOnly: true, quick: false, unattended: true, force: true, web: false, budgetMinutes: 5, runtime: {} },
         config,
         quietIo,
         {
@@ -344,5 +349,62 @@ describe("runMission spend attribution", () => {
     assert.ok(recorded, "the mission spent measured tokens and recorded nothing");
     assert.equal(recorded.phase, "call:research");
     assert.equal(recorded.spend?.tokens.measured, 1234);
+  });
+});
+
+// The terminal half of the harness choice, and the reason it is tested at all: a flag
+// that takes a value has a failure mode a boolean flag does not — `--harness --quick`
+// silently eats the next flag as its value, and the mission then runs on a harness
+// called "--quick" and without the flag that was typed.
+describe("parseRunArgs and the runtime flags", () => {
+  const parse = (argv: readonly string[]) => parseRunArgs(argv);
+
+  test("a run with no runtime flags chooses nothing", () => {
+    const parsed = parse(["do the thing"]);
+
+    assert.equal(parsed.ok, true);
+    // Empty rather than populated with defaults: "nothing was chosen" has to survive
+    // all the way to the log, where it means "whatever this machine offers".
+    assert.deepEqual(parsed.ok ? parsed.options.runtime : undefined, {});
+  });
+
+  test("carries all three choices through", () => {
+    const parsed = parse([
+      "do the thing",
+      "--harness",
+      "acp/claude",
+      "--worker-model",
+      "haiku",
+      "--orchestrator-model",
+      "sonnet",
+    ]);
+
+    assert.equal(parsed.ok, true);
+    assert.deepEqual(parsed.ok ? parsed.options.runtime : undefined, {
+      harness: "acp/claude",
+      workerModel: "haiku",
+      orchestratorModel: "sonnet",
+    });
+  });
+
+  test("a runtime flag with no value is refused rather than eating the next flag", () => {
+    for (const argv of [
+      ["goal", "--harness"],
+      ["goal", "--harness", "--quick"],
+      ["goal", "--worker-model", "--plan-only"],
+      ["goal", "--orchestrator-model"],
+    ]) {
+      const parsed = parse(argv);
+      assert.equal(parsed.ok, false, `accepted a valueless flag: ${argv.join(" ")}`);
+      // §2a rule 5: the message shows what to type instead.
+      assert.match(parsed.ok === false ? parsed.message : "", /e\.g\./);
+    }
+  });
+
+  test("the runtime flags do not read as unknown flags", () => {
+    const parsed = parse(["goal", "--harness", "cli/codex", "--quick"]);
+
+    assert.equal(parsed.ok, true);
+    assert.equal(parsed.ok ? parsed.options.quick : undefined, true);
   });
 });

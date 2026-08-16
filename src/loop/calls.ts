@@ -161,6 +161,30 @@ export interface SynthesizeInput {
    */
   transports: string[];
   /**
+   * The agent CLIs a `cli` or `acp` spec may target, narrowed to what this machine can
+   * start and to whatever harness the human pinned at compose time.
+   *
+   * The same argument as `transports`, one field along, and it was the half still
+   * missing: `SYNTHESIZE_PROMPT` named "claude or codex" in prose, so a machine with
+   * only `codex` installed still invited a spec targeting `claude` — defect 21 exactly,
+   * discovered at dispatch rather than at validation.
+   */
+  targets: string[];
+  /**
+   * The model names a spec may name, or **empty for unconstrained**.
+   *
+   * `AgentSpec.model` is a required non-empty string that reaches `--model` on a real
+   * CLI, and until this existed nothing checked it at all: an invented name passed
+   * validation, was written into the log, and failed at dispatch with the task already
+   * planned and staffed. Narrowed further by whatever the human pinned — see
+   * `workers/harness.ts` `allowedModels`.
+   *
+   * Empty means nothing is *known*, never that nothing is allowed: no list of `codex`
+   * models has been verified, and refusing every one of them to enforce the Anthropic
+   * half would be the confident wrong answer (§9.5's rule, applied to a menu).
+   */
+  models: string[];
+  /**
    * The roles this mission may staff from, already rendered to one line each by
    * `agents/offer.ts` — the documented roster plus anything a human has promoted
    * (§6, §7).

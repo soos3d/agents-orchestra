@@ -143,8 +143,9 @@ describe("the run view", () => {
     const contract = draw(running({ criteria }), "contract");
 
     assert.ok(board.includes("every invoice reconciles"), "the outcome is not in sight of the board");
-    assert.ok(!board.includes("check ▸"), "the check lines crowd the board");
-    assert.ok(contract.includes("check ▸ command: npm test"));
+    assert.ok(!board.includes("npm test"), "the check lines crowd the board");
+    assert.ok(contract.includes("check-kind"), "the contract pane hides how a criterion is checked");
+    assert.ok(contract.includes("npm test"), "the contract pane hides the literal command");
   });
 
   test("counts an empty column rather than dropping it", () => {

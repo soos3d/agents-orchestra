@@ -15,7 +15,7 @@
 // The reconciliation half stays separate from the continuation: what to do next is a
 // pure function of the state it rebuilds (`continuationFor`), and rebuilding is worth
 // reporting even when nothing can be continued.
-import { missionDir, type DiscoveredConfig } from "../config/discover.js";
+import { missionDir, withOrchestratorModel, type DiscoveredConfig } from "../config/discover.js";
 import { fold } from "../events/fold.js";
 import { createEventLog } from "../events/log.js";
 import { writeProjections } from "../events/projections.js";
@@ -138,14 +138,18 @@ export async function resumeMission(
       // approvable rather than merely still on disk.
       ...(human ? { human } : {}),
       calls: () =>
-        deps.createCalls(config, (call, spend) =>
-          wired.emit({
-            type: "spend_recorded",
-            missionId,
-            actor: "orchestrator",
-            phase: spendPhase(call),
-            spend,
-          }),
+        // The model this mission was composed with, read back off its own log — a resumed
+        // mission must not silently change what it runs on (`missionRuntimeSchema`).
+        deps.createCalls(
+          withOrchestratorModel(config, store.state().mission.runtime.orchestratorModel),
+          (call, spend) =>
+            wired.emit({
+              type: "spend_recorded",
+              missionId,
+              actor: "orchestrator",
+              phase: spendPhase(call),
+              spend,
+            }),
         ),
     });
     return code;

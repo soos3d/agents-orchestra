@@ -108,6 +108,7 @@ export const aCodeTask = (patch: Partial<Task> = {}): Task =>
 export const aMission = (patch: Partial<Mission> = {}): Mission => ({
   id: "m1",
   modelByPhase: {},
+  runtime: {},
   goal: "Add a /health endpoint",
   ledger: emptyLedger(),
   capabilityEnvelope: anEnvelope(),

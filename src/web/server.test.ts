@@ -12,7 +12,7 @@ import { WebSocket } from "ws";
 import { missionCreated, stamp } from "../testing/fixtures.js";
 import { BUNDLE_ROUTE } from "./assets.js";
 import { type Event, type EventInput } from "../events/schema.js";
-import { parseClientMessage } from "./protocol.js";
+import { isOfferedRuntime, parseClientMessage } from "./protocol.js";
 import { eventsSince, HOST, isAllowedOrigin, startWebServer, type RunningServer } from "./server.js";
 import { createWebHuman } from "./webHuman.js";
 
@@ -568,5 +568,76 @@ describe("the server", () => {
       () => startWebServer({ onMessage: () => ({ ok: true }) }),
       /events feed or a registry/,
     );
+  });
+});
+
+// The failure mode: a browser naming a harness or a model that this machine never
+// offered, and the server taking its word for it.
+//
+// These two strings are not like the rest of the compose message. `harness` decides
+// which binary gets spawned and the model fields become `--model` arguments and SDK
+// options, so free text from a page reaches a subprocess — which is the exact thing the
+// `workspaceId`-not-a-path rule exists to prevent one field over. The answer is the same
+// one `workspace_add` uses: you cannot choose what you have not been shown, and the
+// server checks the choice against the frame it computed itself.
+describe("isOfferedRuntime", () => {
+  const health = {
+    harnesses: [
+      { id: "cli/claude", models: ["opus", "sonnet", "haiku"], honoursModel: true },
+      { id: "acp/claude", models: ["opus", "sonnet", "haiku"], honoursModel: false },
+    ],
+    orchestratorModels: ["opus", "sonnet", "haiku"],
+  };
+
+  test("choosing nothing is always allowed", () => {
+    assert.deepEqual(isOfferedRuntime(health, {}), { ok: true });
+  });
+
+  test("accepts a harness and a model that were offered", () => {
+    assert.equal(isOfferedRuntime(health, { harness: "acp/claude" }).ok, true);
+    assert.equal(isOfferedRuntime(health, { workerModel: "haiku" }).ok, true);
+    assert.equal(isOfferedRuntime(health, { orchestratorModel: "sonnet" }).ok, true);
+  });
+
+  test("refuses a harness this machine does not have, and names what it does", () => {
+    const result = isOfferedRuntime(health, { harness: "cli/codex" });
+
+    assert.equal(result.ok, false);
+    // §2a rule 5: the refusal names the fix.
+    assert.match(result.ok === false ? result.problem : "", /cli\/claude/);
+  });
+
+  test("refuses a model nobody offered", () => {
+    assert.equal(isOfferedRuntime(health, { workerModel: "gpt-9-turbo" }).ok, false);
+    assert.equal(isOfferedRuntime(health, { orchestratorModel: "gpt-9-turbo" }).ok, false);
+  });
+
+  test("refuses a model the chosen harness cannot run", () => {
+    const codexOnly = {
+      harnesses: [{ id: "cli/codex", models: ["gpt-x"], honoursModel: true }],
+      orchestratorModels: ["opus"],
+    };
+
+    assert.equal(isOfferedRuntime(codexOnly, { harness: "cli/codex", workerModel: "opus" }).ok, false);
+  });
+
+  // Empty is "unknown", not "none". No codex model list has been verified, so a model
+  // named against that harness is not refused — refusing every one of them to enforce
+  // the Anthropic half would fail correct work.
+  test("a harness with no known model list constrains nothing", () => {
+    const unknown = {
+      harnesses: [{ id: "cli/codex", models: [], honoursModel: true }],
+      orchestratorModels: ["opus"],
+    };
+
+    assert.equal(isOfferedRuntime(unknown, { harness: "cli/codex", workerModel: "anything" }).ok, true);
+  });
+
+  test("a machine with no agent at all says so rather than listing nothing", () => {
+    const bare = { harnesses: [], orchestratorModels: ["opus"] };
+    const result = isOfferedRuntime(bare, { harness: "cli/claude" });
+
+    assert.equal(result.ok, false);
+    assert.match(result.ok === false ? result.problem : "", /no agent CLI is installed/);
   });
 });

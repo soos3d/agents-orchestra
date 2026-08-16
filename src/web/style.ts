@@ -549,14 +549,107 @@ export const pageStyle = `
   .fold > summary:hover { color: var(--live); }
   .fold > summary:focus-visible { outline: 2px solid var(--live); outline-offset: 2px; }
 
-  /* ── criteria ────────────────────────────────────────────── */
+  /* ── the contract ────────────────────────────────────────── */
 
-  .crit { margin: 0 0 .85rem; line-height: 1.5; }
-  .crit:last-child { margin-bottom: 0; }
+  /* Five cards of prose became rows. Each ruleset here is one section of the contract,
+     and they share a grammar: the thing itself in --ink at body size, everything about
+     it one step down in mono. */
+
+  /* The count in a section header, so the shape of the contract is known before any of
+     it is read. */
+  .tally { margin-left: .7rem; color: var(--faint); letter-spacing: .08em; }
+
+  /* The brief is model-written prose with paragraph breaks; collapsing them was what
+     made it a wall. */
+  .brief { white-space: pre-wrap; line-height: 1.65; color: var(--ink); }
+
+  .crits, .steps, .guesses { list-style: none; margin: 0; padding: 0; }
+
+  /* A criterion is a mark, a statement, and its check — three things, three places.
+     The mark column is what lets the eye count verdicts without reading a word. */
+  .crit {
+    display: grid;
+    grid-template-columns: 1.1rem minmax(0, 1fr);
+    gap: 0 .55rem;
+    padding: .6rem 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .crit:first-child { padding-top: 0; }
+  .crit:last-child { padding-bottom: 0; border-bottom: 0; }
+  .crit-mark { font-family: var(--mono); line-height: 1.5; }
+  .crit-body { min-width: 0; }
+  .crit-statement { margin: 0; color: var(--ink); line-height: 1.5; }
+
+  /* The check: what kind of gate, then the literal. The kind is a chip because it is
+     scanned — a person looks down this column for the one that says unchecked. */
   .check {
+    display: flex;
+    align-items: baseline;
+    gap: .5rem;
+    margin: .35rem 0 0;
+  }
+  .check-kind { flex: none; text-transform: uppercase; letter-spacing: .1em; font-size: 10px; }
+  .check-none { color: var(--attn); box-shadow: inset 0 0 0 1px var(--attn-d); }
+  .check-text {
     color: var(--faint);
-    font: 11px/1.45 var(--mono);
+    font: 11px/1.5 var(--mono);
     word-break: break-word;
+  }
+
+  /* A guess leads with its confidence, in the tone the confidence deserves. */
+  .guess { display: flex; align-items: baseline; gap: .6rem; margin: 0 0 .7rem; }
+  .guess:last-child { margin-bottom: 0; }
+  .conf { flex: none; text-transform: uppercase; letter-spacing: .1em; font-size: 10px; }
+  .conf-low { color: var(--attn); box-shadow: inset 0 0 0 1px var(--attn-d); }
+  .guess-body { min-width: 0; }
+  .guess-text { margin: 0; color: var(--ink); line-height: 1.5; }
+  .guess-basis {
+    margin: .25rem 0 0;
+    color: var(--dim);
+    font: 11px/1.5 var(--mono);
+    word-break: break-word;
+  }
+
+  /* A planned task: the goal, then one quiet line of everything about it. The id
+     column keeps twenty rows countable the way the mark column does for criteria. */
+  .step {
+    display: grid;
+    grid-template-columns: 2.2rem minmax(0, 1fr);
+    gap: 0 .55rem;
+    padding: .6rem 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .step:first-child { padding-top: 0; }
+  .step:last-child { padding-bottom: 0; border-bottom: 0; }
+  .step-id { color: var(--faint); font: var(--t-data)/1.6 var(--mono); letter-spacing: .06em; }
+  .step-body { min-width: 0; }
+  .step-goal { margin: 0; color: var(--ink); line-height: 1.5; }
+  .step-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: .25rem .9rem;
+    margin: .35rem 0 0;
+    font: 11px/1.6 var(--mono);
+    letter-spacing: .04em;
+    color: var(--faint);
+  }
+
+  /* The estimate as three figures, not a sentence: each is a number a person compares
+     against their own sense of the goal. */
+  .figures { display: flex; gap: 2.4rem; }
+  .figure { display: grid; gap: .25rem; justify-items: start; }
+  .figure-value {
+    font: 600 var(--t-lead)/1 var(--display);
+    letter-spacing: .04em;
+    font-variant-numeric: tabular-nums;
+    color: var(--ink);
+  }
+  .figure-label {
+    font: 600 var(--t-label)/1 var(--mono);
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--dim);
   }
 
   /* ── the ledger strip ────────────────────────────────────── */
@@ -1015,7 +1108,7 @@ export const pageStyle = `
   }
   button.primary:hover { background: color-mix(in srgb, var(--live) 78%, white); color: var(--void); }
 
-  input, textarea {
+  input, textarea, select {
     font: 13px/1.5 var(--sans);
     width: 100%;
     padding: .55rem .7rem;
@@ -1025,12 +1118,15 @@ export const pageStyle = `
     resize: vertical;
   }
   input::placeholder, textarea::placeholder { color: var(--faint); }
-  input:focus, textarea:focus {
+  input:focus, textarea:focus, select:focus {
     outline: none;
     border-color: var(--live-d);
     background: var(--hover-bg);
   }
-  input:focus-visible, textarea:focus-visible { outline: 2px solid var(--live); outline-offset: 1px; }
+  input:focus-visible, textarea:focus-visible, select:focus-visible {
+    outline: 2px solid var(--live);
+    outline-offset: 1px;
+  }
 
   /* The compose box is the page's one primary input and is set larger than the rest,
      because what a person types into it is the whole mission. */
@@ -1055,6 +1151,36 @@ export const pageStyle = `
      four unreadable. */
   .toggles { display: grid; gap: .4rem; margin: .7rem 0 0; }
   .toggles .quiet { text-transform: none; letter-spacing: 0; font-family: var(--sans); }
+
+  /* The harness and model controls, ranked below the goal rather than removed. Folded
+     by default because the defaults suit nearly every mission, and three more dropdowns
+     beside the goal box would make the goal box harder to find. */
+  .runtime { margin: .7rem 0 0; }
+  .runtime > summary {
+    font: 11px/1.35 var(--mono);
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--ink-2);
+    cursor: pointer;
+  }
+  .runtime > summary:hover { color: var(--ink-1); }
+  /* Label and control on one line each, so three settings read as a list of decisions
+     rather than as a form. */
+  .runtime-grid {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    align-items: center;
+    gap: .4rem .7rem;
+    margin: .6rem 0 0;
+  }
+  .runtime-grid > label {
+    font: 11px/1.35 var(--mono);
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--ink-2);
+    white-space: nowrap;
+  }
+  .runtime .quiet { text-transform: none; letter-spacing: 0; font-family: var(--sans); margin: .5rem 0 0; }
   /* A native checkbox on a dark page is a white square, which made the two mission
      flags the brightest thing on the screen — brighter than the accent, for a control
      that is off. Drawn instead: an empty notched box, filled with the accent when it

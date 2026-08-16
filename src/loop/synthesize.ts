@@ -35,6 +35,7 @@ import { describeViolations, violations, type Envelope } from "../domain/envelop
 import { type PlannedTask } from "../domain/ledger.js";
 import { type AgentSpec, type WorkerKind } from "../domain/task.js";
 import { type EventInput } from "../events/schema.js";
+import { allowedTargets, builtHarnesses } from "../workers/harness.js";
 import { AVAILABLE_TRANSPORTS } from "../workers/transport.js";
 import { classOf, resolveClasses } from "../workers/toolCatalogue.js";
 import { declaresLegalOutput } from "./artifactPath.js";
@@ -46,6 +47,14 @@ export interface SynthesizeDeps {
   calls: Pick<Calls, "synthesize">;
   /** Overridable so a test can assert the rejection without shipping a transport. */
   transports?: readonly string[];
+  /** The agent CLIs a spec may target — what this machine can start, narrowed by the
+   *  harness the human pinned. Absent falls back to every target the build knows, which
+   *  is the behaviour every mission had before a harness could be chosen. */
+  targets?: readonly string[];
+  /** The model names a spec may name, or empty for unconstrained (`workers/harness.ts`).
+   *  Absent is the same as empty: a `Deps` that leaves it off checks nothing, which is
+   *  the optional-dependency footgun and the reason the composition roots are tested. */
+  models?: readonly string[];
   /** The roles this mission may staff from (§7, amended): the documented roster plus
    *  anything a human promoted, already merged by `agents/offer.ts`. They change what
    *  the model is *shown* and nothing about what it is allowed to return — every check
@@ -206,9 +215,87 @@ export class UndeclaredLeaseError extends SynthesisError {
   }
 }
 
+/**
+ * A synthesized agent aimed at an agent CLI this machine cannot start.
+ *
+ * Defect 21 one field along from the transport that already had a door. `transports`
+ * has been checked since Phase 2, but the target was named in prose in the prompt —
+ * "claude or codex" — so a machine holding only one of them still invited a spec for
+ * the other, and it was discovered at dispatch with the task planned and staffed.
+ *
+ * A planning problem rather than a human decision: the mission can be staffed against
+ * the CLI that is installed, and no code path installs the other one.
+ */
+export class UnavailableTargetError extends SynthesisError {
+  constructor(taskId: string, requested: string, available: readonly string[]) {
+    super(
+      taskId,
+      `Task '${taskId}' was staffed against the '${requested}' agent, twice, which this ` +
+        `machine cannot start. ` +
+        (available.length > 0
+          ? `Available: ${available.join(", ")}. Staff the task against one of those`
+          : `No agent CLI was found on PATH at all — run 'orchestra doctor', install one, ` +
+            `and log in`) +
+        `, or widen the harness this mission was composed with.`,
+    );
+    this.name = "UnavailableTargetError";
+  }
+}
+
+/**
+ * A synthesized agent asked to run on a model that is not on offer.
+ *
+ * The hole this closes had been open since Phase 1: `AgentSpec.model` is a required
+ * non-empty string that goes straight to `--model` on a real CLI, and nothing checked
+ * it — `inspect` covered the transport, the tools, the lease, the artifact and the
+ * role, and walked past the one field that decides what the work actually costs. An
+ * invented name passed validation, reached the log, and failed at dispatch.
+ *
+ * It is also how a human's choice is enforced. `allowedModels` collapses a pinned model
+ * to a one-entry list, so "run this mission on haiku" is a ceiling checked in code
+ * rather than a preference a model is invited to agree with (§7's ceiling argument,
+ * applied to spend instead of to capability).
+ */
+export class UnavailableModelError extends SynthesisError {
+  constructor(taskId: string, requested: string, available: readonly string[]) {
+    super(
+      taskId,
+      `Task '${taskId}' was staffed to run on '${requested}', twice, which is not a ` +
+        `model this mission may use. Allowed: ${available.join(", ")}. Staff the task ` +
+        `with one of those, or compose the mission with a different model if this work ` +
+        `genuinely needs one.`,
+    );
+    this.name = "UnavailableModelError";
+  }
+}
+
 /** A task in one of these states is history or in flight, and a replan may not
  *  redefine it: running work would be duplicated, and `done` work is evidence. */
 const REDEFINABLE = new Set(["waiting", "todo", "blocked", "failed", "cancelled", "conflicted"]);
+
+/**
+ * What a spec may run on, resolved once per call to `synthesizeTasks` rather than read
+ * off `deps` at each check.
+ *
+ * Three lists that are read together everywhere and that fall back differently, which is
+ * exactly the shape that goes wrong when each is defaulted at its use site: `transports`
+ * falls back to the whole registry, `targets` to every target the build knows, and
+ * `models` to empty — and empty means *unconstrained*, not *forbidden*, because no menu
+ * of `codex` models has been verified (`workers/harness.ts`).
+ */
+interface RuntimeOffer {
+  readonly transports: readonly string[];
+  readonly targets: readonly string[];
+  readonly models: readonly string[];
+}
+
+function runtimeOffer(deps: SynthesizeDeps): RuntimeOffer {
+  return {
+    transports: deps.transports ?? AVAILABLE_TRANSPORTS,
+    targets: deps.targets ?? allowedTargets(builtHarnesses()),
+    models: deps.models ?? [],
+  };
+}
 
 /**
  * Synthesizes an agent for every planned task not already on the board, and emits
@@ -233,7 +320,7 @@ export async function synthesizeTasks(
   const at = (deps.now ?? (() => new Date().toISOString()))();
   let added = 0;
 
-  const transports = deps.transports ?? AVAILABLE_TRANSPORTS;
+  const runtime = runtimeOffer(deps);
 
   for (const entry of planned) {
     const existing = byId.get(entry.id);
@@ -250,7 +337,7 @@ export async function synthesizeTasks(
       // Re-staffing is a model call, so an edges-only change keeps the agent it has:
       // the same work with different prerequisites needs no new role.
       const agentSpec = coreChanged
-        ? await staff(deps, entry, state.mission.capabilityEnvelope, transports)
+        ? await staff(deps, entry, state.mission.capabilityEnvelope, runtime)
         : existing.agentSpec;
 
       deps.store.emit({
@@ -279,7 +366,7 @@ export async function synthesizeTasks(
       continue;
     }
 
-    const agentSpec = await staff(deps, entry, state.mission.capabilityEnvelope, transports);
+    const agentSpec = await staff(deps, entry, state.mission.capabilityEnvelope, runtime);
 
     deps.store.emit({
       missionId: state.mission.id,
@@ -316,7 +403,15 @@ export async function synthesizeTasks(
 /** What was wrong with a spec: the sentence the model gets on its retry, the string
  *  the event and the error record, and which of the three failures it was. */
 interface SpecProblem {
-  kind: "transport" | "capability" | "lease" | "artifact" | "outputPath" | "basedOn";
+  kind:
+    | "transport"
+    | "target"
+    | "model"
+    | "capability"
+    | "lease"
+    | "artifact"
+    | "outputPath"
+    | "basedOn";
   requested: string;
   retry: string;
 }
@@ -329,7 +424,7 @@ async function staff(
   deps: SynthesizeDeps,
   task: PlannedTask,
   envelope: Envelope,
-  transports: readonly string[],
+  runtime: RuntimeOffer,
 ): Promise<AgentSpec> {
   const catalogue = resolveClasses(envelope.toolClasses);
   const roles = deps.roles ?? [];
@@ -340,7 +435,9 @@ async function staff(
       task,
       envelope,
       toolCatalogue: catalogue,
-      transports: [...transports],
+      transports: [...runtime.transports],
+      targets: [...runtime.targets],
+      models: [...runtime.models],
       // Omitted rather than sent empty: a prompt carrying "roster: []" spends context
       // telling the model about a library that does not exist.
       ...(index === "" ? {} : { roster: index }),
@@ -348,14 +445,14 @@ async function staff(
     });
 
   const first = await request();
-  const firstProblem = inspect(first, task, envelope, transports, catalogue, roles);
+  const firstProblem = inspect(first, task, envelope, runtime, catalogue, roles);
   if (!firstProblem) return attach(first, roles);
 
   const second = await request(firstProblem.retry);
-  const problem = inspect(second, task, envelope, transports, catalogue, roles);
+  const problem = inspect(second, task, envelope, runtime, catalogue, roles);
   if (!problem) return attach(second, roles);
 
-  throw raise(deps, task, envelope, problem, transports);
+  throw raise(deps, task, envelope, problem, runtime);
 }
 
 /**
@@ -396,17 +493,55 @@ function inspect(
   spec: AgentSpec,
   task: PlannedTask,
   envelope: Envelope,
-  transports: readonly string[],
+  runtime: RuntimeOffer,
   catalogue: readonly string[],
   roles: readonly OfferedRole[],
 ): SpecProblem | undefined {
-  if (!transports.includes(spec.transport.id)) {
+  if (!runtime.transports.includes(spec.transport.id)) {
     return {
       kind: "transport",
       requested: spec.transport.id,
       retry:
         `The '${spec.transport.id}' transport is not built. Choose one of: ` +
-        `${transports.join(", ")}.`,
+        `${runtime.transports.join(", ")}.`,
+    };
+  }
+
+  // The target, checked right after the transport because the pair is one decision: a
+  // transport that can start and an agent that is not installed fails at exactly the
+  // same moment, for exactly the same reason, and used to fail with a spawn error
+  // instead of a sentence.
+  const target = spec.transport.target;
+  if (target === undefined || !runtime.targets.includes(target)) {
+    return {
+      kind: "target",
+      requested: target ?? "(none)",
+      retry:
+        (target === undefined
+          ? `A '${spec.transport.id}' spec must set 'transport.target' to the agent it runs. `
+          : `'${target}' is not an agent this mission can run. `) +
+        (runtime.targets.length > 0
+          ? `Choose one of: ${runtime.targets.join(", ")}.`
+          : `No agent is available at all, so this task cannot be staffed as planned.`),
+    };
+  }
+
+  // The model, and this is the field that had no door at all: a required string that
+  // becomes `--model` on a real CLI, written by a model, checked by nothing. An empty
+  // allowlist means nothing is *known* rather than nothing is allowed — see
+  // `workers/harness.ts` — so an unconstrained mission skips this rather than failing
+  // every task.
+  if (runtime.models.length > 0 && !runtime.models.includes(spec.model)) {
+    return {
+      kind: "model",
+      requested: spec.model,
+      retry:
+        `'${spec.model}' is not a model this mission may use. Choose one of: ` +
+        `${runtime.models.join(", ")}.` +
+        (runtime.models.length === 1
+          ? ` The person who composed this mission chose it, so it is not a default to ` +
+            `improve on — set 'model' to exactly that.`
+          : ``),
     };
   }
 
@@ -581,10 +716,19 @@ function raise(
   task: PlannedTask,
   envelope: Envelope,
   problem: SpecProblem,
-  transports: readonly string[],
+  runtime: RuntimeOffer,
 ): SynthesisError {
   if (problem.kind === "transport") {
-    return new UnavailableTransportError(task.id, problem.requested, transports);
+    return new UnavailableTransportError(task.id, problem.requested, runtime.transports);
+  }
+  // Both are planning problems, like the lease: the mission can be staffed against what
+  // is installed and within what the human chose, and no code path installs a CLI or
+  // widens a model choice somebody made on purpose.
+  if (problem.kind === "target") {
+    return new UnavailableTargetError(task.id, problem.requested, runtime.targets);
+  }
+  if (problem.kind === "model") {
+    return new UnavailableModelError(task.id, problem.requested, runtime.models);
   }
   if (problem.kind === "lease") return new UndeclaredLeaseError(task.id);
   if (problem.kind === "basedOn") return new UnknownRoleError(task.id, problem.requested);

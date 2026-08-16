@@ -36,6 +36,8 @@ import {
   EnvelopeViolationError,
   SynthesisError,
   synthesizeTasks,
+  UnavailableModelError,
+  UnavailableTargetError,
   UnavailableTransportError,
   UndeclaredLeaseError,
   UnknownRoleError,
@@ -733,5 +735,143 @@ describe("what the callers catch", () => {
         (error: Error) => error instanceof SynthesisError,
       );
     }
+  });
+});
+
+// The two ceilings a human sets rather than the design does (UI plan: harness and
+// model on the compose card).
+//
+// They are checked here, beside the transport, because they fail in exactly the same
+// way and the alternative is exactly as expensive. `transport.target` was named in the
+// prompt as prose — "claude or codex" — so a machine holding only one of them still
+// invited a spec for the other, which is defect 21 one field along: a spawn error at
+// dispatch, a burned retry, a replan.
+//
+// `model` was worse, because it had no door at all. It is a required non-empty string
+// that becomes `--model` on a real CLI, written by a model, checked by nothing — an
+// invented name passed validation and reached the log. It is also where a human's
+// choice is enforced: `allowedModels` collapses a pinned model to a one-entry list, so
+// "run this on haiku" is a ceiling in code rather than a preference a model may
+// reconsider.
+describe("synthesis against what the machine and the human allow", () => {
+  test("refuses an agent this machine cannot start, and re-asks once naming what it can", async () => {
+    const store = testStore([missionCreated()]);
+    const { calls, seen } = scriptedSynthesize([
+      anAgentSpec({ transport: { id: "cli", target: "claude" } }),
+      anAgentSpec({ transport: { id: "cli", target: "codex" } }),
+    ]);
+
+    const added = await synthesizeTasks(
+      { ...deps(store, calls), targets: ["codex"] },
+      [aPlannedTask()],
+      0,
+    );
+
+    assert.equal(added, 1);
+    assert.equal(seen.length, 2);
+    assert.match(seen[1]!.rejected ?? "", /claude/);
+    assert.match(seen[1]!.rejected ?? "", /codex/);
+  });
+
+  test("a target that never resolves parks the task rather than dispatching it", async () => {
+    const store = testStore([missionCreated()]);
+    const { calls } = scriptedSynthesize([
+      anAgentSpec({ transport: { id: "cli", target: "claude" } }),
+      anAgentSpec({ transport: { id: "cli", target: "claude" } }),
+    ]);
+
+    await assert.rejects(
+      () => synthesizeTasks({ ...deps(store, calls), targets: ["codex"] }, [aPlannedTask()], 0),
+      (error: Error) => {
+        assert.ok(error instanceof UnavailableTargetError);
+        assert.match(error.message, /claude/);
+        // §2a rule 5: the message names the fix.
+        assert.match(error.message, /codex/);
+        return true;
+      },
+    );
+
+    assert.equal(store.state().tasks.length, 0);
+  });
+
+  test("a spec with no target at all is refused, not defaulted", async () => {
+    // Defaulting would pick an agent on the spec's behalf and look like it worked.
+    const store = testStore([missionCreated()]);
+    const { calls, seen } = scriptedSynthesize([
+      anAgentSpec({ transport: { id: "cli" } }),
+      anAgentSpec({ transport: { id: "cli", target: "claude" } }),
+    ]);
+
+    await synthesizeTasks({ ...deps(store, calls), targets: ["claude"] }, [aPlannedTask()], 0);
+
+    assert.match(seen[1]!.rejected ?? "", /transport\.target/);
+  });
+
+  test("tells the model which targets and models it may pick", async () => {
+    const store = testStore([missionCreated()]);
+    const { calls, seen } = scriptedSynthesize([anAgentSpec()]);
+
+    await synthesizeTasks(
+      { ...deps(store, calls), targets: ["claude"], models: ["haiku", "sonnet"] },
+      [aPlannedTask()],
+      0,
+    );
+
+    assert.deepEqual(seen[0]!.targets, ["claude"]);
+    assert.deepEqual(seen[0]!.models, ["haiku", "sonnet"]);
+  });
+
+  test("refuses a model outside the allowlist and re-asks once, quoting it", async () => {
+    const store = testStore([missionCreated()]);
+    const { calls, seen } = scriptedSynthesize([
+      anAgentSpec({ model: "gpt-9-turbo" }),
+      anAgentSpec({ model: "haiku" }),
+    ]);
+
+    const added = await synthesizeTasks(
+      { ...deps(store, calls), models: ["haiku"] },
+      [aPlannedTask()],
+      0,
+    );
+
+    assert.equal(added, 1);
+    assert.match(seen[1]!.rejected ?? "", /gpt-9-turbo/);
+    assert.match(seen[1]!.rejected ?? "", /haiku/);
+    // A pinned model is a person's decision, and the retry has to say so — otherwise
+    // the obvious reading is "here is a suggestion I may improve on".
+    assert.match(seen[1]!.rejected ?? "", /composed this mission/);
+  });
+
+  test("a model the human pinned is enforced, not negotiated", async () => {
+    const store = testStore([missionCreated()]);
+    const { calls } = scriptedSynthesize([
+      anAgentSpec({ model: "opus" }),
+      anAgentSpec({ model: "opus" }),
+    ]);
+
+    await assert.rejects(
+      () => synthesizeTasks({ ...deps(store, calls), models: ["haiku"] }, [aPlannedTask()], 0),
+      (error: Error) => {
+        assert.ok(error instanceof UnavailableModelError);
+        assert.match(error.message, /opus/);
+        assert.match(error.message, /haiku/);
+        return true;
+      },
+    );
+
+    assert.equal(store.state().tasks.length, 0);
+  });
+
+  // Empty means "nothing is known", never "nothing is allowed". No list of codex
+  // models has been verified, and refusing every one of them to enforce the Anthropic
+  // half would fail correct work — the same rule that keeps absent token usage absent
+  // instead of zero (§9.5).
+  test("an empty model list constrains nothing", async () => {
+    const store = testStore([missionCreated()]);
+    const { calls } = scriptedSynthesize([anAgentSpec({ model: "some-model-we-know-nothing-of" })]);
+
+    const added = await synthesizeTasks({ ...deps(store, calls), models: [] }, [aPlannedTask()], 0);
+
+    assert.equal(added, 1);
   });
 });

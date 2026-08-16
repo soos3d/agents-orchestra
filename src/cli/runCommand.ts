@@ -11,17 +11,22 @@ import path from "node:path";
 import { spendPhase, type Budget, type Spend } from "../domain/budget.js";
 import { type Envelope } from "../domain/envelope.js";
 import { type Criterion, type PlannedTask } from "../domain/ledger.js";
-import { type Estimate } from "../domain/mission.js";
+import { type Estimate, type MissionRuntime } from "../domain/mission.js";
 import { type Calls } from "../loop/calls.js";
 import { anyOf, type HumanPort } from "../loop/human.js";
 import { prepareMission, type PrepareResult } from "../loop/prepare.js";
 import { DecisionPointError } from "../loop/resilience.js";
 import { createFileStore } from "../loop/store.js";
 import { type MissionStore } from "../loop/run.js";
-import { loreDir, missionDir, type DiscoveredConfig } from "../config/discover.js";
+import {
+  loreDir,
+  missionDir,
+  withOrchestratorModel,
+  type DiscoveredConfig,
+} from "../config/discover.js";
 import { readLore } from "../memory/lore.js";
 import { loadSavedMission, seedFromSaved, type SavedMission } from "../memory/savedMission.js";
-import { availableTransports } from "../workers/availability.js";
+import { staffingOffer } from "../workers/harness.js";
 import { DEFAULT_TOOL_CLASSES } from "../workers/toolCatalogue.js";
 import { type ClientMessage } from "../web/protocol.js";
 import { startWebServer, type RunningServer } from "../web/server.js";
@@ -51,7 +56,22 @@ export interface RunOptions {
    *  feature and nobody is going to open it. */
   web: boolean;
   budgetMinutes: number;
+  /** How this mission runs, as chosen by whoever started it (`domain/mission.ts`
+   *  `missionRuntimeSchema`). Every field optional: absent is "whatever this machine
+   *  offers", which is what every mission did before the choice existed. */
+  runtime: MissionRuntime;
 }
+
+/** The three flags that take a value and mean one thing each, parsed in one place so
+ *  the terminal and the browser reach the same validation. Kept beside the parser
+ *  rather than inline, because each needs the same "a flag takes a value" refusal. */
+type RuntimeField = "harness" | "workerModel" | "orchestratorModel";
+
+const RUNTIME_FLAGS: Readonly<Record<string, { field: RuntimeField; example: string }>> = {
+  "--harness": { field: "harness", example: "--harness acp/claude" },
+  "--worker-model": { field: "workerModel", example: "--worker-model haiku" },
+  "--orchestrator-model": { field: "orchestratorModel", example: "--orchestrator-model sonnet" },
+};
 
 export type ParsedRun = { ok: true; options: RunOptions } | { ok: false; message: string };
 
@@ -60,9 +80,19 @@ export function parseRunArgs(argv: readonly string[]): ParsedRun {
   const flags = new Set<string>();
   let budgetMinutes = DEFAULT_BUDGET_MINUTES;
   let saved: string | undefined;
+  const runtime: Record<string, string> = {};
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
+    const runtimeFlag = RUNTIME_FLAGS[arg];
+    if (runtimeFlag) {
+      const value = argv[++i];
+      if (!value || value.startsWith("--")) {
+        return { ok: false, message: `${arg} takes a value, e.g. ${runtimeFlag.example}.` };
+      }
+      runtime[runtimeFlag.field] = value;
+      continue;
+    }
     if (arg === "--saved") {
       const name = argv[++i];
       if (!name || name.startsWith("--")) {
@@ -126,6 +156,7 @@ export function parseRunArgs(argv: readonly string[]): ParsedRun {
       force: flags.has("--force"),
       web: !flags.has("--no-web"),
       budgetMinutes,
+      runtime,
       ...(saved === undefined ? {} : { saved }),
     },
   };
@@ -244,7 +275,9 @@ export async function runMission(
     },
   };
 
-  const calls = deps.createCalls(config, (call, spend) =>
+  // The mission's own model, not the process's: composed missions in one serve
+  // process may each have chosen differently, and `config` is shared between them.
+  const calls = deps.createCalls(withOrchestratorModel(config, options.runtime.orchestratorModel), (call, spend) =>
     wired.emit({
       type: "spend_recorded",
       missionId,
@@ -269,6 +302,10 @@ export async function runMission(
     budget,
     unattended: options.unattended,
     quick: options.quick,
+    // Omitted when nothing was chosen rather than sent empty, so a log reads as "no
+    // choice was made" and not as "a choice was made and it was nothing" — the same
+    // distinction `roster` draws when it is absent instead of `[]`.
+    ...(Object.keys(options.runtime).length > 0 ? { runtime: options.runtime } : {}),
   });
 
   if (saved) {
@@ -358,7 +395,7 @@ export async function runMission(
       // approved plan inside `prepareMission`, so the offer has to be here as well as
       // in the loop's replan — one of the two wired is a mission staffed against a
       // transport that cannot spawn, discovered one dispatch at a time.
-      transports: availableTransports(config),
+      ...staffingOffer(config, options.runtime),
       onWarn: (message) => io.err(message),
     }));
 
