@@ -24,8 +24,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { FILE_MODE, ensurePrivateDir } from "../config/hygiene.js";
+import { ensurePrivateDir, writeFileAtomic } from "../config/hygiene.js";
 import { agentSpecSchema } from "../domain/task.js";
+import { assertPlainName, parseFencedPayload } from "./fencedPayload.js";
 
 export const profileSchema = z.object({
   name: z.string().min(1),
@@ -94,41 +95,8 @@ export type ParseProfileResult =
   | { ok: false; problem: string };
 
 export function parseProfile(markdown: string): ParseProfileResult {
-  const start = markdown.indexOf(FENCE);
-  const end = start === -1 ? -1 : markdown.indexOf("```", start + FENCE.length);
-  if (start === -1 || end === -1) {
-    return { ok: false, problem: `no fenced \`\`\`json payload block. ${FIX}` };
-  }
-
-  let payload: unknown;
-  try {
-    payload = JSON.parse(markdown.slice(start + FENCE.length, end));
-  } catch (error) {
-    return {
-      ok: false,
-      problem: `the \`\`\`json payload block is not valid JSON (${(error as Error).message}). ${FIX}`,
-    };
-  }
-
-  const parsed = profileSchema.safeParse(payload);
-  if (!parsed.success) {
-    const problems = parsed.error.issues
-      .map((issue) => `${issue.path.join(".") || "payload"}: ${issue.message}`)
-      .join("; ");
-    return { ok: false, problem: `${problems}. ${FIX}` };
-  }
-  return { ok: true, profile: parsed.data };
-}
-
-/** The defence `saveMission` and `forgetMission` both have, for the same reason: a
- *  name a human typed reaches the filesystem, so a name that is a path is a way out of
- *  the state directory. */
-function assertName(name: string): void {
-  if (name === "" || name.includes("..") || /[/\\]/.test(name) || name.includes(path.sep)) {
-    throw new Error(
-      `Refusing '${name}': not a profile name. Use a plain name like 'invoice-reconciler'.`,
-    );
-  }
+  const parsed = parseFencedPayload(markdown, profileSchema, FIX);
+  return parsed.ok ? { ok: true, profile: parsed.value } : parsed;
 }
 
 /**
@@ -148,14 +116,11 @@ const withoutEnv = (profile: Profile): Profile => {
 
 /** Atomic and owner-only, like every other write in the system. */
 export function saveProfile(stateDir: string, profile: Profile): string {
-  assertName(profile.name);
+  assertPlainName(profile.name, "profile name", "invoice-reconciler");
 
   const dir = ensurePrivateDir(profilesDir(stateDir));
   const file = path.join(dir, `${profile.name}.md`);
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, renderProfile(withoutEnv(profile)), { mode: FILE_MODE });
-  fs.chmodSync(tmp, FILE_MODE);
-  fs.renameSync(tmp, file);
+  writeFileAtomic(file, renderProfile(withoutEnv(profile)));
   return file;
 }
 

@@ -628,9 +628,11 @@ function chosenStaffing(): Record<string, string> {
   return chosen;
 }
 
-/** The three selects, read at click time and omitted when left on "let the planner
- *  choose". Separate from the component so the button's handler stays one expression,
- *  and next to it so the ids cannot drift apart. */
+/** The three selects, read at click time. Left on "let the planner choose" each is
+ *  `undefined`, which `JSON.stringify` drops on the way out — absent and "chose
+ *  nothing" stay the same fact all the way to the log. Separate from the component so
+ *  the button's handler stays one expression, and next to it so the ids cannot drift
+ *  apart. */
 function chosenRuntime(): {
   harness?: string;
   workerModel?: string;
@@ -640,14 +642,10 @@ function chosenRuntime(): {
     const value = (document.getElementById(id) as HTMLSelectElement | null)?.value.trim();
     return value ? value : undefined;
   };
-  const harness = read("compose-harness");
-  const workerModel = read("compose-worker-model");
-  const orchestratorModel = read("compose-orchestrator-model");
-
   return {
-    ...(harness === undefined ? {} : { harness }),
-    ...(workerModel === undefined ? {} : { workerModel }),
-    ...(orchestratorModel === undefined ? {} : { orchestratorModel }),
+    harness: read("compose-harness"),
+    workerModel: read("compose-worker-model"),
+    orchestratorModel: read("compose-orchestrator-model"),
   };
 }
 

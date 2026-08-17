@@ -132,36 +132,26 @@ export const codeTaskSchema = z.object({
   owns: z.array(z.string()), // lease globs — §8
 });
 
-export const computerTaskSchema = z.object({
-  ...taskBase,
-  worker: z.literal("computer"),
-  surface: z.enum(["browser", "desktop"]),
-  allowedDomains: z.array(z.string()), // the computer analogue of a file lease — §11
-});
-
+// `computer` is a plain task until its transport exists: `chrome-mcp` is refused at
+// synthesis, so no `surface`/`allowedDomains` shape has ever dispatched — carrying one
+// was dead flexibility fabricated at the call site to satisfy the union.
 export const plainTaskSchema = z.object({
   ...taskBase,
-  worker: z.enum(["research", "review", "general"]),
+  worker: z.enum(["research", "computer", "review", "general"]),
 });
 
-export const taskSchema = z.discriminatedUnion("worker", [
-  codeTaskSchema,
-  computerTaskSchema,
-  plainTaskSchema,
-]);
+export const taskSchema = z.discriminatedUnion("worker", [codeTaskSchema, plainTaskSchema]);
 
 export type WorkerKind = z.infer<typeof workerKindSchema>;
 export type TaskStatus = z.infer<typeof taskStatusSchema>;
 export type TransportRef = z.infer<typeof transportRefSchema>;
 export type AgentSpec = z.infer<typeof agentSpecSchema>;
 export type CodeTask = z.infer<typeof codeTaskSchema>;
-export type ComputerTask = z.infer<typeof computerTaskSchema>;
 export type Task = z.infer<typeof taskSchema>;
 
 // A Task id. Named for readability at call sites that take several string lists.
 export type TaskRef = string;
 
 export const isCodeTask = (task: Task): task is CodeTask => task.worker === "code";
-export const isComputerTask = (task: Task): task is ComputerTask => task.worker === "computer";
 export const isTerminal = (status: TaskStatus): boolean =>
   (TERMINAL_STATUSES as readonly string[]).includes(status);

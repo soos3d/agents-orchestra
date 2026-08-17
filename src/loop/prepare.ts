@@ -109,7 +109,6 @@ export interface PrepareDeps {
    */
   secrets?: readonly Secret[];
   onWarn?(message: string): void;
-  now?: () => string;
 }
 
 export type PrepareResult =
@@ -120,7 +119,7 @@ export async function prepareMission(deps: PrepareDeps): Promise<PrepareResult> 
   const missionId = deps.store.state().mission.id;
   const base = { missionId, actor: "orchestrator" as const };
   const emit = (event: EventInput) => deps.store.emit(event);
-  const at = (deps.now ?? (() => new Date().toISOString()))();
+  const at = new Date().toISOString();
 
   const move = (to: Parameters<typeof missionStatus>[0], reason: string) =>
     emit({ ...base, ...missionStatus(to, deps.store.state().mission.status, reason) });
@@ -359,7 +358,6 @@ export interface PresentDeps {
    *  plan, so an offer wired only into the loop is wired into the wrong half. */
   transports?: readonly string[];
   unattended?: boolean;
-  now?: () => string;
 }
 
 export type SignoffOutcome =
@@ -454,7 +452,7 @@ export async function presentAndSignOff(deps: PresentDeps): Promise<SignoffOutco
     if (revision === 0 && mission.quick) {
       const deep = await deps.calls.research(buildResearchInput(deps.store.state()));
       const ledger = deps.store.state().mission.ledger;
-      const at = (deps.now ?? (() => new Date().toISOString()))();
+      const at = new Date().toISOString();
       emit({
         ...base,
         type: "research_completed",
@@ -504,7 +502,6 @@ export interface SignoffDeps {
   roles?: readonly OfferedRole[];
   transports?: readonly string[];
   unattended?: boolean;
-  now?: () => string;
 }
 
 /**
@@ -621,7 +618,7 @@ function raiseSecrets(
   );
   if (names.length === 0) return;
 
-  deps.store.emit({ ...base, type: "secret_required", names, plannedAs: "mock" });
+  deps.store.emit({ ...base, type: "secret_required", names });
   deps.store.emit({
     ...base,
     type: "question_asked",
@@ -709,6 +706,16 @@ async function planWithOneRetry(
 }
 
 /**
+ * The refusals, as one line each, for the retry to answer.
+ *
+ * Quoted rather than summarized: `SpecRejection.criterion` is the statement the model
+ * itself wrote, so naming it back is what lets the retry tell which of five criteria
+ * is the problem — the same reason `validatePlan`'s message quotes the offending edge.
+ */
+const describeRejections = (rejected: readonly SpecRejection[]): string =>
+  rejected.map((entry) => `"${entry.criterion}" — ${entry.reason}`).join("\n");
+
+/**
  * Findings become verified facts, appended to what is already there.
  *
  * Appended rather than assigned because two calls produce them now — the scan and
@@ -721,16 +728,6 @@ async function planWithOneRetry(
  * what is still open, but it is not forbidden from confirming something the scan
  * found, and the same claim twice is noise in every prompt built afterwards.
  */
-/**
- * The refusals, as one line each, for the retry to answer.
- *
- * Quoted rather than summarized: `SpecRejection.criterion` is the statement the model
- * itself wrote, so naming it back is what lets the retry tell which of five criteria
- * is the problem — the same reason `validatePlan`'s message quotes the offending edge.
- */
-const describeRejections = (rejected: readonly SpecRejection[]): string =>
-  rejected.map((entry) => `"${entry.criterion}" — ${entry.reason}`).join("\n");
-
 export function appendFacts(
   existing: readonly Fact[],
   findings: readonly Finding[],

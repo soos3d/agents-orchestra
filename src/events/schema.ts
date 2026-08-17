@@ -168,10 +168,6 @@ const contract = [
   withBase({
     type: z.literal("secret_required"),
     names: z.array(z.string().min(1)).min(1),
-    /** What the mission did anyway. `mock` is the only value today and is written out
-     *  rather than implied, so a later run that genuinely parks reads differently in the
-     *  log instead of looking like this one. */
-    plannedAs: z.literal("mock"),
   }),
   withBase({ type: z.literal("signoff_requested"), estimate: estimateSchema }),
   withBase({ type: z.literal("signoff_granted"), unattended: z.boolean() }),
@@ -262,7 +258,6 @@ const tasks = [
     transport: transportRefSchema,
     pid: z.number().int().optional(),
   }),
-  withBase({ type: z.literal("worker_heartbeat") }),
   withBase({ type: z.literal("worker_report"), report: workerReportSchema }),
   withBase({ type: z.literal("artifact_written"), artifact: artifactSchema }),
   withBase({
@@ -405,7 +400,6 @@ const runtime = [
     extensions: z.number().int().nonnegative(),
     by: z.string(),
   }),
-  withBase({ type: z.literal("shutdown"), signal: z.string(), resumeCommand: z.string() }),
   withBase({
     type: z.literal("resumed"),
     fromSeq: z.number().int().nonnegative(),

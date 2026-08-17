@@ -31,7 +31,7 @@ import {
   probeAgents,
   type DiscoveredConfig,
 } from "./discover.js";
-import { FILE_MODE, ensurePrivateDir } from "./hygiene.js";
+import { ensurePrivateDir, writeFileAtomic } from "./hygiene.js";
 
 export const WORKSPACES_FILE = "workspaces.json";
 
@@ -183,12 +183,9 @@ export function readWorkspaces(stateDir: string, onWarn: (message: string) => vo
 export function writeWorkspaces(stateDir: string, workspaces: readonly Workspace[]): void {
   const dir = ensurePrivateDir(stateDir);
   const file = path.join(dir, WORKSPACES_FILE);
-  const tmp = `${file}.${process.pid}.tmp`;
   try {
-    fs.writeFileSync(tmp, `${JSON.stringify({ workspaces }, null, 2)}\n`, { mode: FILE_MODE });
-    fs.renameSync(tmp, file);
+    writeFileAtomic(file, `${JSON.stringify({ workspaces }, null, 2)}\n`);
   } catch (error) {
-    fs.rmSync(tmp, { force: true });
     throw new Error(`Cannot write ${file}: ${(error as Error).message}`, { cause: error });
   }
 }

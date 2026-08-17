@@ -165,13 +165,11 @@ export interface ExecuteDeps {
      *  every mid-run request — which is a feature switched off at the composition
      *  root, the shape defects 12b, 23 and 24 all had. */
     human?: HumanPort,
+    signal?: AbortSignal,
   ) => Promise<LoopDeps>;
   /** Absent means nobody is there, which is what `--unattended` amounts to. */
   human?: HumanPort;
   signal?: AbortSignal;
-  /** Only the promotion clock: what a mission writes back to memory is stamped with
-   *  it, and a staling policy is not testable against a real one (§6). */
-  now?: () => Date;
 }
 
 export interface ExecuteResult {
@@ -239,6 +237,7 @@ export async function executeMission(deps: ExecuteDeps): Promise<ExecuteResult> 
     deps.config,
     (message) => deps.io.err(message),
     deps.human,
+    deps.signal,
   );
 
   // The half of §9.4 that was built and unreachable: `runLoop` has always taken a
@@ -278,7 +277,7 @@ export async function executeMission(deps: ExecuteDeps): Promise<ExecuteResult> 
     recordLearnings({
       state: deps.store.state(),
       dir: loreDir(deps.config.stateDir),
-      now: (deps.now ?? (() => new Date()))(),
+      now: new Date(),
       emit: deps.store.emit,
       onWarn: (message) => deps.io.err(message),
     });
@@ -399,6 +398,9 @@ export async function buildLoopDeps(
   config: DiscoveredConfig,
   onWarn?: (message: string) => void,
   human?: HumanPort,
+  /** The panic signal (§9.6): a worker or judge in flight is aborted rather than
+   *  paid for after a human has already pulled the cord. */
+  signal?: AbortSignal,
 ): Promise<LoopDeps> {
   const repo = config.repoRoot;
   const code = repo
@@ -447,7 +449,11 @@ export async function buildLoopDeps(
       ...(contained ? { contained } : {}),
     }),
   });
-  const verify = createVerifier({ calls, ...(secrets.length > 0 ? { secrets } : {}) });
+  const verify = createVerifier({
+    calls,
+    ...(secrets.length > 0 ? { secrets } : {}),
+    ...(signal ? { signal } : {}),
+  });
   // §4.1's one reformat attempt. `dispatch` has always accepted a reformatter and no
   // entry point supplied one, so a worker that answered in prose failed outright
   // instead of being asked once to restate — same shape as the `requestExtension`
@@ -471,7 +477,11 @@ export async function buildLoopDeps(
     // omitted list would fall back to everything the build ships, which is the exact
     // claim this is here to stop making.
     ...staffingOffer(config, store.state().mission.runtime, staffableCards(config.stateDir, onWarn)),
-    checkCriterion: createCriterionChecker({ calls, ...(secrets.length > 0 ? { secrets } : {}) }),
+    checkCriterion: createCriterionChecker({
+      calls,
+      ...(secrets.length > 0 ? { secrets } : {}),
+      ...(signal ? { signal } : {}),
+    }),
     dispatch: (task: Task, state: MissionState): Promise<DispatchOutcome> =>
       dispatch(
         task,
@@ -482,6 +492,7 @@ export async function buildLoopDeps(
           reformat,
           held: heldLeases(state),
           ...(secrets.length > 0 ? { secrets } : {}),
+          ...(signal ? { signal } : {}),
           ...(code ? { code } : {}),
           artifactRoot: root,
           cwd: repo ?? config.cwd,

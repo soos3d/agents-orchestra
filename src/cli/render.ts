@@ -32,8 +32,9 @@ import { type SignoffPresentation } from "../loop/human.js";
  * nobody could price sits beside it, and `pricedFully` decides which of the two
  * closing lines is true.
  *
- * Numbers are grouped by hand rather than through `toLocaleString`, because these are
- * meant to be diffed between two runs and a locale-dependent separator is not.
+ * Numbers are grouped with an explicit `"en-US"` rather than with the machine's own
+ * locale, because these lines are meant to be diffed between two runs and a separator
+ * that follows whoever ran it is not.
  */
 export function renderMetrics(metrics: MissionMetrics): string[] {
   const { totals } = metrics;

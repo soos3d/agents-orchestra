@@ -10,7 +10,6 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
   classOf,
-  describeClasses,
   resolveClasses,
   TOOL_CATALOGUE,
   DEFAULT_TOOL_CLASSES,
@@ -85,12 +84,5 @@ describe("the tool catalogue", () => {
         `${id} is granted by default but is not in the catalogue`,
       );
     }
-  });
-
-  test("describes a class in one line, and skips one it does not know", () => {
-    assert.deepEqual(describeClasses(["shell.run"]), [
-      "shell.run → Bash (run commands in the task's working directory)",
-    ]);
-    assert.deepEqual(describeClasses(["nope"]), []);
   });
 });

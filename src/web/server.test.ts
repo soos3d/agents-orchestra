@@ -360,7 +360,7 @@ describe("the server", () => {
     const server = await serve(someEvents(1));
 
     assert.match(server.url, new RegExp(`^http://${HOST}:\\d+$`));
-    assert.ok(server.port > 0);
+    assert.ok(Number(server.url.split(":").at(-1)) > 0);
   });
 
   test("serves a page that loads nothing from anywhere", async () => {

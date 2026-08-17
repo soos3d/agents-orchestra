@@ -140,11 +140,9 @@ export const aMissionState = (patch: Partial<MissionState> = {}): MissionState =
   tasks: [],
   reports: [],
   progressLedgers: [],
-  verifications: {},
   leases: {},
   inbox: [],
   notes: [],
-  workers: {},
   blockedBy: {},
   panicked: false,
   paused: false,
@@ -289,5 +287,3 @@ export function scriptedCalls(script: Script): ScriptedCalls {
     judge: async () => next("judge", script.judge),
   };
 }
-
-export const zeroed = zeroSpend;

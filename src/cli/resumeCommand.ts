@@ -154,6 +154,7 @@ export async function resumeMission(
           // Read back off the mission's own log, like the orchestrator model above: a
           // mission resumed the next morning finishes on the models it started on.
           store.state().mission.staffing,
+          panic.signal,
         ),
     });
     return code;

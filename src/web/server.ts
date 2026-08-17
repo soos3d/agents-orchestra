@@ -108,7 +108,6 @@ export interface WebServerDeps {
 
 export interface RunningServer {
   readonly url: string;
-  readonly port: number;
   /** Pushes whatever is new since each client last heard. Called after every emit. */
   publish(): void;
   close(): Promise<void>;
@@ -307,7 +306,6 @@ export async function startWebServer(deps: WebServerDeps): Promise<RunningServer
 
   return {
     url: `http://${HOST}:${port}`,
-    port,
     publish: () => {
       for (const socket of sockets.keys()) {
         sendMissions(socket);

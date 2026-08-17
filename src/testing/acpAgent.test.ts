@@ -91,15 +91,19 @@ async function roundTrip(
       if (classified.kind === "notification" && classified.method === "session/update") {
         const update = parseSessionUpdate(classified.params, (message) => warnings.push(message));
         if (update.kind === "message_chunk") chunks.push(update.text);
-        if (update.kind === "tool_call_update" && update.status !== undefined) {
-          toolCallStatuses.push(update.status);
+        // Read off the wire rather than off `AcpUpdate`: nothing in the transport acts on a
+        // tool call's status, so it is not carried through — but the fake agent still has to
+        // emit the captures' terminal frame, and this is what asserts that it does.
+        if (update.kind === "tool_call_update") {
+          const raw = (classified.params as { update?: { status?: string } }).update;
+          if (raw?.status !== undefined) toolCallStatuses.push(raw.status);
         }
       }
     }
   });
 
   const initializeResult = parseInitializeResult(
-    await request(initializeRequest(1, { name: "fable-orchestra", version: "0.0.0" })),
+    await request(initializeRequest(1)),
   );
   const { sessionId } = parseSessionNewResult(await request(sessionNewRequest(2, process.cwd())));
   const { stopReason } = parseSessionPromptResult(

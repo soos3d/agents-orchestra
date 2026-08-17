@@ -30,14 +30,6 @@ export interface EventLogOptions {
   now?: () => string;
 }
 
-export interface EventLog {
-  readonly file: string;
-  append(input: EventInput): Event;
-  appendAll(inputs: readonly EventInput[]): Event[];
-  read(): Event[];
-  lastSeq(): number;
-}
-
 const LOG_FILE = "events.jsonl";
 
 // The log quotes financial records and worker reports containing real business
@@ -118,7 +110,7 @@ function replay(text: string, file: string, onWarn: (message: string) => void): 
   return events;
 }
 
-export function createEventLog(missionDir: string, options: EventLogOptions = {}): EventLog {
+export function createEventLog(missionDir: string, options: EventLogOptions = {}) {
   const file = path.join(missionDir, LOG_FILE);
   const onWarn = options.onWarn ?? ((message: string) => process.emitWarning(message));
   const now = options.now ?? (() => new Date().toISOString());
@@ -178,7 +170,7 @@ export function createEventLog(missionDir: string, options: EventLogOptions = {}
   return {
     file,
     append,
-    appendAll: (inputs) => inputs.map(append),
+    appendAll: (inputs: readonly EventInput[]) => inputs.map(append),
     read,
     lastSeq: () => ensureSeq() - 1,
   };

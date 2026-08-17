@@ -13,29 +13,9 @@
 import { type Note } from "../events/fold.js";
 import { type LedgerEntry } from "../domain/ledger.js";
 
-/** Undelivered notes for one destination. Task notes go to that task and nowhere
- *  else; a global note is for the loop's own next decision. */
-export function pendingNotes(
-  notes: readonly Note[],
-  scope: "global" | "task",
-  taskId?: string,
-): Note[] {
-  return notes.filter(
-    (note) => !note.deliveredAt && note.scope === scope && (scope === "global" || note.taskId === taskId),
-  );
-}
-
-/**
- * The block appended to a worker's prompt, and to the progress call's input.
- *
- * Fenced with a heading rather than merged into the surrounding prose because the
- * recipient has to be able to tell a human's instruction from the orchestrator's:
- * a note saying "stop using the staging database" reads very differently as a line
- * of the task goal than as something a person said mid-run.
- */
-export function formatNotes(notes: readonly Note[]): string | undefined {
-  if (notes.length === 0) return undefined;
-  return ["--- HUMAN NOTES ---", ...notes.map((note) => `- ${note.text}`)].join("\n");
+/** Undelivered global notes — input to the loop's own next decision. */
+export function pendingNotes(notes: readonly Note[]): Note[] {
+  return notes.filter((note) => !note.deliveredAt && note.scope === "global");
 }
 
 /** A note becomes a fact the human gave. Ids continue from what is there, since

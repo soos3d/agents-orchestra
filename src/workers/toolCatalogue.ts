@@ -96,16 +96,6 @@ export function resolveClasses(classes: readonly string[]): string[] {
  *  see `byTool`. */
 export const classOf = (tool: string): string | undefined => byTool.get(tool.toLowerCase());
 
-/** What a class grants, in one line, for the synthesis prompt. */
-export function describeClasses(classes: readonly string[]): string[] {
-  return classes.flatMap((id) => {
-    const entry = byClass.get(id);
-    if (!entry) return [];
-    const tools = entry.tools.length > 0 ? entry.tools.join(", ") : "nothing built yet";
-    return [`${entry.id} → ${tools} (${entry.summary})`];
-  });
-}
-
 /** What a terminal run grants when no compose screen has narrowed it (§13). Defined
  *  here rather than in the CLI so the default envelope and the catalogue that has to
  *  resolve it are one edit apart. */

@@ -127,6 +127,29 @@ test("an empty card list renders to nothing, so the prompt can omit the section"
   assert.equal(modelCardIndex([]), "");
 });
 
+// The failure this closes: the ceiling was a constant nothing read, while the prose in
+// `loop/calls.ts` said the index was budgeted. A local providers directory is the
+// operator's own and grows after this build was reviewed, so the cap has to hold at
+// render time rather than in a test over the shipped (empty) directory.
+test("the index truncates at its budget and says how many cards it dropped", () => {
+  const parsed = parseModelCards(
+    JSON.stringify(Array.from({ length: 200 }, (_, i) => card({ id: `vendor/model-${i}` }))),
+  );
+  assert.ok(parsed.ok);
+  const index = modelCardIndex(parsed.cards);
+
+  assert.ok(
+    index.length <= MODEL_CARD_INDEX_BUDGET + 60,
+    `index is ${index.length} chars, past the ${MODEL_CARD_INDEX_BUDGET} budget`,
+  );
+  // The omission is stated, because a model choosing from a list it was told was whole
+  // is worse than one told the list was cut.
+  assert.match(index, /further cards omitted for length\)$/);
+  // Whole lines only — a card cut in half is an id that does not resolve.
+  for (const line of index.split("\n")) assert.match(line, /^- /);
+  assert.ok(index.split("\n").length < 200);
+});
+
 test("cost is the two rates against the two kinds", () => {
   const parsed = parseModelCards(JSON.stringify([card()]));
   assert.ok(parsed.ok);

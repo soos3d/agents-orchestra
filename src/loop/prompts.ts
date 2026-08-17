@@ -49,7 +49,7 @@ export const ARCHITECT_INPUT_BUDGET = 24_000;
  * length — a note that runs long is a design decision, not a bug, and it must not fail
  * the mission that produced it.
  */
-export const DESIGN_SUMMARY_BUDGET = 1_500;
+const DESIGN_SUMMARY_BUDGET = 1_500;
 
 export function buildResearchInput(
   state: MissionState,
@@ -152,13 +152,13 @@ export function buildCritiqueInput(state: MissionState, tasks: readonly PlannedT
  * stopped there, which is exactly the wrong thing to tell the call that decides how many
  * tasks the work needs.
  */
-export function designSummary(note: string, budget = DESIGN_SUMMARY_BUDGET): string {
+export function designSummary(note: string): string {
   const trimmed = note.trim();
-  if (trimmed.length <= budget) return trimmed;
+  if (trimmed.length <= DESIGN_SUMMARY_BUDGET) return trimmed;
 
-  const cut = trimmed.slice(0, budget);
+  const cut = trimmed.slice(0, DESIGN_SUMMARY_BUDGET);
   const lastBreak = cut.lastIndexOf("\n");
-  const kept = lastBreak > budget / 2 ? cut.slice(0, lastBreak) : cut;
+  const kept = lastBreak > DESIGN_SUMMARY_BUDGET / 2 ? cut.slice(0, lastBreak) : cut;
   return `${kept.trimEnd()}\n\n(The design note continues; the full text is on disk.)`;
 }
 
@@ -222,7 +222,7 @@ export function buildPlanInput(state: MissionState, reason?: string): PlanInput 
 export function buildProgressInput(state: MissionState): ProgressInput {
   const { mission } = state;
   const stranded = unreachable(state);
-  const notes = pendingNotes(state.notes, "global").map((note) => note.text);
+  const notes = pendingNotes(state.notes).map((note) => note.text);
 
   return {
     ...(notes.length > 0 ? { notes } : {}),

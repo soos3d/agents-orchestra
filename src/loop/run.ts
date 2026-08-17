@@ -9,6 +9,7 @@
 // built by folding the log, and everything between those calls is code. The counters,
 // the criteria freeze, the budget, the ready set, and the stall rule all live here,
 // and none of them is ever a model's judgment.
+import { setTimeout as wait } from "node:timers/promises";
 import { type OfferedRole } from "../agents/offer.js";
 import { type ModelCard } from "../providers/modelCard.js";
 import { budgetExceeded, type Budget } from "../domain/budget.js";
@@ -82,7 +83,6 @@ export interface LoopDeps {
   /** Absent means nobody can be asked, which is what `--unattended` amounts to here. */
   requestExtension?(request: ExtendRequest): Promise<Budget | undefined>;
   limits?: Partial<Limits>;
-  concurrency?: Partial<Record<WorkerKind, number>>;
   sleep?(ms: number): Promise<void>;
   onWarn?(message: string): void;
   signal?: AbortSignal;
@@ -94,7 +94,7 @@ export interface LoopResult {
   rounds: number;
 }
 
-const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
 
 export async function runLoop(deps: LoopDeps): Promise<LoopResult> {
   const limits = { ...LIMITS, ...deps.limits };
@@ -219,7 +219,7 @@ async function advanceRound(
   await runRound(deps, state, round);
 
   const afterWork = deps.store.state();
-  const stopped = standstill(afterWork, { concurrency: deps.concurrency });
+  const stopped = standstill(afterWork);
   if (stopped.kind === "cycle") throw new Error(stopped.message);
 
   await checkCriteria(deps, afterWork, round);
@@ -287,7 +287,7 @@ async function runRound(deps: LoopDeps, state: MissionState, round: number): Pro
     });
   }
 
-  const ready = readyTasks(deps.store.state(), { concurrency: deps.concurrency });
+  const ready = readyTasks(deps.store.state());
   const results = await Promise.all(
     ready.map(async (task) => ({ task, outcome: await deps.dispatch(task, state) })),
   );
@@ -467,7 +467,7 @@ async function checkCriteria(deps: LoopDeps, state: MissionState, round: number)
  * back into it.
  */
 function deliverNotes(deps: LoopDeps, state: MissionState, round: number): void {
-  const notes = pendingNotes(state.notes, "global");
+  const notes = pendingNotes(state.notes);
   if (notes.length === 0) return;
 
   const base = { missionId: state.mission.id, actor: "orchestrator" as const };

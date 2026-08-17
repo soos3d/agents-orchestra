@@ -42,13 +42,6 @@ export interface Note {
   deliveredAt?: string;
 }
 
-export interface WorkerHandle {
-  taskId: string;
-  pid?: number;
-  startedAt: string;
-  lastHeartbeatAt: string;
-}
-
 export interface MissionState {
   mission: Mission;
   tasks: Task[];
@@ -57,12 +50,10 @@ export interface MissionState {
   /** Every progress ledger, in order. `isInLoop` is a question about the last few
    *  rounds, so keeping only the current one makes it unanswerable. */
   progressLedgers: { round: number; ledger: ProgressLedger }[];
-  verifications: Record<string, { passed: boolean; output: string }>;
   /** Granted leases by task id, cleared when the task reaches a terminal status (§8). */
   leases: Record<string, string[]>;
   inbox: InboxItem[];
   notes: Note[];
-  workers: Record<string, WorkerHandle>;
   /** Which question parked which task (§10). The association lives in state because
    *  the answer may arrive when no loop is running, and resume has to know what to
    *  lift. Keyed by task id; a task is parked by at most one question. */
@@ -399,8 +390,6 @@ const handlers: Handlers = {
     if (isTerminal(event.to)) {
       const { [taskId]: _released, ...rest } = state.leases;
       state.leases = rest;
-      const { [taskId]: _stopped, ...others } = state.workers;
-      state.workers = others;
     }
   },
   lease_granted: (state, event) => {
@@ -412,18 +401,10 @@ const handlers: Handlers = {
   // the event's own payload. Inert in state, and deliberately so — the working tree it
   // describes is not mission state, it is a directory a human now has to look at.
   repo_escaped: noop,
-  worker_started: (state, event) => {
-    const taskId = requireTaskId(event);
-    state.workers = {
-      ...state.workers,
-      [taskId]: { taskId, pid: event.pid, startedAt: event.at, lastHeartbeatAt: event.at },
-    };
-  },
-  worker_heartbeat: (state, event) => {
-    const taskId = requireTaskId(event);
-    const worker = state.workers[taskId];
-    if (worker) state.workers = { ...state.workers, [taskId]: { ...worker, lastHeartbeatAt: event.at } };
-  },
+  // The dispatch that started the worker already owns the handle it needs; a second copy
+  // in folded state was pruned on every terminal status and read by nobody, so the event
+  // stays as the audit record and the state does not carry it.
+  worker_started: noop,
   worker_report: (state, event) => {
     state.reports = [
       ...state.reports,
@@ -436,12 +417,10 @@ const handlers: Handlers = {
     if (!task) throw new LogCorruptionError(`artifact_written for unknown task '${taskId}'.`);
     patchTask(state, taskId, { artifacts: [...task.artifacts, event.artifact] });
   },
-  verification_run: (state, event) => {
-    state.verifications = {
-      ...state.verifications,
-      [requireTaskId(event)]: { passed: event.passed, output: event.output },
-    };
-  },
+  // The audit record of a check, and nothing reads it back: a criterion's verdict lives
+  // on `criterion_checked` and a task's on `task_status`. Accumulating it here kept a
+  // last-writer-wins map per task that no caller ever opened.
+  verification_run: noop,
   // A seat is one voice and the criterion's state is the panel's answer, so a seated
   // event is a record and not a patch (PLAN-NEXT 6.1). Applying it would leave `met`
   // reading whichever judge happened to answer last, which on a 2-1 split is the wrong
@@ -564,7 +543,6 @@ const handlers: Handlers = {
       extensions: event.extensions,
     };
   },
-  shutdown: noop,
   resumed: noop,
   panic: (state) => {
     state.panicked = true;
@@ -610,11 +588,9 @@ function seed(event: Extract<Event, { type: "mission_created" }>): MissionState 
     tasks: [],
     reports: [],
     progressLedgers: [],
-    verifications: {},
     leases: {},
     inbox: [],
     notes: [],
-    workers: {},
     blockedBy: {},
     panicked: false,
     paused: false,

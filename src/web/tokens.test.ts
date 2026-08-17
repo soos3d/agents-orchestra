@@ -12,7 +12,51 @@
 // could sit on, rather than only the pairs someone remembered to check.
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { contrastRatio, luminance, SURFACES, TEXT_COLOURS, tokens } from "./tokens.js";
+import { tokens, type TokenName } from "./tokens.js";
+
+/** Every surface a person reads text on. */
+const SURFACES = [
+  "abyss",
+  "deep",
+  "void",
+  "sink",
+  "panel",
+  "raise",
+  "attnBg",
+  "runBg",
+  "hover",
+] as const satisfies readonly TokenName[];
+
+/** Every colour used to draw text or a meaningful mark. `faint` is in here on purpose:
+ *  it sets criterion ids and the `check ▸ …` line, which are content, not chrome. */
+const TEXT_COLOURS = [
+  "core",
+  "ink",
+  "ink2",
+  "dim",
+  "faint",
+  "live",
+  "met",
+  "attn",
+  "fail",
+] as const satisfies readonly TokenName[];
+
+const channel = (value: number): number =>
+  value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+
+/** WCAG relative luminance. The threshold lives in the suite rather than in `src`: the
+ *  palette is what ships, and these two functions exist only to assert it. */
+function luminance(hex: string): number {
+  const int = Number.parseInt(hex.replace("#", ""), 16);
+  const [r, g, b] = [(int >> 16) & 255, (int >> 8) & 255, int & 255].map((v) => channel(v / 255));
+  return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!;
+}
+
+/** WCAG contrast ratio, 1 (identical) to 21 (black on white). */
+function contrastRatio(a: string, b: string): number {
+  const [light, dark] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (light! + 0.05) / (dark! + 0.05);
+}
 
 /** WCAG AA for body text. The page sets labels at 10–11px, which is smaller than the
  *  large-text exemption, so nothing here qualifies for the lower 3:1 bar. */

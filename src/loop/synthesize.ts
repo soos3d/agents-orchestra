@@ -75,7 +75,6 @@ export interface SynthesizeDeps {
    *  below runs on the answer either way. Absent is a mission that staffs from scratch,
    *  which is the behaviour every mission had before the roster existed. */
   roles?: readonly OfferedRole[];
-  now?: () => string;
 }
 
 /** Synthesis could not produce a runnable agent for a task. Every subclass names its
@@ -366,7 +365,7 @@ export async function synthesizeTasks(
 ): Promise<number> {
   const state = deps.store.state();
   const byId = new Map(state.tasks.map((task) => [task.id, task]));
-  const at = (deps.now ?? (() => new Date().toISOString()))();
+  const at = new Date().toISOString();
   let added = 0;
 
   const runtime = runtimeOffer(deps);
@@ -873,6 +872,5 @@ function shapeFor(
   spec: AgentSpec,
 ): Record<string, unknown> {
   if (worker === "code") return { branch: `orchestra/${id}-r${round}`, owns: spec.owns ?? [] };
-  if (worker === "computer") return { surface: "browser", allowedDomains: [] };
   return {};
 }

@@ -17,13 +17,7 @@ export interface FileMissionStore extends MissionStore {
   events(): readonly Event[];
 }
 
-export interface FileStoreOptions extends EventLogOptions {
-  /** Projections are derived and safe to delete, so writing them is a convenience for
-   *  anything reading the mission from outside — not a correctness requirement. */
-  projections?: boolean;
-}
-
-export function createFileStore(dir: string, options: FileStoreOptions = {}): FileMissionStore {
+export function createFileStore(dir: string, options: EventLogOptions = {}): FileMissionStore {
   const log = createEventLog(dir, options);
   let events: Event[] = log.read();
   let cached: MissionState | undefined;
@@ -42,7 +36,7 @@ export function createFileStore(dir: string, options: FileStoreOptions = {}): Fi
       // leave the in-memory state untouched rather than ahead of the file.
       events = [...events, log.append(input)];
       cached = undefined;
-      if (options.projections !== false) writeProjections(dir, refold());
+      writeProjections(dir, refold());
     },
   };
 }

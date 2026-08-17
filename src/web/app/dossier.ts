@@ -124,16 +124,6 @@ function leaseFacts(task: Task): readonly Fact[] {
       },
     ];
   }
-  if (task.worker === "computer") {
-    return [
-      { label: "surface", values: [task.surface] },
-      {
-        label: "domains",
-        values: task.allowedDomains.length > 0 ? task.allowedDomains : ["none allowed"],
-        mono: task.allowedDomains.length > 0,
-      },
-    ];
-  }
   // Everything else runs in no checkout and may not change the one it stands in
   // (defect 41), which is worth saying rather than leaving as an absence.
   return [{ label: "repo", values: ["no worktree — this task may not change the repo"] }];

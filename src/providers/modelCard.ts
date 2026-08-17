@@ -190,15 +190,35 @@ export function staffableCards(stateDir: string, onWarn?: (message: string) => v
  * what it costs in and out — and the id is the string that has to come back. An empty list
  * renders to the empty string so the prompt omits the section rather than describing a
  * menu with no rows (`rosterIndex`'s rule).
+ *
+ * `MODEL_CARD_INDEX_BUDGET` is applied here rather than asserted in a test, which is where
+ * the roster's ceiling lives: the shipped roster is a fixed list a test can measure once,
+ * but `localProvidersDir` is the operator's own directory and grows on their machine after
+ * this build was reviewed. A ceiling nothing enforces is a ceiling that reads as enforced.
+ *
+ * The overflow is named rather than dropped silently — a menu that quietly loses its last
+ * rows is a model choosing from a list it was told was complete, and the count is what
+ * tells a human to prune the directory.
  */
 export function modelCardIndex(cards: readonly ModelCard[]): string {
-  return cards
-    .map(
-      (card) =>
-        `- ${card.id} (${card.tier}, ${card.contextK}k context, ` +
-        `$${card.costInPer1M}/$${card.costOutPer1M} per 1M in/out) via ${card.provider}`,
-    )
-    .join("\n");
+  const lines = cards.map(
+    (card) =>
+      `- ${card.id} (${card.tier}, ${card.contextK}k context, ` +
+      `$${card.costInPer1M}/$${card.costOutPer1M} per 1M in/out) via ${card.provider}`,
+  );
+
+  const kept: string[] = [];
+  let used = 0;
+  for (const line of lines) {
+    const cost = used === 0 ? line.length : line.length + 1;
+    if (used + cost > MODEL_CARD_INDEX_BUDGET) break;
+    kept.push(line);
+    used += cost;
+  }
+
+  const dropped = lines.length - kept.length;
+  if (dropped === 0) return kept.join("\n");
+  return [...kept, `- (${dropped} further card${dropped === 1 ? "" : "s"} omitted for length)`].join("\n");
 }
 
 /**

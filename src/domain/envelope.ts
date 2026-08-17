@@ -1,7 +1,7 @@
 // The capability envelope: the ceiling on what a synthesized agent may do (§7).
 //
 // This is the security boundary of the whole system. A model authors agents and
-// requests their tools, so the ceiling cannot live in a prompt — `contains()` runs
+// requests their tools, so the ceiling cannot live in a prompt — `violations()` runs
 // at synthesis time and a request outside the envelope fails validation rather
 // than being silently granted or silently dropped.
 import path from "node:path";
@@ -127,10 +127,6 @@ export function violations(
       ? [{ field: "containment" as const, requested: "none" }]
       : []),
   ];
-}
-
-export function contains(envelope: Envelope, request: CapabilityRequest): boolean {
-  return violations(envelope, request).length === 0;
 }
 
 export function describeViolations(found: readonly EnvelopeViolation[]): string {

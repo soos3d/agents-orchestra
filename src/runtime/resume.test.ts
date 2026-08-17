@@ -16,8 +16,6 @@ const aComputerTask = (patch: Partial<Task> = {}): Task =>
     ...aCodeTask(),
     id: "t9",
     worker: "computer",
-    surface: "browser",
-    allowedDomains: ["xero.com"],
     branch: undefined,
     owns: undefined,
     ...patch,

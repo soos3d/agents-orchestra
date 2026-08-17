@@ -66,6 +66,30 @@ export function ensurePrivateDir(dir: string): string {
 }
 
 /**
+ * Write a file the way every write in this system writes: to a sibling temp file, then
+ * `renameSync` over the target. Rename is atomic within a filesystem, so an interrupted
+ * run leaves the previous contents intact rather than a truncated file that the next
+ * read will parse as corrupt.
+ *
+ * The mode is asserted with an explicit `chmod` after the write because `writeFileSync`'s
+ * `mode` is masked by umask — a 0022 umask alone would leave a mission's financial
+ * records world-readable. The temp file is removed on failure so a crashed write does not
+ * leave `${file}.<pid>.tmp` beside the real one forever, and the original error is
+ * rethrown untouched: callers that want a path in the message wrap this and say so.
+ */
+export function writeFileAtomic(file: string, contents: string): void {
+  const tmp = `${file}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(tmp, contents, { mode: FILE_MODE });
+    fs.chmodSync(tmp, FILE_MODE);
+    fs.renameSync(tmp, file);
+  } catch (error) {
+    fs.rmSync(tmp, { force: true });
+    throw error;
+  }
+}
+
+/**
  * The architect's design note, in the mission's artifact directory (PLAN-NEXT 5.1).
  *
  * Best-effort, and that is deliberate: it returns the path it wrote and `undefined` when

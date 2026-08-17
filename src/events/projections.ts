@@ -3,25 +3,20 @@
 // identical state is the only real proof that no field changes without an event.
 import fs from "node:fs";
 import path from "node:path";
+import { DIR_MODE, writeFileAtomic } from "../config/hygiene.js";
 import { type Event } from "./schema.js";
 import { fold, type MissionState } from "./fold.js";
-
-const DIR_MODE = 0o700;
-const FILE_MODE = 0o600;
 
 export const MISSION_FILE = "mission.json";
 export const TASKS_FILE = "tasks.json";
 
-// Write to a sibling temp file and rename over the target: rename is atomic, so an
-// interrupted run leaves the previous projection intact rather than a truncated file.
+// The atomic write with the message this caller wants on it: a projection is derived and
+// safe to delete, so the failure a human needs named is which one could not be written.
 function writeJsonAtomic(file: string, value: unknown): void {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: DIR_MODE });
-  const tmp = `${file}.${process.pid}.tmp`;
   try {
-    fs.writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, { mode: FILE_MODE });
-    fs.renameSync(tmp, file);
+    writeFileAtomic(file, `${JSON.stringify(value, null, 2)}\n`);
   } catch (err) {
-    fs.rmSync(tmp, { force: true });
     throw new Error(`Cannot write projection ${file}: ${(err as Error).message}`, { cause: err });
   }
 }

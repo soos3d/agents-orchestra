@@ -246,18 +246,24 @@ export function staffingOffer(
   };
 }
 
-/** The transport ids a mission may staff with, given the harness the human pinned.
- *  Absent narrows nothing — every transport the machine offers stays available. */
-export function allowedTransports(offered: readonly Harness[], harness?: string): string[] {
+/** One half of a harness row, narrowed by the harness the human pinned. Absent narrows
+ *  nothing — every row the machine offers stays available.
+ *
+ *  Written once rather than twice because the two halves of a harness are one choice
+ *  (`harness.ts`'s whole argument): two copies of this filter is two chances for a pin to
+ *  narrow the transports and not the targets, which offers a pair that was never a row. */
+function allowedHalf(offered: readonly Harness[], half: (entry: Harness) => string, harness?: string): string[] {
   const kept = harness === undefined ? offered : offered.filter((entry) => entry.id === harness);
-  return [...new Set(kept.map((entry) => entry.transport))];
+  return [...new Set(kept.map(half))];
 }
+
+/** The transport ids a mission may staff with, given the harness the human pinned. */
+export const allowedTransports = (offered: readonly Harness[], harness?: string): string[] =>
+  allowedHalf(offered, (entry) => entry.transport, harness);
 
 /** The same for targets, and the reason this exists at all: `SYNTHESIZE_PROMPT` used to
  *  name "claude or codex" in prose, so a machine with only `codex` installed still
  *  invited a spec targeting `claude` — defect 21's shape, one field along from the
  *  transport that had already been fixed. */
-export function allowedTargets(offered: readonly Harness[], harness?: string): string[] {
-  const kept = harness === undefined ? offered : offered.filter((entry) => entry.id === harness);
-  return [...new Set(kept.map((entry) => entry.target))];
-}
+export const allowedTargets = (offered: readonly Harness[], harness?: string): string[] =>
+  allowedHalf(offered, (entry) => entry.target, harness);

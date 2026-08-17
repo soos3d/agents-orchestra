@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { after, before, describe, test } from "node:test";
 import { createMergeQueue } from "./mergeQueue.js";
-import { currentBranch, git, isClean, resolveSha } from "./repo.js";
+import { currentBranch, git, resolveSha } from "./repo.js";
 import { createWorktree, removeWorktree } from "./worktree.js";
 import { makeRepo, type TestRepo } from "../testing/gitRepo.js";
 
@@ -78,7 +78,7 @@ describe("createMergeQueue", () => {
 
     assert.equal(first.status, "merged");
     assert.equal(second.status, "base_moved");
-    assert.equal(await isClean(repo.path), true);
+    assert.equal(await git(repo.path, ["status", "--porcelain"]), "");
     await removeWorktree(repo.path, a.worktree.path);
     await removeWorktree(repo.path, b.worktree.path);
   });
@@ -157,7 +157,7 @@ describe("createMergeQueue", () => {
         expectedBaseSha: await repo.head(),
       });
 
-      assert.equal(await isClean(repo.path), true);
+      assert.equal(await git(repo.path, ["status", "--porcelain"]), "");
       await removeWorktree(repo.path, worktree.path);
     });
 

@@ -7,7 +7,7 @@
 // Two rules are enforced here rather than left to habit. `--unattended` needs an
 // explicit `--force` (§17: it must never become the habitual default), and a rejected
 // criterion exits non-zero so a pipeline notices.
-import path from "node:path";
+import { parseArgs } from "node:util";
 import { spendPhase, type Budget, type Spend } from "../domain/budget.js";
 import { type Envelope } from "../domain/envelope.js";
 import { type Criterion, type PlannedTask } from "../domain/ledger.js";
@@ -146,136 +146,159 @@ export function parseStaff(value: string): { ok: true; staffing: MissionStaffing
   return { ok: true, staffing: staffing as MissionStaffing };
 }
 
-/** The three flags that take a value and mean one thing each, parsed in one place so
- *  the terminal and the browser reach the same validation. Kept beside the parser
- *  rather than inline, because each needs the same "a flag takes a value" refusal. */
-type RuntimeField = "harness" | "workerModel" | "orchestratorModel";
+/** The shape `node:util`'s `parseArgs` is given: the flags this command has, and
+ *  nothing about what they mean. Tokenising is the part that was hand-rolled and is not
+ *  worth owning — repeatable flags, `--flag=value`, "a flag takes a value" and "that
+ *  flag does not exist" are all the platform's, and every refusal below is about a
+ *  *value*, which is the half no library can decide. */
+const RUN_FLAGS = {
+  "plan-only": { type: "boolean" },
+  quick: { type: "boolean" },
+  unattended: { type: "boolean" },
+  force: { type: "boolean" },
+  "no-web": { type: "boolean" },
+  staff: { type: "string" },
+  harness: { type: "string" },
+  "worker-model": { type: "string" },
+  "orchestrator-model": { type: "string" },
+  scan: { type: "string", multiple: true },
+  env: { type: "string", multiple: true },
+  saved: { type: "string" },
+  budget: { type: "string" },
+} as const;
 
-const RUNTIME_FLAGS: Readonly<Record<string, { field: RuntimeField; example: string }>> = {
-  "--harness": { field: "harness", example: "--harness acp/claude" },
-  "--worker-model": { field: "workerModel", example: "--worker-model haiku" },
-  "--orchestrator-model": { field: "orchestratorModel", example: "--orchestrator-model sonnet" },
+/** The message a flag given no value gets, byte for byte what the hand-rolled loop
+ *  said — §2a rule 5: the refusal shows what to type instead. Kept as a table because
+ *  `parseArgs` throws one error for all of them and names the flag in its message. */
+const VALUE_FLAG_REFUSALS: Readonly<Record<string, string>> = {
+  "--staff": "--staff takes pairs, e.g. --staff research=<card>,plan=<card>.",
+  "--harness": "--harness takes a value, e.g. --harness acp/claude.",
+  "--worker-model": "--worker-model takes a value, e.g. --worker-model haiku.",
+  "--orchestrator-model":
+    "--orchestrator-model takes a value, e.g. --orchestrator-model sonnet.",
+  "--scan": `--scan takes a scanner name, e.g. --scan ${SCANNERS[0]}.`,
+  "--env": "--env takes a variable name, e.g. --env STRIPE_KEY.",
+  "--saved": "--saved takes a name, e.g. --saved monthly-reconcile.",
+  "--budget": "--budget takes a number of minutes, e.g. --budget 90.",
 };
+
+/** `parseArgs` refuses an unknown flag and a valueless one by throwing; both are
+ *  refusals a person hits at the terminal, so they are translated back into this
+ *  command's own wording rather than surfaced as a Node error with advice about `--`. */
+function refusalFor(error: unknown): string {
+  const { code, message } = error as { code?: string; message?: string };
+  const flag = /'(--?[^'\s]*)/.exec(message ?? "")?.[1] ?? "";
+  if (code === "ERR_PARSE_ARGS_UNKNOWN_OPTION") return `Unknown flag '${flag}'.`;
+  const refusal = VALUE_FLAG_REFUSALS[flag];
+  if (refusal) return refusal;
+  return `${flag} takes no value — drop the '=' and everything after it.`;
+}
 
 export type ParsedRun = { ok: true; options: RunOptions } | { ok: false; message: string };
 
 export function parseRunArgs(argv: readonly string[]): ParsedRun {
-  const goals: string[] = [];
-  const flags = new Set<string>();
-  let budgetMinutes = DEFAULT_BUDGET_MINUTES;
-  let saved: string | undefined;
-  let staffing: MissionStaffing = {};
-  const scanners: string[] = [];
-  const env: string[] = [];
-  const runtime: Record<string, string> = {};
-
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i]!;
-    if (arg === "--staff") {
-      const value = argv[++i];
-      if (!value || value.startsWith("--")) {
-        return { ok: false, message: "--staff takes pairs, e.g. --staff research=<card>,plan=<card>." };
-      }
-      const parsed = parseStaff(value);
-      if (!parsed.ok) return parsed;
-      staffing = parsed.staffing;
-      continue;
-    }
-    const runtimeFlag = RUNTIME_FLAGS[arg];
-    if (runtimeFlag) {
-      const value = argv[++i];
-      if (!value || value.startsWith("--")) {
-        return { ok: false, message: `${arg} takes a value, e.g. ${runtimeFlag.example}.` };
-      }
-      runtime[runtimeFlag.field] = value;
-      continue;
-    }
-    if (arg === "--scan") {
-      const value = argv[++i];
-      if (!value || value.startsWith("--")) {
-        return {
-          ok: false,
-          message: `--scan takes a scanner name, e.g. --scan ${SCANNERS[0]}.`,
-        };
-      }
-      // Checked against the names that exist rather than against what is installed: this
-      // is a typo check, and whether the binary answers is `orchestra doctor`'s question
-      // and `writeOutcomeSpec`'s refusal. Granting a scanner on a machine that cannot run
-      // it fails the criterion with a message naming the fix, which is better than a flag
-      // that reads as accepted on one machine and rejected on another.
-      if (!SCANNERS.includes(value as (typeof SCANNERS)[number])) {
-        return {
-          ok: false,
-          message: `--scan does not know '${value}'. Known scanners: ${SCANNERS.join(", ")}.`,
-        };
-      }
-      scanners.push(value);
-      continue;
-    }
-    if (arg === "--env") {
-      const value = argv[++i];
-      if (!value || value.startsWith("--")) {
-        return { ok: false, message: "--env takes a variable name, e.g. --env STRIPE_KEY." };
-      }
-      // The one refusal that matters: a human who types `--env STRIPE_KEY=sk_live_…` has
-      // put a live key on the command line, and accepting it would grant a variable
-      // literally named `STRIPE_KEY=sk_live_…` — nothing, granted, with the key now in
-      // the shell history and in `mission_created`. Refused with the rule named.
-      // A pasted *value* is the other half of the same slip and the more dangerous one:
-      // `--env sk_live_…` has no `=`, so it would be accepted as a variable name, written
-      // into `mission_created.capabilityEnvelope.env` and onto the sign-off screen — and
-      // `grantedSecrets` would find no variable by that name, so nothing could ever scrub
-      // it. A POSIX name is what an environment variable is; anything else is refused,
-      // truncated in the message.
-      if (!value.includes("=") && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
-        return {
-          ok: false,
-          message:
-            `--env takes a variable name like STRIPE_KEY. '${value.slice(0, 8)}…' is not ` +
-            `one — if that is the key itself, export it in your shell and pass the name.`,
-        };
-      }
-      if (value.includes("=")) {
-        // Truncated to the same 8 characters as the branch above, and not to the `=`.
-        // A base64 credential ends in `=`, so `indexOf("=")` is its last character and
-        // the untruncated message would print the whole key to stderr — twice — in the
-        // one error whose entire purpose is that the key was typed where it should not
-        // have been.
-        const head = value.slice(0, Math.min(8, value.indexOf("=")));
-        return {
-          ok: false,
-          message:
-            `--env takes a name, never a value. Got '${head}…=…'. ` +
-            `Export the variable in your shell and pass just the name: --env ${head}….`,
-        };
-      }
-      env.push(value);
-      continue;
-    }
-    if (arg === "--saved") {
-      const name = argv[++i];
-      if (!name || name.startsWith("--")) {
-        return { ok: false, message: "--saved takes a name, e.g. --saved monthly-reconcile." };
-      }
-      saved = name;
-      continue;
-    }
-    if (arg === "--budget") {
-      const minutes = Number(argv[++i]);
-      if (!Number.isFinite(minutes) || minutes <= 0) {
-        return { ok: false, message: "--budget takes a number of minutes, e.g. --budget 90." };
-      }
-      budgetMinutes = minutes;
-      continue;
-    }
-    if (arg.startsWith("--")) {
-      flags.add(arg);
-      continue;
-    }
-    goals.push(arg);
+  let values: Partial<{
+    "plan-only": boolean;
+    quick: boolean;
+    unattended: boolean;
+    force: boolean;
+    "no-web": boolean;
+    staff: string;
+    harness: string;
+    "worker-model": string;
+    "orchestrator-model": string;
+    scan: string[];
+    env: string[];
+    saved: string;
+    budget: string;
+  }>;
+  let positionals: string[];
+  try {
+    ({ values, positionals } = parseArgs({
+      args: [...argv],
+      options: RUN_FLAGS,
+      allowPositionals: true,
+    }));
+  } catch (error) {
+    return { ok: false, message: refusalFor(error) };
   }
 
-  const goal = goals.join(" ").trim();
+  let staffing: MissionStaffing = {};
+  if (values.staff !== undefined) {
+    if (values.staff.trim() === "") return { ok: false, message: VALUE_FLAG_REFUSALS["--staff"]! };
+    const parsed = parseStaff(values.staff);
+    if (!parsed.ok) return parsed;
+    staffing = parsed.staffing;
+  }
+
+  const runtime: Record<string, string> = {
+    ...(values.harness === undefined ? {} : { harness: values.harness }),
+    ...(values["worker-model"] === undefined ? {} : { workerModel: values["worker-model"] }),
+    ...(values["orchestrator-model"] === undefined
+      ? {}
+      : { orchestratorModel: values["orchestrator-model"] }),
+  };
+
+  const scanners = values.scan ?? [];
+  // Checked against the names that exist rather than against what is installed: this
+  // is a typo check, and whether the binary answers is `orchestra doctor`'s question
+  // and `writeOutcomeSpec`'s refusal. Granting a scanner on a machine that cannot run
+  // it fails the criterion with a message naming the fix, which is better than a flag
+  // that reads as accepted on one machine and rejected on another.
+  const unknownScanner = scanners.find(
+    (value) => !SCANNERS.includes(value as (typeof SCANNERS)[number]),
+  );
+  if (unknownScanner !== undefined) {
+    return {
+      ok: false,
+      message: `--scan does not know '${unknownScanner}'. Known scanners: ${SCANNERS.join(", ")}.`,
+    };
+  }
+
+  const env = values.env ?? [];
+  for (const value of env) {
+    // The one refusal that matters: a human who types `--env STRIPE_KEY=sk_live_…` has
+    // put a live key on the command line, and accepting it would grant a variable
+    // literally named `STRIPE_KEY=sk_live_…` — nothing, granted, with the key now in
+    // the shell history and in `mission_created`. Refused with the rule named.
+    // A pasted *value* is the other half of the same slip and the more dangerous one:
+    // `--env sk_live_…` has no `=`, so it would be accepted as a variable name, written
+    // into `mission_created.capabilityEnvelope.env` and onto the sign-off screen — and
+    // `grantedSecrets` would find no variable by that name, so nothing could ever scrub
+    // it. A POSIX name is what an environment variable is; anything else is refused,
+    // truncated in the message.
+    if (!value.includes("=") && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
+      return {
+        ok: false,
+        message:
+          `--env takes a variable name like STRIPE_KEY. '${value.slice(0, 8)}…' is not ` +
+          `one — if that is the key itself, export it in your shell and pass the name.`,
+      };
+    }
+    if (value.includes("=")) {
+      // Truncated to the same 8 characters as the branch above, and not to the `=`.
+      // A base64 credential ends in `=`, so `indexOf("=")` is its last character and
+      // the untruncated message would print the whole key to stderr — twice — in the
+      // one error whose entire purpose is that the key was typed where it should not
+      // have been.
+      const head = value.slice(0, Math.min(8, value.indexOf("=")));
+      return {
+        ok: false,
+        message:
+          `--env takes a name, never a value. Got '${head}…=…'. ` +
+          `Export the variable in your shell and pass just the name: --env ${head}….`,
+      };
+    }
+  }
+
+  const saved = values.saved;
+  const minutes = values.budget === undefined ? DEFAULT_BUDGET_MINUTES : Number(values.budget);
+  if (!Number.isFinite(minutes) || minutes <= 0) {
+    return { ok: false, message: VALUE_FLAG_REFUSALS["--budget"]! };
+  }
+  const budgetMinutes = minutes;
+
+  const goal = positionals.join(" ").trim();
   // A saved mission carries its own goal, so the positional one becomes an override
   // rather than a requirement.
   if (!goal && saved === undefined) {
@@ -286,16 +309,11 @@ export function parseRunArgs(argv: readonly string[]): ParsedRun {
     };
   }
 
-  const unknown = [...flags].find(
-    (flag) => !["--plan-only", "--quick", "--unattended", "--force", "--no-web"].includes(flag),
-  );
-  if (unknown) return { ok: false, message: `Unknown flag '${unknown}'.` };
-
   // A quick mission's outcome spec is written by `research`, never by the architect, and
   // `research` is never offered a scanner — a mission a human called small is the one not
   // to spend a per-file security scan on. Accepting both would hand back a grant no call
   // is ever told about, which is a flag that reads as honoured and does nothing.
-  if (flags.has("--quick") && scanners.length > 0) {
+  if (values.quick === true && scanners.length > 0) {
     return {
       ok: false,
       message:
@@ -305,12 +323,12 @@ export function parseRunArgs(argv: readonly string[]): ParsedRun {
     };
   }
 
-  const unattended = flags.has("--unattended");
+  const unattended = values.unattended === true;
   // §7 couples the two deliberately: the easy path to skipping sign-off is a mission
   // whose criteria a human already approved and has not edited since. `--force` is
   // still offered, because a first run of something you trust is a real case — it is
   // just the one you have to type out.
-  if (unattended && saved === undefined && !flags.has("--force")) {
+  if (unattended && saved === undefined && values.force !== true) {
     return {
       ok: false,
       message:
@@ -323,11 +341,11 @@ export function parseRunArgs(argv: readonly string[]): ParsedRun {
     ok: true,
     options: {
       goal,
-      planOnly: flags.has("--plan-only"),
-      quick: flags.has("--quick"),
+      planOnly: values["plan-only"] === true,
+      quick: values.quick === true,
       unattended,
-      force: flags.has("--force"),
-      web: !flags.has("--no-web"),
+      force: values.force === true,
+      web: values["no-web"] !== true,
       budgetMinutes,
       runtime,
       staffing,
@@ -414,13 +432,15 @@ export interface RunDeps {
     /** Which decision points this mission staffed to a model card (PLAN-NEXT 4.2).
      *  Absent, or absent for a given call, is the Agent SDK exactly as before. */
     staffing?: MissionStaffing,
+    /** The panic signal, so a call in flight is aborted rather than paid for after
+     *  a human has already pulled the cord. */
+    signal?: AbortSignal,
   ): Calls;
   /** Injected so a run is testable without a tty. Absent under `--unattended`, and
    *  absent means nobody is there. */
   human?: HumanPort;
   /** Present when `orchestra serve` composed this mission. */
   surface?: RunSurface;
-  now?: () => Date;
 }
 
 export async function runMission(
@@ -429,8 +449,6 @@ export async function runMission(
   io: Io,
   deps: RunDeps,
 ): Promise<number> {
-  const now = deps.now ?? (() => new Date());
-
   // Loaded before anything is written, so a name nobody saved costs a message rather
   // than a mission directory holding one event (§7).
   let saved: SavedMission | undefined;
@@ -444,7 +462,7 @@ export async function runMission(
   }
 
   const goal = options.goal || saved?.goal || "";
-  const missionId = newMissionId(goal, now());
+  const missionId = newMissionId(goal, new Date());
   const dir = missionDir(config.stateDir, missionId);
   const budget: Budget = { wallMs: options.budgetMinutes * 60_000 };
 
@@ -500,6 +518,7 @@ export async function runMission(
         ...(ranOn ? { model: ranOn } : {}),
       }),
     options.staffing,
+    panic.signal,
   );
 
   wired.emit({
@@ -610,7 +629,7 @@ export async function runMission(
       // dependency nothing passes is a feature that is finished and switched off at
       // the same time (defects 12b, 23, 24). An absent lore directory is empty
       // memory, which is what the first mission in a repo has.
-      recall: () => readLore(loreDir(config.stateDir), now(), (message) => io.err(message)),
+      recall: () => readLore(loreDir(config.stateDir), new Date(), (message) => io.err(message)),
       // Procedural memory (§6, §7), bound here for the same reason `recall` is — and
       // at *this* root as well as `executeMission`'s, because `run` staffs its
       // approved plan inside `prepareMission` and `resume` staffs it afterwards. One
@@ -832,6 +851,3 @@ function printPlan(
     io.out(line);
   }
 }
-
-export const missionPath = (config: DiscoveredConfig, missionId: string): string =>
-  path.join(config.stateDir, "missions", missionId);

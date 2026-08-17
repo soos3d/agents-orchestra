@@ -3,7 +3,7 @@
 // request should still be refused.
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { contains, describeViolations, envelopeSchema, violations } from "./envelope.js";
+import { describeViolations, envelopeSchema, violations } from "./envelope.js";
 import { anEnvelope } from "../testing/fixtures.js";
 
 const envelope = anEnvelope({
@@ -17,11 +17,11 @@ const envelope = anEnvelope({
 describe("envelope", () => {
   test("admits a request drawn entirely from the envelope", () => {
     assert.equal(
-      contains(envelope, {
+      violations(envelope, {
         toolClasses: ["fs.read"],
         domains: ["xero.com"],
         fsPaths: ["/repo/src/routes/health.ts"],
-      }),
+      }).length === 0,
       true,
     );
   });
@@ -33,31 +33,31 @@ describe("envelope", () => {
   });
 
   test("refuses a host that is not on the allowlist", () => {
-    assert.equal(contains(envelope, { domains: ["evil.example"] }), false);
+    assert.equal(violations(envelope, { domains: ["evil.example"] }).length === 0, false);
   });
 
   // An allowlist that accepts patterns eventually contains one too broad to mean
   // anything, approved by a human who read it as specific.
   test("refuses a wildcard even when it would match an allowed host", () => {
-    assert.equal(contains(envelope, { domains: ["*.xero.com"] }), false);
-    assert.equal(contains(envelope, { domains: ["*"] }), false);
+    assert.equal(violations(envelope, { domains: ["*.xero.com"] }).length === 0, false);
+    assert.equal(violations(envelope, { domains: ["*"] }).length === 0, false);
   });
 
   test("refuses a path outside the granted roots", () => {
-    assert.equal(contains(envelope, { fsPaths: ["/etc/passwd"] }), false);
+    assert.equal(violations(envelope, { fsPaths: ["/etc/passwd"] }).length === 0, false);
   });
 
   // The classic prefix bug: /repo/srcret is not inside /repo/src.
   test("does not treat a sibling with a shared prefix as inside a root", () => {
-    assert.equal(contains(envelope, { fsPaths: ["/repo/srcret/keys.json"] }), false);
+    assert.equal(violations(envelope, { fsPaths: ["/repo/srcret/keys.json"] }).length === 0, false);
   });
 
   test("refuses a path that escapes a root by traversal", () => {
-    assert.equal(contains(envelope, { fsPaths: ["/repo/src/../../etc/passwd"] }), false);
+    assert.equal(violations(envelope, { fsPaths: ["/repo/src/../../etc/passwd"] }).length === 0, false);
   });
 
   test("admits an environment variable the envelope names", () => {
-    assert.equal(contains(envelope, { env: ["XERO_TOKEN"] }), true);
+    assert.equal(violations(envelope, { env: ["XERO_TOKEN"] }).length === 0, true);
   });
 
   // The actual leak shape (defect 42): the variable is sitting in `process.env` and
@@ -69,7 +69,7 @@ describe("envelope", () => {
   });
 
   test("an envelope granting no variables refuses every one of them", () => {
-    assert.equal(contains(anEnvelope({ env: [] }), { env: ["HOME"] }), false);
+    assert.equal(violations(anEnvelope({ env: [] }), { env: ["HOME"] }).length === 0, false);
   });
 
   // Every `mission_created` written before the field existed embeds an envelope
@@ -96,16 +96,16 @@ describe("envelope", () => {
   test("refuses a spec that asks to run outside a mission's container", () => {
     const contained = anEnvelope({ containment: "container" });
 
-    assert.equal(contains(contained, { containment: "none" }), false);
-    assert.equal(contains(contained, { containment: "container" }), true);
+    assert.equal(violations(contained, { containment: "none" }).length === 0, false);
+    assert.equal(violations(contained, { containment: "container" }).length === 0, true);
     // Absent is not a request: almost every spec omits the field and inherits.
-    assert.equal(contains(contained, {}), true);
+    assert.equal(violations(contained, {}).length === 0, true);
   });
 
   test("a mission that contains nothing is not widened by a spec that says so", () => {
     // The reverse direction is not a violation — there is nothing to be let out of, and
     // the runtime is the envelope's to decide either way.
-    assert.equal(contains(anEnvelope({ containment: "none" }), { containment: "container" }), true);
+    assert.equal(violations(anEnvelope({ containment: "none" }), { containment: "container" }).length === 0, true);
   });
 
   test("an envelope written before containment existed folds as uncontained", () => {
@@ -124,7 +124,7 @@ describe("envelope", () => {
   });
 
   test("refuses network access when the envelope grants none", () => {
-    assert.equal(contains(anEnvelope({ network: "none" }), { network: "allowlist" }), false);
+    assert.equal(violations(anEnvelope({ network: "none" }), { network: "allowlist" }).length === 0, false);
   });
 
   // The question that reaches the human should name the whole gap, not one item at

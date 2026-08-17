@@ -68,7 +68,6 @@ import {
   sessionSetModelRequest,
   writeTextFileResponse,
   type AcpFrame,
-  type ClientInfo,
   type JsonRpcErrorResponse,
   type JsonRpcRequest,
   type PermissionOption,
@@ -111,13 +110,10 @@ export interface AcpTransportDeps {
    *  able to put a fake secret in a fake parent environment and assert it does not
    *  reach the child. */
   parentEnv?: NodeJS.ProcessEnv;
-  clientInfo?: ClientInfo;
   /** Run the agent inside a disposable container (PLAN-NEXT 3.2). Absent is every
    *  mission whose envelope did not ask for one, which is every mission today. */
   contained?: Containment;
 }
-
-const DEFAULT_CLIENT_INFO: ClientInfo = { name: "orchestra", version: "0.1.0" };
 
 /**
  * Everything the adapter's process will be able to see (defect 42).
@@ -155,7 +151,6 @@ export function acpChildEnv(
 export function createAcpTransport(deps: AcpTransportDeps): WorkerTransport {
   const resolveAgent = deps.resolveAgent ?? acpAgentCommand;
   const onWarn = deps.onWarn ?? ((): void => undefined);
-  const clientInfo = deps.clientInfo ?? DEFAULT_CLIENT_INFO;
 
   return async ({ task, cwd, artifactDir, designNote, signal }): Promise<WorkerRun> => {
     const { transport } = task.agentSpec;
@@ -214,7 +209,6 @@ export function createAcpTransport(deps: AcpTransportDeps): WorkerTransport {
         ...(artifactDir ? { artifactDir } : {}),
         ...(designNote ? { designNote } : {}),
         honoursModel: launch.honoursModel === true,
-        clientInfo,
         onWarn,
         requestPermission: deps.requestPermission,
       });
@@ -243,7 +237,6 @@ interface SessionInput {
   readonly designNote?: string;
   /** Whether this target's registry row says `AgentSpec.model` reaches it. */
   readonly honoursModel: boolean;
-  readonly clientInfo: ClientInfo;
   readonly onWarn: (message: string) => void;
   readonly requestPermission: AcpTransportDeps["requestPermission"];
 }
@@ -272,7 +265,7 @@ interface SessionOutcome {
 async function runSession(input: SessionInput): Promise<SessionOutcome> {
   const client = createClient(input);
 
-  parseInitializeResult(await client.request((id) => initializeRequest(id, input.clientInfo)));
+  parseInitializeResult(await client.request((id) => initializeRequest(id)));
   const opened = parseSessionNewResult(await client.request((id) => sessionNewRequest(id, input.cwd)));
 
   // Only where the registry says the model reaches this agent. Sending it to one that
@@ -553,7 +546,7 @@ async function answerRequest(
 
   // Answered rather than ignored: an unanswered request hangs the turn until the session
   // timeout, and the log then shows a slow agent rather than a missing capability.
-  ctx.send(withId(methodNotFoundResponse(0, method), id));
+  ctx.send(methodNotFoundResponse(id, method));
   return undefined;
 }
 
@@ -568,48 +561,48 @@ async function answerPermission(id: number | string, params: unknown, ctx: Frame
       ? true
       : await ctx.requestPermission(ctx.task.id, request);
 
-  ctx.send(withId(permissionResponse(0, pickPermissionOption(parsed.options, allowed)), id));
+  ctx.send(permissionResponse(id, pickPermissionOption(parsed.options, allowed)));
 }
 
 function answerWrite(id: number | string, params: unknown, ctx: FrameContext): void {
   const parsed = fsWriteTextFileParamsSchema.safeParse(params);
   if (!parsed.success) {
-    ctx.send(withId(invalidParams(0, "fs/write_text_file needs a string `path` and a string `content`."), id));
+    ctx.send(invalidParams(id, "fs/write_text_file needs a string `path` and a string `content`."));
     return;
   }
 
   const target = containedPath(ctx.cwd, parsed.data.path);
   if (!target) {
-    ctx.send(withId(invalidParams(0, outsideCwd(parsed.data.path, ctx.cwd)), id));
+    ctx.send(invalidParams(id, outsideCwd(parsed.data.path, ctx.cwd)));
     return;
   }
 
   try {
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, parsed.data.content);
-    ctx.send(withId(writeTextFileResponse(0), id));
+    ctx.send(writeTextFileResponse(id));
   } catch (error) {
-    ctx.send(withId(ioError(0, `Could not write ${target}: ${(error as Error).message}`), id));
+    ctx.send(ioError(id, `Could not write ${target}: ${(error as Error).message}`));
   }
 }
 
 function answerRead(id: number | string, params: unknown, ctx: FrameContext): void {
   const parsed = fsReadTextFileParamsSchema.safeParse(params);
   if (!parsed.success) {
-    ctx.send(withId(invalidParams(0, "fs/read_text_file needs a string `path`."), id));
+    ctx.send(invalidParams(id, "fs/read_text_file needs a string `path`."));
     return;
   }
 
   const target = containedPath(ctx.cwd, parsed.data.path);
   if (!target) {
-    ctx.send(withId(invalidParams(0, outsideCwd(parsed.data.path, ctx.cwd)), id));
+    ctx.send(invalidParams(id, outsideCwd(parsed.data.path, ctx.cwd)));
     return;
   }
 
   try {
-    ctx.send(withId(readTextFileResponse(0, slice(fs.readFileSync(target, "utf8"), parsed.data)), id));
+    ctx.send(readTextFileResponse(id, slice(fs.readFileSync(target, "utf8"), parsed.data)));
   } catch (error) {
-    ctx.send(withId(ioError(0, `Could not read ${target}: ${(error as Error).message}`), id));
+    ctx.send(ioError(id, `Could not read ${target}: ${(error as Error).message}`));
   }
 }
 
@@ -736,28 +729,17 @@ function outsideCwd(requested: string, cwd: string): string {
 const INVALID_PARAMS = -32602;
 const IO_ERROR = -32000;
 
-const invalidParams = (id: number, message: string): JsonRpcErrorResponse => ({
+const invalidParams = (id: number | string, message: string): JsonRpcErrorResponse => ({
   jsonrpc: "2.0",
   id,
   error: { code: INVALID_PARAMS, message },
 });
 
-const ioError = (id: number, message: string): JsonRpcErrorResponse => ({
+const ioError = (id: number | string, message: string): JsonRpcErrorResponse => ({
   jsonrpc: "2.0",
   id,
   error: { code: IO_ERROR, message },
 });
-
-/**
- * Echo back the id that arrived.
- *
- * JSON-RPC permits a string id and `protocol.ts`'s builders type it `number`, because
- * every captured frame uses one. Coercing a string id would answer a request nobody made,
- * so it is carried through as it arrived and the cast is confined to this one function.
- */
-function withId<T extends { id: number }>(frame: T, id: number | string): T {
-  return { ...frame, id } as unknown as T;
-}
 
 function exitError(task: Task, exit: DuplexExit): AcpSessionError {
   const stderr = exit.stderrTail.trim();

@@ -38,7 +38,6 @@ export const AVAILABLE_TRANSPORTS: readonly string[] = ["cli", "acp"];
 export const CLI_TARGETS: readonly string[] = ["claude", "codex"];
 
 export interface CliTransportOptions {
-  timeoutMs?: number;
   /** Injected so what a worker is *told* is assertable without spawning a CLI — the
    *  same reason `createCliReformatter` takes one (defect 18). */
   runners?: { claude: typeof runClaudeCode; codex: typeof runCodex };
@@ -57,8 +56,6 @@ export interface ReformatterOptions {
   /** Where the restating session runs. It reads nothing, so any directory the mission
    *  already owns will do — the worktree may be gone by the time this is called. */
   cwd: string;
-  model?: string;
-  timeoutMs?: number;
   /** Injected so what the restating session is *told* is assertable without spawning
    *  a CLI — the same reason `queryOptions` is a function (defect 18). */
   run?: typeof runClaudeCode;
@@ -115,8 +112,8 @@ says nothing. Do not invent artifacts, claims, or a summary the worker did not g
     // gets a constructed environment like any other (defect 42) — and never a task's
     // granted variables, since it is not doing the task's work.
     const outcome = await (options.run ?? runClaudeCode)(prompt, options.cwd, {
-      model: options.model ?? REFORMAT_MODEL,
-      timeoutMs: options.timeoutMs ?? REFORMAT_TIMEOUT_MS,
+      model: REFORMAT_MODEL,
+      timeoutMs: REFORMAT_TIMEOUT_MS,
       env: buildWorkerEnv({
         parent: options.parentEnv ?? process.env,
         transportVars: CLAUDE_TRANSPORT_VARS,
@@ -173,7 +170,7 @@ export function createCliTransport(options: CliTransportOptions = {}): WorkerTra
     const startedAt = Date.now();
     const outcome = await run(prompt, cwd, {
       model: transport.model ?? model,
-      timeoutMs: options.timeoutMs ?? task.budget.wallMs,
+      timeoutMs: task.budget.wallMs,
       env,
       ...(signal ? { signal } : {}),
       // The mission's envelope, not the spec's: a task that asked to run outside the

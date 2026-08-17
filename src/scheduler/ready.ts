@@ -47,10 +47,6 @@ export function promotable(state: MissionState): Task[] {
   );
 }
 
-export interface ReadyOptions {
-  concurrency?: Partial<Record<WorkerKind, number>>;
-}
-
 /**
  * The dispatch set for this round.
  *
@@ -58,8 +54,8 @@ export interface ReadyOptions {
  * flight: two overlapping code tasks that are both `todo` would otherwise be
  * dispatched together, which is the exact collision §8 exists to prevent.
  */
-export function readyTasks(state: MissionState, options: ReadyOptions = {}): Task[] {
-  const limits = { ...CONCURRENCY, ...options.concurrency };
+export function readyTasks(state: MissionState): Task[] {
+  const limits = CONCURRENCY;
   const byId = new Map(state.tasks.map((task) => [task.id, task]));
 
   const slots: Record<string, number> = {};
@@ -105,9 +101,9 @@ export type Standstill =
  * completely different: a mission waiting on a person is resting, and a mission
  * waiting on itself is broken.
  */
-export function standstill(state: MissionState, options: ReadyOptions = {}): Standstill {
+export function standstill(state: MissionState): Standstill {
   if (state.tasks.some(occupies)) return { kind: "moving" };
-  if (readyTasks(state, options).length > 0) return { kind: "moving" };
+  if (readyTasks(state).length > 0) return { kind: "moving" };
   // A task whose last dependency landed this round is still `waiting` until the next
   // round promotes it. Counting that as a standstill reports a cycle every time a
   // dependency chain advances — which is most rounds.

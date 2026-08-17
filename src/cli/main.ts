@@ -254,10 +254,10 @@ export async function main(
   // falling back to the default model silently is exactly the "finished and switched off
   // at once" shape the optional-`Deps` trap describes. It warns and runs unstaffed
   // instead, which is visible.
-  const createCalls: RunDeps["createCalls"] = (discovered, onSpend, staffing) => {
+  const createCalls: RunDeps["createCalls"] = (discovered, onSpend, staffing, signal) => {
     const base = deps.createCalls
-      ? deps.createCalls(discovered, onSpend, staffing)
-      : createAgentCalls({ config: discovered, onSpend });
+      ? deps.createCalls(discovered, onSpend, staffing, signal)
+      : createAgentCalls({ config: discovered, onSpend, ...(signal ? { signal } : {}) });
 
     const resolved = resolveStaffing(
       staffing ?? {},
@@ -274,6 +274,7 @@ export async function main(
               apiKey: config.providerKeys?.[card.provider] ?? "",
               config: discovered,
               onSpend,
+              ...(signal ? { signal } : {}),
             }),
           )
         : base,

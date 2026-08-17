@@ -37,9 +37,9 @@ export function healthFrame(
   report: { checks: readonly Check[]; ready: boolean },
   /** The cards `orchestra doctor` has probed on this machine (`staffableCards`), passed
    *  in rather than loaded here so this stays a pure function of what it is handed —
-   *  reading the disk would make the menu unassertable without one. Absent is a machine
+   *  reading the disk would make the menu unassertable without one. Empty is a machine
    *  with no provider configured, which is every machine until one is. */
-  cards: readonly { id: string; tier: string; provider: string }[] = [],
+  cards: readonly { id: string; tier: string; provider: string }[],
 ): HealthFrame {
   return {
     checks: report.checks,

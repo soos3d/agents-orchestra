@@ -10,7 +10,7 @@ import { describe, test } from "node:test";
 import { type Note } from "../events/fold.js";
 import { emptyLedger } from "../domain/ledger.js";
 import { aMission, aMissionState } from "../testing/fixtures.js";
-import { formatNotes, noteAsFact, pendingNotes } from "./notes.js";
+import { noteAsFact, pendingNotes } from "./notes.js";
 import { buildProgressInput } from "./prompts.js";
 import { reviseLedger } from "./revise.js";
 
@@ -26,31 +26,17 @@ describe("pendingNotes", () => {
     const notes = [aNote(), aNote({ text: "second", deliveredAt: "2026-07-25T10:01:00.000Z" })];
 
     assert.deepEqual(
-      pendingNotes(notes, "global").map((note) => note.text),
+      pendingNotes(notes).map((note) => note.text),
       ["stop using the staging database"],
     );
   });
 
   // A task note is for that worker. Leaking it into the progress call would put one
   // task's instruction in front of a decision about the whole mission.
-  test("keeps task notes with their task", () => {
+  test("keeps task notes out of the loop's own decisions", () => {
     const notes = [aNote({ scope: "task", taskId: "t1", text: "for t1" }), aNote({ text: "global" })];
 
-    assert.deepEqual(pendingNotes(notes, "task", "t1").map((n) => n.text), ["for t1"]);
-    assert.deepEqual(pendingNotes(notes, "task", "t2"), []);
-    assert.deepEqual(pendingNotes(notes, "global").map((n) => n.text), ["global"]);
-  });
-});
-
-describe("formatNotes", () => {
-  // The recipient has to tell a human's instruction from the orchestrator's own
-  // prose, or "stop using staging" reads as one more line of the task goal.
-  test("fences the notes under a heading", () => {
-    assert.match(formatNotes([aNote(), aNote({ text: "and rerun the suite" })]) ?? "", /--- HUMAN NOTES ---/);
-  });
-
-  test("returns nothing rather than an empty heading", () => {
-    assert.equal(formatNotes([]), undefined);
+    assert.deepEqual(pendingNotes(notes).map((n) => n.text), ["global"]);
   });
 });
 

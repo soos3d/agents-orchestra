@@ -705,12 +705,11 @@ describe("fold", () => {
     test("names accumulate across the architect's retry rather than being replaced", () => {
       const state = foldOf([
         missionCreated(),
-        { ...orchestrator, type: "secret_required", names: ["STRIPE_KEY"], plannedAs: "mock" },
+        { ...orchestrator, type: "secret_required", names: ["STRIPE_KEY"] },
         {
           ...orchestrator,
           type: "secret_required",
           names: ["STRIPE_KEY", "SLACK_TOKEN"],
-          plannedAs: "mock",
         },
       ]);
 

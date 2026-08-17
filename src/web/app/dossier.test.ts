@@ -110,20 +110,17 @@ describe("the agent sheet", () => {
     assert.match(find(research, "repo")?.values[0] ?? "", /may not change the repo/);
   });
 
-  test("a computer task's domains are its lease", () => {
+  test("a computer task is plain: no worktree, and it may not change the repo", () => {
     const browsing = agentFacts(
       task({
         worker: "computer",
         agentSpec: spec({ worker: "computer" }),
-        surface: "browser",
-        allowedDomains: ["xero.com"],
         branch: undefined,
         owns: undefined,
       }),
     );
 
-    assert.deepEqual(find(browsing, "domains")?.values, ["xero.com"]);
-    assert.deepEqual(find(browsing, "surface")?.values, ["browser"]);
+    assert.match(find(browsing, "repo")?.values[0] ?? "", /may not change the repo/);
   });
 
   test("the wall clock is minutes, and the attempt count is drawn at zero", () => {

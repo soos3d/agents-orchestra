@@ -210,17 +210,13 @@ describe("spawnDuplex", () => {
       assert.ok(exit.stderrDropped > 0);
     });
 
-    test("hands stderr to the caller as it arrives, for logging", async () => {
-      const chunks: string[] = [];
+    test("keeps stderr for the exit result, which is where the transport reads it", async () => {
       const proc = spawnDuplex("node", node('process.stderr.write("warned")'), {
         cwd: process.cwd(),
         timeoutMs: 10_000,
-        onStderr: (chunk) => chunks.push(chunk),
       });
 
-      await proc.exited;
-
-      assert.equal(chunks.join(""), "warned");
+      assert.equal((await proc.exited).stderrTail, "warned");
     });
 
     // stdout is the JSON-RPC channel: it belongs to the reader, and buffering it

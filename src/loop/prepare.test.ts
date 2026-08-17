@@ -826,7 +826,6 @@ describe("prepareMission", () => {
         raised && "names" in raised ? raised.names : [],
         ["STRIPE_KEY"],
       );
-      assert.equal(raised && "plannedAs" in raised ? raised.plannedAs : "", "mock");
       const asked = store.inputs.find((event) => event.type === "question_asked");
       assert.match(asked && "question" in asked ? asked.question : "", /--env STRIPE_KEY/);
       // Nothing exists to park: the plan is written after this call answers.

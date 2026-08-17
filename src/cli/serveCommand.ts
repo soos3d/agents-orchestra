@@ -75,8 +75,6 @@ export function parseServeArgs(argv: readonly string[]): ParsedServe {
 
 interface LiveSession {
   missionId: string;
-  /** Which directory it holds. The cap is a lookup on this, not a boolean. */
-  workspaceId: string;
   human: WebHuman;
   store: MissionStore;
   onPanic: () => void;
@@ -95,7 +93,6 @@ export interface ServeDeps {
    *  defect-12b sense, which is why the wiring below has its own test: the carrier
    *  delivers, `trust` decides, and no mirror at all is the default. */
   channel?: { carrier: Carrier; identity: BoundIdentity };
-  now?: () => Date;
   /** Resolves the command: serve runs until this aborts (SIGINT in `main`). */
   signal?: AbortSignal;
 }
@@ -109,7 +106,7 @@ export async function serve(
   const registry = createMissionRegistry(config.stateDir, (message) => io.err(message));
   const run = deps.run ?? runMission;
   const resume = deps.resume ?? resumeMission;
-  const now = deps.now ?? (() => new Date());
+  const now = (): Date => new Date();
 
   // Probed once, at boot: `doctor` reads PATH and the filesystem, and these are facts
   // about the installation rather than about a mission. Re-running it on every publish
@@ -551,7 +548,7 @@ export async function serve(
       };
     },
     register: (missionId, session) => {
-      sessions.set(workspace, { missionId, workspaceId: workspace, ...session });
+      sessions.set(workspace, { missionId, ...session });
       server.publish();
       mirror();
     },

@@ -19,7 +19,7 @@
 // answers. Deleting the transcript is how a human un-verifies a card by hand.
 import fs from "node:fs";
 import path from "node:path";
-import { DIR_MODE, FILE_MODE, ensurePrivateDir } from "../config/hygiene.js";
+import { DIR_MODE, ensurePrivateDir, writeFileAtomic } from "../config/hygiene.js";
 import { type ModelCard, probePath } from "./modelCard.js";
 import { type ChatDeps, PROVIDERS, chatCompletion } from "./openaiCompatible.js";
 
@@ -100,8 +100,5 @@ function writeTranscript(stateDir: string, card: ModelCard, transcript: unknown)
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: DIR_MODE });
   ensurePrivateDir(path.dirname(file));
 
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, `${JSON.stringify(transcript, undefined, 2)}\n`, { mode: FILE_MODE });
-  fs.chmodSync(tmp, FILE_MODE);
-  fs.renameSync(tmp, file);
+  writeFileAtomic(file, `${JSON.stringify(transcript, undefined, 2)}\n`);
 }

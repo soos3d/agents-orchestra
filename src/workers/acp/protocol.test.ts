@@ -148,12 +148,19 @@ describe("acp ndjson framing", () => {
 describe("acp outbound frames", () => {
   // The captured handshake is the assertion: what we build has to be byte-identical in
   // shape to what the two agents actually answered, or the transcripts prove nothing.
+  // `clientInfo` is the one field that legitimately differs — the capture was taken by the
+  // spike client — so it is substituted rather than compared, and everything else is not.
   test("initialize matches the captured handshake", () => {
     const captured = transcript("claude-write-file-approved.jsonl").find(
       (line) => line.dir === "out" && (line.frame as Record<string, unknown>)["method"] === "initialize",
     );
+    const capturedFrame = captured?.frame as { params: Record<string, unknown> };
+    const expected = {
+      ...capturedFrame,
+      params: { ...capturedFrame.params, clientInfo: { name: "orchestra", version: "0.1.0" } },
+    };
 
-    assert.deepEqual(initializeRequest(1, { name: "fable-orchestra-spike", version: "0.0.0" }), captured?.frame);
+    assert.deepEqual(initializeRequest(1), expected);
   });
 
   test("session/new sends the cwd and an empty mcpServers list", () => {
@@ -315,7 +322,7 @@ describe("acp session/update", () => {
     );
   });
 
-  test("a tool_call carries its id, title, kind, status and the tool name claude tags on", () => {
+  test("a tool_call carries its id, title and the tool name claude tags on", () => {
     const calls = updates("claude-write-file-approved.jsonl")
       .map((params) => parseSessionUpdate(params, () => undefined))
       .filter((update) => update.kind === "tool_call");
@@ -324,34 +331,24 @@ describe("acp session/update", () => {
     assert.ok(first?.kind === "tool_call");
     assert.equal(first.toolCallId, "toolu_01TtVMWkrNarTF4HgaASvpiT");
     assert.equal(first.title, "Write");
-    assert.equal(first.toolKind, "edit");
-    assert.equal(first.status, "pending");
     assert.equal(first.toolName, "mcp__acp__Write");
   });
 
-  test("the bash capture is a kind: execute tool call, not an edit", () => {
-    const calls = updates("claude-bash-execute-approved.jsonl")
-      .map((params) => parseSessionUpdate(params, () => undefined))
-      .filter((update) => update.kind === "tool_call");
+  // Captured: a `tool_call_update` may carry no status at all, and `rawOutput` is a string
+  // in one capture and an array in another. Nothing here reads either field, but the
+  // schemas still have to tolerate both shapes — anything tighter turns live traffic into
+  // an `ignored` update and a warning, which is a tool call the transport never sees.
+  test("tool_call_update parses whatever status and rawOutput shape arrives", () => {
+    const warnings: string[] = [];
+    const parsed = ["claude-write-file-rejected.jsonl", "claude-bash-execute-approved.jsonl"].flatMap((name) =>
+      updates(name).map((params) => parseSessionUpdate(params, (message) => warnings.push(message))),
+    );
 
-    assert.ok(calls.every((call) => call.kind === "tool_call" && call.toolKind === "execute"));
-  });
-
-  // Captured: a `tool_call_update` may carry no status at all, and `rawOutput` is a
-  // string in one capture and an array in another. Anything tighter rejects live traffic.
-  test("tool_call_update tolerates a missing status and either rawOutput shape", () => {
-    const rejected = updates("claude-write-file-rejected.jsonl")
-      .map((params) => parseSessionUpdate(params, () => undefined))
-      .filter((update) => update.kind === "tool_call_update");
-
-    assert.ok(rejected.some((update) => update.kind === "tool_call_update" && update.status === "failed"));
-
-    const approved = updates("claude-bash-execute-approved.jsonl")
-      .map((params) => parseSessionUpdate(params, () => undefined))
-      .filter((update) => update.kind === "tool_call_update");
-
-    assert.ok(approved.some((update) => update.kind === "tool_call_update" && update.status === undefined));
-    assert.ok(approved.some((update) => update.kind === "tool_call_update" && update.status === "completed"));
+    assert.ok(parsed.some((update) => update.kind === "tool_call_update"));
+    assert.deepEqual(
+      warnings.filter((message) => message.includes("tool_call_update")),
+      [],
+    );
   });
 
   test("available_commands_update is ignored without a warning", () => {

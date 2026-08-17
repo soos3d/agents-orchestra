@@ -40,10 +40,6 @@ export async function repoRoot(cwd: string): Promise<string | undefined> {
   return result.ok ? result.stdout : undefined;
 }
 
-export async function isClean(repo: string): Promise<boolean> {
-  return (await git(repo, ["status", "--porcelain"])) === "";
-}
-
 /**
  * A working tree as two comparable measures, for asking whether something changed a
  * directory while it ran there (defect 41).

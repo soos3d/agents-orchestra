@@ -24,6 +24,7 @@
 //   Everything else is transport-shaped and has not been tried twice: the call never
 //   reached a model, or reached one that was rate-limited. That is exactly §9.4's
 //   "retry same agent, exponential backoff, maxAttempts 2".
+import { setTimeout as delay } from "node:timers/promises";
 import { CALL_NAMES } from "../domain/budget.js";
 import { CallFormatError } from "./agentCalls.js";
 import { type Calls } from "./calls.js";
@@ -94,7 +95,7 @@ const DEFAULT_BACKOFF_MS = 5_000;
 export function resilientCalls(calls: Calls, deps: ResilientCallsDeps = {}): Calls {
   const attempts = Math.max(1, deps.attempts ?? DEFAULT_ATTEMPTS);
   const backoff = deps.backoffMs ?? DEFAULT_BACKOFF_MS;
-  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const sleep = deps.sleep ?? delay;
 
   const wrapped = {} as Record<keyof Calls, (input: never) => Promise<unknown>>;
 

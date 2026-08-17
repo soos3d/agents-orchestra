@@ -64,7 +64,6 @@ export function answersAsFacts(
   questions: readonly IntakeQuestion[],
   answers: readonly IntakeAnswer[],
   existing: readonly LedgerEntry[],
-  round = 0,
 ): LedgerEntry[] {
   let next = existing.length;
 
@@ -77,7 +76,8 @@ export function answersAsFacts(
       {
         id: `h${next}`,
         text: `${question.question} — ${answer.answer.trim()}`,
-        addedRound: round,
+        // Intake happens before the first round, so a fact it produces is round 0's.
+        addedRound: 0,
       },
     ];
   });

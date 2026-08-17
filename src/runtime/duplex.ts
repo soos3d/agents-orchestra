@@ -43,8 +43,6 @@ export interface DuplexOptions {
   /** Hard ceiling on the whole session. Terminates the child; `timedOut` records it. */
   timeoutMs: number;
   signal?: AbortSignal;
-  /** Called with each stderr chunk as it arrives — the caller decides logging. */
-  onStderr?: (chunk: string) => void;
   /** Per-session stderr cap. Defaults to 256 KiB. */
   maxStderrBytes?: number;
   /** How long the agent gets to exit after SIGTERM before SIGKILL (§9.6). */
@@ -113,11 +111,7 @@ export function spawnDuplex(
     opts.signal?.removeEventListener("abort", onAbort);
   };
 
-  child.stderr.on("data", (d: Buffer) => {
-    const chunk = d.toString();
-    stderr.push(chunk);
-    opts.onStderr?.(chunk);
-  });
+  child.stderr.on("data", (d: Buffer) => stderr.push(d.toString()));
 
   const exited = new Promise<DuplexExit>((resolve, reject) => {
     child.on("error", (err) => {

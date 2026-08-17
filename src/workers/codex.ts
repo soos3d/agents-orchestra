@@ -91,7 +91,3 @@ export async function runCodex(
 
   return { text: result.stdout || result.stderr || `codex exited with code ${result.code}` };
 }
-
-// `Date.now()` collided when two workers started in the same millisecond, which is
-// exactly what a parallel dispatch does.
-let outFileCounter = 0;

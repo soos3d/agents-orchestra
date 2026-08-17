@@ -20,7 +20,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { FILE_MODE, ensurePrivateDir } from "../config/hygiene.js";
+import { ensurePrivateDir, writeFileAtomic } from "../config/hygiene.js";
 
 export const loreTypeSchema = z.enum(["observation", "research", "decision", "principle"]);
 
@@ -205,10 +205,7 @@ export function writeLore(dir: string, entry: LoreEntry, actor: LoreActor): Writ
   const file = path.join(dir, loreFileName(entry.claim));
   if (fs.existsSync(file)) return { path: file, written: false, reason: "duplicate" };
 
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, renderLore(entry), { mode: FILE_MODE });
-  fs.chmodSync(tmp, FILE_MODE);
-  fs.renameSync(tmp, file);
+  writeFileAtomic(file, renderLore(entry));
   return { path: file, written: true, reason: "written" };
 }
 

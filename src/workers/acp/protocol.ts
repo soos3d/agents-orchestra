@@ -80,21 +80,21 @@ export interface JsonRpcRequest {
   readonly params: unknown;
 }
 
+/**
+ * A response to an agent-initiated request. The id is whatever arrived: JSON-RPC permits a
+ * string, every captured frame uses a number, and coercing one to the other would answer a
+ * request nobody made.
+ */
 export interface JsonRpcResult {
   readonly jsonrpc: "2.0";
-  readonly id: number;
+  readonly id: number | string;
   readonly result: unknown;
 }
 
 export interface JsonRpcErrorResponse {
   readonly jsonrpc: "2.0";
-  readonly id: number;
+  readonly id: number | string;
   readonly error: { readonly code: number; readonly message: string };
-}
-
-export interface ClientInfo {
-  readonly name: string;
-  readonly version: string;
 }
 
 /**
@@ -104,7 +104,7 @@ export interface ClientInfo {
  * `terminal/*` requests this client has no implementation for, and a request we answer
  * with an error mid-turn is a turn that dies for no reason.
  */
-export function initializeRequest(id: number, clientInfo: ClientInfo): JsonRpcRequest {
+export function initializeRequest(id: number): JsonRpcRequest {
   return {
     jsonrpc: "2.0",
     id,
@@ -115,7 +115,7 @@ export function initializeRequest(id: number, clientInfo: ClientInfo): JsonRpcRe
         fs: { readTextFile: true, writeTextFile: true },
         terminal: false,
       },
-      clientInfo: { name: clientInfo.name, version: clientInfo.version },
+      clientInfo: { name: "orchestra", version: "0.1.0" },
     },
   };
 }
@@ -152,16 +152,16 @@ export function sessionPromptRequest(id: number, sessionId: string, text: string
  * `options` — never a string invented here, because the ids are the agent's vocabulary
  * (`allow`, `allow_always`, `reject`) and an id it did not offer selects nothing.
  */
-export function permissionResponse(id: number, optionId: string): JsonRpcResult {
+export function permissionResponse(id: number | string, optionId: string): JsonRpcResult {
   return { jsonrpc: "2.0", id, result: { outcome: { outcome: "selected", optionId } } };
 }
 
 /** Captured: a literal `null` result. An omitted `result` leaves the agent waiting forever. */
-export function writeTextFileResponse(id: number): JsonRpcResult {
+export function writeTextFileResponse(id: number | string): JsonRpcResult {
   return { jsonrpc: "2.0", id, result: null };
 }
 
-export function readTextFileResponse(id: number, content: string): JsonRpcResult {
+export function readTextFileResponse(id: number | string, content: string): JsonRpcResult {
   return { jsonrpc: "2.0", id, result: { content } };
 }
 
@@ -174,7 +174,7 @@ const METHOD_NOT_FOUND = -32601;
  * turn until the session timeout, and the log shows a slow agent rather than a missing
  * capability.
  */
-export function methodNotFoundResponse(id: number, method: string): JsonRpcErrorResponse {
+export function methodNotFoundResponse(id: number | string, method: string): JsonRpcErrorResponse {
   return {
     jsonrpc: "2.0",
     id,
@@ -325,9 +325,6 @@ export type AcpUpdate =
       kind: "tool_call";
       toolCallId: string;
       title: string;
-      toolKind?: string;
-      status?: string;
-      rawInput?: unknown;
       /** claude-code-acp tags the underlying tool on `_meta.claudeCode.toolName`. */
       toolName?: string;
     }
@@ -335,8 +332,6 @@ export type AcpUpdate =
       kind: "tool_call_update";
       toolCallId: string;
       title?: string;
-      status?: string;
-      rawOutput?: unknown;
       toolName?: string;
     }
   | { kind: "ignored"; sessionUpdate?: string };
@@ -436,9 +431,6 @@ export function parseSessionUpdate(params: unknown, onWarn: (message: string) =>
       kind: "tool_call",
       toolCallId: parsed.data.toolCallId,
       title: parsed.data.title,
-      toolKind: parsed.data.kind,
-      status: parsed.data.status,
-      rawInput: parsed.data.rawInput,
       toolName: parsed.data._meta?.claudeCode?.toolName,
     };
   }
@@ -453,8 +445,6 @@ export function parseSessionUpdate(params: unknown, onWarn: (message: string) =>
       kind: "tool_call_update",
       toolCallId: parsed.data.toolCallId,
       title: parsed.data.title,
-      status: parsed.data.status,
-      rawOutput: parsed.data.rawOutput,
       toolName: parsed.data._meta?.claudeCode?.toolName,
     };
   }
@@ -519,7 +509,6 @@ export const fsWriteTextFileParamsSchema = z.object({
   path: z.string(),
   content: z.string(),
 });
-export type FsWriteTextFileParams = z.infer<typeof fsWriteTextFileParamsSchema>;
 
 export const fsReadTextFileParamsSchema = z.object({
   sessionId: z.string().optional(),

@@ -523,7 +523,6 @@ type TaskScopedEvent = StripScope<Event>;
 const ACTORS: Partial<Record<EventInput["type"], EventInput["actor"]>> = {
   worker_report: "worker",
   artifact_written: "worker",
-  worker_heartbeat: "worker",
 };
 
 function spendOf(run: WorkerRun): Spend {
