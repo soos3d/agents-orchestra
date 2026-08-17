@@ -15,12 +15,15 @@ cleanup item.**
 Phases 1–7 and P1–P5 have landed; the dashboard is a real app (U0–U7). Defects 1–42 are closed —
 42 last: a worker's child environment is now **constructed** from an `Envelope.env` allowlist rather
 than inherited from the process (`workers/childEnv.ts`, and see `.claude/notes/workers.md`).
+PLAN-NEXT stages 1–11 are in; 11 gave `research` real web access behind an opt-in grant and put both
+open-model worker lanes (`cli/pi`, `acp/opencode`) onto Nebius by config alone.
 Branch `feat/phase-3`, no remote. Apache-2.0, prepared to publish; `npm publish` and making the
 GitHub repo public are the last steps.
 
 Commands: `run "<goal>" [--quick|--plan-only|--no-web|--unattended|--staff <pairs>]`, `serve`,
 `doctor`, `resume`, `forget`, `save … --as`, `promote … --as`, `metrics [--json|--staffing]`,
-`help`. `serve` is the only command a normal run needs.
+`help`. `serve` is the only command a normal run needs. `run` takes more grant flags than that
+list shows — `--scan`, `--env`, `--research-web`, `--domain`; `orchestra help` is the full set.
 
 ## Where the detail is
 
@@ -260,6 +263,45 @@ export gets the same treatment one layer along: read, scrubbed, **written back**
 parsed from the scrubbed text, because the finding a scanner is likeliest to quote verbatim is the
 hardcoded credential it just found, and the gate would otherwise be the one thing copying that value
 into `.orchestra/` while correctly reporting it.
+
+**Research reaches the web only where a human granted it, and a grant is not grounding**
+(`domain/envelope.ts`, `loop/agentCalls.ts`, `domain/ledger.ts`, PLAN-NEXT 11.3–11.4). `research` ran
+with `tools: []` while the ledger already demanded a `source` and had `"web"` in its `sourceKind`
+enum, so every web-shaped finding was a recollection wearing a citation. `Envelope.research` is the
+door — `"closed" | "web"`, `.default("closed")` like `containment` and `scanners`, `--research-web`
+on the command line — and it buys `["WebSearch", "WebFetch"]` plus a real `RESEARCH_MAX_TURNS`,
+because tools make turns a loop and the old backstop was sized for a call that could not. Six facts
+are load-bearing. **`--quick` refuses the grant** and the tools attach to the deep pass only, which
+is what keeps the quick invariant an equality rather than a measurement. **A staffed research card
+plus a grant is refused, not degraded** — a chat completion holds no tools, `judge`'s reasoning one
+call along, and honouring it silently would be the `honoursModel` trap. **`toolClasses` was not
+overloaded to carry it**: `violations()` reads that against *worker* specs, so granting `net.read`
+there to unlock research would widen every worker at once. **`WebSearch` cannot be
+domain-constrained** — results come from a backend, not a host the envelope names — so `WebFetch` is
+the enforced half and the help text says so instead of implying a control that does nothing. **An
+out-of-grant fetch is denied in-call and the call carries on**, surfacing afterwards as one advisory
+`question_asked`, `raiseSecrets`' rule; a real run is what proved the SDK invokes `canUseTool` at all
+and that a denial does not abort, which no fixture could establish. And **`groundedFindings` asks
+whether the host was reachable, not whether the mission was granted**: the first granted run returned
+`"web"` findings whose source was the *refusal text*, and a mission granted `example.com` cited
+twelve `nodejs.org` URLs it never fetched. It goes through `allowedFetchHost`, the same function the
+permission callback uses, so `undici.nodejs.org` fails a `nodejs.org` grant in the ledger for exactly
+the reason the live fetch was refused. The honest path was opened in the same commit or the fix would
+only delete evidence — `researchAuthoring` sends a search-derived claim to `guesses` with the search
+as `basis`, inside the granted paragraph only, so the closed prompt stays byte-identical.
+**Uncounted, and known**: web search bills $10 per 1,000 searches on top of tokens, the count arrives
+as `usage.server_tool_use.web_search_requests`, and nothing reads it — a granted mission's `costUsd`
+is short while reading as measured.
+
+**A staffing choice survives into a saved mission, and the door it passes is the one it already had**
+(`memory/savedMission.ts`, PLAN-NEXT 11.2). `staffing` is optional on `savedMissionSchema` and reuses
+`missionStaffingSchema` rather than restating it, so `judge` stays absent by shape rather than by
+somebody remembering. `runCommand` merges `{...saved?.staffing, ...options.staffing}` **before**
+`resolveStaffing`, which is the whole design: a `--staff` pair typed now wins per decision point, and
+a preset naming a card whose probe transcript has since been deleted is refused with the same message
+the flag gets rather than falling through to the Agent SDK on a model nobody chose. `save` still
+requires an already-run mission — saving the staffing of the run that just happened costs no new
+code, and a `preset` command would be a second way to author the same file.
 
 **There is one list of decision-point names and it is `CALL_NAMES`** (`domain/budget.ts`).
 `resilience.ts` kept a second copy behind a header claiming it enumerated `keyof Calls`, and that is
