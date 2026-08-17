@@ -190,6 +190,7 @@ the criteria freeze. **A model never enforces an invariant.**
 | **[CLI reference](./docs/cli.md)** | Every flag and command, in full |
 | **[Architecture](./docs/architecture.md)** | The loop, the event log, the modules, `.orchestra/` |
 | **[Agent roster](./docs/agent-roster.md)** | The eighteen roles, and how to add your own |
+| **[Models and providers](./docs/models.md)** | Model cards, the probe, and staffing a decision point |
 | **[Development](./docs/development.md)** | Build, test, and the one rule the suite cannot enforce |
 | **[Contributing](./CONTRIBUTING.md)** | What a first patch has to hit |
 
