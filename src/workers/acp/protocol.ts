@@ -381,6 +381,14 @@ const updateEnvelopeSchema = z.object({
  * not the turn's accounting: the numbers this transport reports come from
  * `session/prompt`'s own `usage` or from the agent's session log, and a mid-turn gauge
  * read as a total would double-count. Neither is unknown; both are declined.
+ *
+ * `session_info_update` is prime-agent's, captured in
+ * `prime-agent-research-ungated.jsonl`. It is an empty ACP shell around a
+ * reverse-domain `_meta` envelope (`ai.primeintellect.prime-agent`) carrying that
+ * agent's own extensions — subagent trees, heartbeats, gate attempts. There is nothing
+ * in the standard object to act on, and reading the `_meta` would be this transport
+ * learning one agent's private dialect. Declined rather than unknown, so the fixture
+ * does not sit permanently on the warning path.
  */
 const IGNORED_UPDATES = new Set([
   "available_commands_update",
@@ -388,6 +396,7 @@ const IGNORED_UPDATES = new Set([
   "plan",
   "agent_thought_chunk",
   "usage_update",
+  "session_info_update",
 ]);
 
 /**

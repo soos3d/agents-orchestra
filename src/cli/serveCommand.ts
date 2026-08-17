@@ -43,6 +43,7 @@ import { healthFrame } from "../web/health.js";
 import { staffableCards } from "../providers/modelCard.js";
 import { isOfferedRuntime, isOfferedStaffing, type ClientMessage } from "../web/protocol.js";
 import { startWebServer, type Handled, type RunningServer } from "../web/server.js";
+import { showWork, type ShowRequest, type ShowResult } from "../web/showWork.js";
 import { createWebHuman, type WebHuman } from "../web/webHuman.js";
 import { resumeMission } from "./resumeCommand.js";
 import { handleFromDashboard, runMission, type RunDeps, type RunOptions } from "./runCommand.js";
@@ -256,6 +257,51 @@ export async function serve(
     server.publish();
   });
 
+  /**
+   * Which workspace a mission's own envelope scopes it to, or nothing.
+   *
+   * The `resume` rule, factored because reading a mission's diff needs the same answer:
+   * a mission records no workspace, so `fsRoots` is what says where it ran, and matching
+   * it against the directories *this* server was shown is how a browser is kept out of
+   * choosing a checkout. Two copies of this would be two rules the day one is corrected.
+   */
+  const workspaceOf = async (fsRoots: readonly string[]): Promise<string | undefined> => {
+    const roots = await Promise.all(
+      workspaces.map(async (workspace) => {
+        const discovered = await configFor(workspace);
+        return {
+          id: workspace.id,
+          roots: [workspace.path, ...(discovered.repoRoot ? [discovered.repoRoot] : [])],
+        };
+      }),
+    );
+    return workspaceForRoots(fsRoots, roots);
+  };
+
+  /**
+   * Reading one thing a mission produced (PLAN-NEXT 9.3).
+   *
+   * The mission is the socket's, the ids are checked against the log by `showWork`, and
+   * the checkout is `workspaceOf`'s — so nothing a browser typed reaches a path, which
+   * is the whole of this feature's security argument. A mission scoped to a directory
+   * that is not a workspace here gets no repo and `showWork` says so; the evidence files
+   * still open, because those live under the state dir this process owns.
+   */
+  const show = async (
+    request: ShowRequest,
+    missionId: string | undefined,
+  ): Promise<ShowResult> => {
+    if (!missionId) return { ok: false, problem: "watch a mission before opening its work." };
+    const events = registry.eventsFor(missionId);
+    if (events.length === 0) return { ok: false, problem: `no mission '${missionId}'.` };
+
+    const { mission } = fold(events);
+    const targetId = await workspaceOf(mission.capabilityEnvelope.fsRoots);
+    const workspace = workspaces.find((each) => each.id === targetId);
+    const repoRoot = workspace ? (await configFor(workspace)).repoRoot : undefined;
+    return showWork(request, { events, ...(repoRoot ? { repoRoot } : {}) });
+  };
+
   const route = async (message: ClientMessage): Promise<Handled> => {
     if (message.kind === "workspace_probe") {
       pending = await probeWorkspace(message.path, config.cwd, config.stateDir, workspaces);
@@ -329,6 +375,18 @@ export async function serve(
           problem: `mission ${held.missionId} is already running in ${workspace.path} — one at a time per directory.`,
         };
       }
+      // The two boxes are opposite judgments about the same job (PLAN-NEXT 8.2), and
+      // the same pair `--quick --moonshot` is refused at parse. Refused here rather
+      // than in the schema because a discriminated-union member cannot carry the rule,
+      // and refused rather than resolved because whichever one this file picked, half
+      // the people ticking both would get the other mission.
+      if (message.quick && message.moonshot) {
+        return {
+          ok: false,
+          problem: "quick and moonshot are opposite judgments about the same job — untick one.",
+        };
+      }
+
       // You cannot choose a harness you have not been shown — `workspace_add`'s rule,
       // applied to the two strings that decide which binary gets spawned and what
       // `--model` it is handed. Checked against the frame this process computed, so a
@@ -353,6 +411,7 @@ export async function serve(
         goal: message.goal,
         planOnly: message.planOnly,
         quick: message.quick,
+        moonshot: message.moonshot,
         unattended: false,
         force: false,
         web: true,
@@ -397,16 +456,7 @@ export async function serve(
       if (events.length === 0) return { ok: false, problem: `no mission '${message.missionId}'.` };
 
       const { mission } = fold(events);
-      const roots = await Promise.all(
-        workspaces.map(async (workspace) => {
-          const discovered = await configFor(workspace);
-          return {
-            id: workspace.id,
-            roots: [workspace.path, ...(discovered.repoRoot ? [discovered.repoRoot] : [])],
-          };
-        }),
-      );
-      const targetId = workspaceForRoots(mission.capabilityEnvelope.fsRoots, roots);
+      const targetId = await workspaceOf(mission.capabilityEnvelope.fsRoots);
       if (!targetId) {
         const scope = mission.capabilityEnvelope.fsRoots.join(", ") || "nowhere on this machine";
         return {
@@ -562,6 +612,7 @@ export async function serve(
     registry,
     workspaces: workspacesFrame,
     health: () => health,
+    show,
     onMessage: route,
     onWarn: (message) => io.err(message),
     ...(options.port !== undefined ? { port: options.port } : {}),

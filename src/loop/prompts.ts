@@ -55,6 +55,7 @@ export function buildResearchInput(
   state: MissionState,
   depth: ResearchInput["depth"] = "deep",
   rejected?: string,
+  repoKb = "",
 ): ResearchInput {
   const ledger = state.mission.ledger;
   const gaps = ledger.factsToLookUp.map((entry) => entry.text);
@@ -81,6 +82,9 @@ export function buildResearchInput(
     // has to be told, or it declines to write criteria and the gate escalates to the
     // call the mission was trying to skip.
     ...(depth === "scan" && state.mission.quick ? { solePass: true } : {}),
+    // Absent rather than empty, `scanners`' rule: a call with no tools reading an empty
+    // map would be told the repository has nothing in it (PLAN-NEXT 8.1).
+    ...(repoKb === "" ? {} : { repoKb }),
     question:
       gaps.length > 0
         ? `${state.mission.goal}\n\nStill open: ${gaps.join("; ")}`
@@ -109,6 +113,7 @@ export function buildArchitectInput(
   findings: readonly Finding[],
   rejected?: string,
   scanners: readonly string[] = [],
+  repoKb = "",
 ): ArchitectInput {
   const ledger = state.mission.ledger;
   const known = [
@@ -128,6 +133,8 @@ export function buildArchitectInput(
     // interpret. The composition root has already intersected the envelope's grant with
     // what this machine probed, so anything here is genuinely runnable.
     ...(scanners.length > 0 ? { scanners: [...scanners] } : {}),
+    // Absent rather than empty, for the reason `scanners` is (PLAN-NEXT 8.1).
+    ...(repoKb === "" ? {} : { repoKb }),
     goal: state.mission.goal,
     brief: state.brief,
     findings: [...findings],
@@ -135,12 +142,18 @@ export function buildArchitectInput(
 }
 
 /** The critic is handed the breakdown and the contract, and nothing else: an objection
- *  is only worth raising against what the mission is actually judged on. */
+ *  is only worth raising against what the mission is actually judged on.
+ *
+ *  The exception is a moonshot mission, which also gets the design summary (PLAN-NEXT
+ *  8.2) — the same bounded projection the planner sees, so the design review round costs
+ *  what a plan call already costs and nothing is truncated twice. Absent when there is no
+ *  note, which is every quick mission and every mission composed as standard. */
 export function buildCritiqueInput(state: MissionState, tasks: readonly PlannedTask[]): CritiqueInput {
   return {
     goal: state.mission.goal,
     tasks: [...tasks],
     criteria: [...state.mission.ledger.criteria],
+    ...(state.mission.moonshot && state.design ? { design: state.design.summary } : {}),
   };
 }
 

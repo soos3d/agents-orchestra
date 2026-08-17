@@ -3,6 +3,7 @@
 - [`orchestra run`](#orchestra-run)
 - [Flags](#flags)
 - [Quick mode](#quick-mode)
+- [Moonshot mode](#moonshot-mode)
 - [The other commands](#the-other-commands)
 - [Working across two repos](#working-across-two-repos)
 
@@ -61,6 +62,7 @@ at any time without blocking the loop, and panic stops dispatch immediately.
 |---|---|
 | `--plan-only` | scan, intake, research, spec, plan, estimate — then stop. Nothing runs. |
 | `--quick` | skip the deep research call and plan one task. A hint, not a permission — [see below](#quick-mode). |
+| `--moonshot` | a job worth spending on: a second critic round, and the critic reads the design note — [see below](#moonshot-mode). Refused with `--quick`. |
 | `--budget <minutes>` | wall-clock ceiling for the mission. Default 240. |
 | `--unattended` | skip sign-off. Requires `--saved` or `--force`, and is never written to config. |
 | `--saved <name>` | replay a saved mission — goal, envelope, criteria skeleton. Scan and research still re-run. |
@@ -107,6 +109,36 @@ Two other things buy the deep call back, both structural:
   and replanning over scan-depth findings would answer that with the same thin ground twice.
 
 The compose card in the dashboard has the same thing as a checkbox.
+
+---
+
+## Moonshot mode
+
+The opposite judgment about the same job, and a preset over knobs that already exist rather than a
+mode of its own:
+
+```bash
+orchestra run "migrate the billing service off the legacy ledger" --moonshot
+```
+
+A moonshot mission runs every standard pass — architect, design note, plan critic, three-seat judge
+panel — and turns two of them up:
+
+- **A second critic round.** The plan the critic bought is itself critiqued once, and then the
+  critic stops. Two rounds, not "until quiet": a critic with no ceiling is a budget leak whatever
+  asked for it.
+- **A design review round.** The critic is handed the architect's design summary, so "the plan does
+  not build what was designed" becomes an objection it can raise — and one the planner can act on in
+  the replan it already buys.
+
+It grants nothing. Every gate, cap, envelope and criteria freeze is the one a standard mission has.
+
+`--quick --moonshot` is refused at parse, and the two checkboxes together are refused by the server:
+a job is not both small enough to skip the deep research pass and worth a second critic round.
+
+The judge panel is unchanged at three seats. Quorum is a strict majority of the votes cast, so a
+two-seat panel is not a bigger panel — it is one where an even split is unmet and either seat can
+veto the other.
 
 ---
 

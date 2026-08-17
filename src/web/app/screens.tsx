@@ -458,6 +458,15 @@ function Compose({ view, send }: { view: View; send: Send }) {
         <label for="compose-quick">
           <input id="compose-quick" type="checkbox" /> quick — small job, skip the deep research
         </label>
+        {/* The opposite judgment (PLAN-NEXT 8.2), and a preset over knobs the loop
+            already has: a second critic round, and a critic that reads the design
+            note. It grants nothing — every gate and cap is the standard one. Ticking
+            it with `quick` is refused by the server, which is where the same pair of
+            CLI flags is refused, rather than silently resolved here. */}
+        <label for="compose-moonshot">
+          <input id="compose-moonshot" type="checkbox" /> moonshot — worth spending on: a
+          second critic round
+        </label>
       </div>
       <Runtime health={view.health} />
       <div class="row">
@@ -470,6 +479,7 @@ function Compose({ view, send }: { view: View; send: Send }) {
             const budgetBox = document.getElementById("compose-budget") as HTMLInputElement | null;
             const planBox = document.getElementById("compose-plan-only") as HTMLInputElement | null;
             const quickBox = document.getElementById("compose-quick") as HTMLInputElement | null;
+            const moonshotBox = document.getElementById("compose-moonshot") as HTMLInputElement | null;
             const goal = goalBox?.value.trim();
             if (!goal) return;
             const budget = Number(budgetBox?.value);
@@ -478,6 +488,7 @@ function Compose({ view, send }: { view: View; send: Send }) {
               goal,
               planOnly: planBox?.checked === true,
               quick: quickBox?.checked === true,
+              moonshot: moonshotBox?.checked === true,
               staffing: chosenStaffing(),
               // Read off the three selects, each of which was populated from the
               // server's own `health` frame — so what goes out is a value that came

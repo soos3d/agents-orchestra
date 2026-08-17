@@ -136,6 +136,7 @@ orchestra run "fix the off-by-one in parseRange" --quick --plan-only
 |---|---|
 | `--plan-only` | Plan and stop. Nothing runs. |
 | `--quick` | Skip deep research, plan one task. A hint, not a permission. |
+| `--moonshot` | The opposite: a second critic round, and the critic reads the design note. Not with `--quick`. |
 | `--budget <minutes>` | Wall-clock ceiling. Default 240. |
 | `--unattended` | Skip sign-off. Requires `--saved` or `--force`. |
 | `--saved <name>` | Replay a saved mission. |
@@ -191,6 +192,7 @@ the criteria freeze. **A model never enforces an invariant.**
 | **[Architecture](./docs/architecture.md)** | The loop, the event log, the modules, `.orchestra/` |
 | **[Agent roster](./docs/agent-roster.md)** | The eighteen roles, and how to add your own |
 | **[Models and providers](./docs/models.md)** | Model cards, the probe, and staffing a decision point |
+| **[Deployment](./docs/deployment.md)** | Running `serve` on a VPS, over an SSH tunnel |
 | **[Development](./docs/development.md)** | Build, test, and the one rule the suite cannot enforce |
 | **[Contributing](./CONTRIBUTING.md)** | What a first patch has to hit |
 

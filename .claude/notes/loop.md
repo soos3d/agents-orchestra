@@ -193,6 +193,31 @@ writes the spec), so `writeOutcomeSpec` refuses `(empty)` and the mission escala
 was skipping. Observed on a real run before the field existed: quick cost two research calls and
 saved nothing.
 
+## Moonshot missions
+
+**`--moonshot` is `quick` one polarity along, and a preset over knobs that already existed**
+(PLAN-NEXT 8.2). Same shape end to end: an optional boolean on `mission_created`, folded to
+`mission.moonshot` so a resume runs on what was chosen, a compose-card checkbox beside `quick`, and
+no new event type. It grants nothing — every gate, cap and envelope is the standard one.
+
+It sets exactly two knobs. **The critic runs twice** (`MOONSHOT_CRITIQUE_ROUNDS`, `prepare.ts`):
+the plan the critic bought is itself critiqued once and then it stops, because a critic with no
+ceiling is a budget leak whichever profile asked for it, and `rounds` is the only thing in
+`critiquedPlan` that reads the profile. **And the critic is handed the design summary** —
+`CritiqueInput.design`, the same projection `PlanInput.design` carries, with a gated paragraph in
+`CRITIQUE_PROMPT` ("only when the input carries a `design`") so a standard mission's critique prompt
+is byte-identical to what it was. That is the design review round in the only form the critic can
+act on: an objection about the plan, which the replan it already buys can fix.
+
+**The panel is deliberately not touched.** The plan text says "panel N=2" and two seats is not a
+bigger panel — `panelVerdict` is a strict majority of the votes cast, so an even split is unmet and
+either seat vetoes the other. Three lensed seats is already what a standard mission convenes and
+there is no fourth lens worth asking, so the profile spends where a knob exists.
+
+**`--quick --moonshot` is refused at parse and the two checkboxes are refused at `compose`** — two
+sites because the CLI refusal names flags and the server's names checkboxes, and neither resolves
+the pair: whichever one the code picked, half the people asking for both would get the other mission.
+
 ## Optional deps
 
 **An optional field on a `Deps` interface is a place a feature can be finished and switched off at

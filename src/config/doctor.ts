@@ -15,6 +15,7 @@ import {
 } from "../providers/modelCard.js";
 import { runnableAcpTargets } from "../workers/availability.js";
 import { type DiscoveredConfig } from "./discover.js";
+import { readRepoKb, type RepoKb } from "./kb.js";
 
 export type CheckLevel = "ok" | "warn" | "fail";
 
@@ -193,6 +194,32 @@ export function checkScanners(config: DiscoveredConfig): Check {
   };
 }
 
+/**
+ * Whether the repository map exists and which commit it describes (PLAN-NEXT 8.1).
+ *
+ * Read from the cache rather than built here, so `doctor` stays the diagnostic it is —
+ * `orchestra doctor` builds the map before it renders the report, and this line is what
+ * that build made true. Never a failure and never a warning: a mission with no map plans
+ * exactly as every mission planned before the map existed, and a repository is not
+ * required to have one — `checkRepo` has already said so when there is no repo at all.
+ */
+export function checkKb(config: DiscoveredConfig, kb?: RepoKb): Check {
+  if (!config.repoRoot) return { name: "repo map", level: "ok", detail: "no repo to index" };
+  if (!kb) {
+    return {
+      name: "repo map",
+      level: "ok",
+      detail: "not built — research and the architect plan without a file map",
+      fix: "run 'orchestra doctor' from inside the repo, or start a mission (it builds one)",
+    };
+  }
+  return {
+    name: "repo map",
+    level: "ok",
+    detail: `${kb.index.length} chars at ${kb.head.slice(0, 7)} — rebuilt when HEAD moves`,
+  };
+}
+
 export function checkContainment(config: DiscoveredConfig): Check {
   const backends = config.containers ?? [];
 
@@ -318,6 +345,7 @@ export function doctor(
     checkProviders(cards, config.providerKeys ?? {}, staffableCards(config.stateDir)),
     checkContainment(config),
     checkScanners(config),
+    checkKb(config, readRepoKb(config.stateDir)),
     checkStateDir(config),
     checkIgnored(config),
     checkChannel(config.gatewayUrl),

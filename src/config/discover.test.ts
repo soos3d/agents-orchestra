@@ -13,6 +13,7 @@ import {
   probeContainers,
   discoverVerifyCommand,
   missionDir,
+  piListsModels,
   readProviderKeys,
 } from "./discover.js";
 import { doctor, formatReport } from "./doctor.js";
@@ -286,5 +287,29 @@ describe("probeContainers", () => {
     for (const backend of await probeContainers()) {
       assert.ok(CONTAINER_BACKENDS.includes(backend), backend);
     }
+  });
+});
+
+// The bug this pins shipped and was caught by running `doctor`, not by the suite: pi 0.84.2
+// prints `No models available. Use /login …` to **stdout** (300 bytes, stderr empty), so the
+// original "stdout is non-empty" rule offered `cli/pi` on a machine with no provider — defect
+// 21's class, rebuilt one field along. The string below is the real capture, byte for byte.
+describe("piListsModels", () => {
+  const noProvider =
+    "No models available. Use /login to log into a provider via OAuth or API key. See:\n" +
+    "  /Users/x/.nvm/versions/node/v23.11.0/lib/node_modules/@earendil-works/pi-coding-agent/docs/providers.md\n" +
+    "  /Users/x/.nvm/versions/node/v23.11.0/lib/node_modules/@earendil-works/pi-coding-agent/docs/models.md\n";
+
+  test("a machine with no provider is not offering pi, however chatty its stdout", () => {
+    assert.equal(piListsModels(noProvider), false);
+  });
+
+  test("silence is not an offer either", () => {
+    assert.equal(piListsModels(""), false);
+    assert.equal(piListsModels("   \n  "), false);
+  });
+
+  test("a listing is an offer", () => {
+    assert.equal(piListsModels("anthropic/claude-opus-4-6\nopenai/gpt-5\n"), true);
   });
 });

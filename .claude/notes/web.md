@@ -109,6 +109,35 @@ exits, and CI has no browser.
   diff. The report opens by itself when the machine is not ready. `--unattended` is deliberately not
   on the page, and `screens.test.tsx` asserts that too.
 
+## Showing the work
+
+**The page names an id and the server derives the path** (`web/work.ts`, `web/showWork.ts`,
+PLAN-NEXT 9.3). A finished mission used to report only that it finished, and everything missing was
+already on disk with its path already folded — evidence paths, the design note, the merge shas. The
+gap was rendering, and the one hazard in closing it is the step in the middle: a filename crossing
+the socket is a browser naming a path to a process that also holds the operator's API keys. So
+`show` carries a **task id** (for a diff) or the **`seq` of the event that recorded a file**, the
+server rebuilds the listing from its own copy of the log, and an id that is not in it is refused
+before `readFileSync` — `workspace_add`'s rule applied to a file.
+
+Three facts are load-bearing. **`foldWork` is one reducer with two callers** — `web/app/state.ts`
+`apply` and the server's `workOf` — because two implementations of "which files exist" is one
+implementation of "which files the server will open" and one of "which files the page will ask
+for", and only the first is a rule; it carries the panel-seat early return for the third time, since
+a seat is a record and not a verdict. **`apply` folds the listing *around* its switch**, in
+`apply`/`project`, because every case returns early and a case that also had to carry the listing
+forward is a case that will forget. And **which mission a `show` reads is the socket's cursor and
+never the message's**, so a tab cannot read the artifacts of a mission it is not watching — there is
+no `missionId` field on the frame at all.
+
+`showWork.ts` touches disk and git and still has its own test with a real tmp dir and a real repo,
+which is what keeps `server.ts` holding only plumbing. `isSha` guards the diff range against a
+hand-edited log rather than against a browser: `run` spawns without a shell, so there is no quoting
+to get wrong, and a leading `-` read as an option is the one thing a bare argument can still become.
+**Deliberately not built: a "run it" button** — the value asked for is seeing the result, and a
+browser control that executes project code is a new blast radius on a page whose whole security
+model is "nobody can route to it".
+
 ## Motion and type
 
 **Ambience and state are two motion vocabularies, and the split is what keeps glow meaning

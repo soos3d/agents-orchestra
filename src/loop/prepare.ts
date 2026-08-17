@@ -95,6 +95,17 @@ export interface PrepareDeps {
    */
   scanners?: readonly string[];
   /**
+   * The repository as a rendered map, for the two calls that have no tools to look at it
+   * (PLAN-NEXT 8.1, `config/kb.ts`).
+   *
+   * Bound at the composition root like `roles` and `scanners`, and for their reason:
+   * prepare never touches disk and never runs git. Already budgeted by `KB_INDEX_BUDGET`
+   * where it was built, so what arrives here is the whole of what research and the
+   * architect will be shown. Empty is every mission with no repository, and every mission
+   * that ran before this existed.
+   */
+  repoKb?: string;
+  /**
    * The granted variables this machine holds a value for (PLAN-NEXT 7.3), so the prepare
    * phase is inside the scrub rather than in front of it.
    *
@@ -141,7 +152,9 @@ export async function prepareMission(deps: PrepareDeps): Promise<PrepareResult> 
   // Scan (§2b): one cheap pass, silent, never blocks. It exists to make intake's
   // questions specific rather than to answer them, so its findings land in the ledger
   // before a single question is asked.
-  const scan = await deps.calls.research(buildResearchInput(deps.store.state(), "scan"));
+  const scan = await deps.calls.research(
+    buildResearchInput(deps.store.state(), "scan", undefined, deps.repoKb),
+  );
   emit({ ...base, type: "scan_completed", findings: scan.findings, spend: zeroSpend() });
 
   const beforeScan = deps.store.state().mission.ledger;
@@ -211,7 +224,9 @@ export async function prepareMission(deps: PrepareDeps): Promise<PrepareResult> 
   // `briefing.ts` marks the research stage done on `view.brief !== ""` — a quick
   // mission that emitted nothing here would leave that row pulsing above stages that
   // had already finished.
-  let research = quick ? scan : await deps.calls.research(buildResearchInput(deps.store.state()));
+  let research = quick ? scan : await deps.calls.research(
+        buildResearchInput(deps.store.state(), "deep", undefined, deps.repoKb),
+      );
   emit({
     ...base,
     type: "research_completed",
@@ -234,7 +249,13 @@ export async function prepareMission(deps: PrepareDeps): Promise<PrepareResult> 
   const designed = quick
     ? undefined
     : await deps.calls.architect(
-        buildArchitectInput(deps.store.state(), research.findings, undefined, deps.scanners),
+        buildArchitectInput(
+          deps.store.state(),
+          research.findings,
+          undefined,
+          deps.scanners,
+          deps.repoKb,
+        ),
       );
 
   if (designed) recordDesign(deps, base, designed.designNote);
@@ -261,7 +282,12 @@ export async function prepareMission(deps: PrepareDeps): Promise<PrepareResult> 
     // question twice. A wrong checkbox costs one call, not a run.
     const second = quick
       ? await deps.calls.research(
-          buildResearchInput(deps.store.state(), "deep", describeRejections(spec.rejected)),
+          buildResearchInput(
+            deps.store.state(),
+            "deep",
+            describeRejections(spec.rejected),
+            deps.repoKb,
+          ),
         )
       : await deps.calls.architect(
           buildArchitectInput(
@@ -269,6 +295,7 @@ export async function prepareMission(deps: PrepareDeps): Promise<PrepareResult> 
             research.findings,
             describeRejections(spec.rejected),
             deps.scanners,
+            deps.repoKb,
           ),
         );
 
@@ -357,6 +384,10 @@ export interface PresentDeps {
   /** And the machine's transports for the same reason: sign-off staffs the approved
    *  plan, so an offer wired only into the loop is wired into the wrong half. */
   transports?: readonly string[];
+  /** The repository map, for the deep research call the first send-back buys back on a
+   *  quick mission (PLAN-NEXT 8.1) — `roles`' reason, one call along: sign-off has two
+   *  entry points and a dependency wired into one of them is wired into the wrong half. */
+  repoKb?: string;
   unattended?: boolean;
 }
 
@@ -450,7 +481,9 @@ export async function presentAndSignOff(deps: PresentDeps): Promise<SignoffOutco
     // worth a call, and a mission resumed at its own sign-off starting the count again
     // costs one research call, which is the right side of that trade to be wrong on.
     if (revision === 0 && mission.quick) {
-      const deep = await deps.calls.research(buildResearchInput(deps.store.state()));
+      const deep = await deps.calls.research(
+        buildResearchInput(deps.store.state(), "deep", undefined, deps.repoKb),
+      );
       const ledger = deps.store.state().mission.ledger;
       const at = new Date().toISOString();
       emit({
@@ -637,41 +670,65 @@ function raiseSecrets(
   });
 }
 
+/** What `--moonshot` buys at the critic (PLAN-NEXT 8.2). Two rather than "until quiet":
+ *  a critic with no cap is a budget leak whatever profile asked for it, and the number a
+ *  profile sets has to be a number somebody can read off the log. */
+const MOONSHOT_CRITIQUE_ROUNDS = 2;
+
 /**
- * The plan critic (PLAN-NEXT 5.3): one attack on the breakdown, and at most one replan.
+ * The plan critic (PLAN-NEXT 5.3): one attack on the breakdown, and at most one replan —
+ * two of each on a moonshot mission (8.2).
  *
- * Capped at one on purpose — a critic that can keep objecting is a budget leak, and the
- * second objection to a plan is not worth what the third plan costs. Skipped on a quick
- * mission for the architect's reason: the human said the job was small, and a
- * one-task plan has no dependency to miss and no lease to collide with.
+ * Capped either way on purpose — a critic that can keep objecting is a budget leak, and
+ * on a standard mission the second objection is not worth what the third plan costs.
+ * Skipped on a quick mission for the architect's reason: the human said the job was
+ * small, and a one-task plan has no dependency to miss and no lease to collide with.
  */
 async function critiquedPlan(
   deps: PrepareDeps,
   first: Awaited<ReturnType<Calls["plan"]>>,
   asked: string | undefined,
 ): Promise<Awaited<ReturnType<Calls["plan"]>>> {
-  if (deps.store.state().mission.quick) return first;
+  const mission = () => deps.store.state().mission;
+  if (mission().quick) return first;
 
-  const { objections } = await deps.calls.critique(
-    buildCritiqueInput(deps.store.state(), first.tasks),
-  );
+  let plan = first;
 
-  const base = { missionId: deps.store.state().mission.id, actor: "orchestrator" as const };
-  if (objections.length === 0) return first;
+  // The one knob the moonshot profile turns up here (PLAN-NEXT 8.2): the plan the critic
+  // bought is itself critiqued once. A cap rather than a loop-until-quiet for the reason
+  // the cap was one to begin with — on a standard mission the second objection is not
+  // worth the third plan, and a mission composed as a moonshot is a human saying it is,
+  // once. `rounds` is read here and nothing else branches on the profile.
+  const rounds = mission().moonshot ? MOONSHOT_CRITIQUE_ROUNDS : 1;
 
-  deps.store.emit({ ...base, type: "plan_critiqued", objections, replanned: true });
+  for (let round = 0; round < rounds; round += 1) {
+    const { objections } = await deps.calls.critique(
+      buildCritiqueInput(deps.store.state(), plan.tasks),
+    );
+    if (objections.length === 0) return plan;
 
-  const complaint = objections
-    .map((objection) => `${objection.taskId ? `${objection.taskId}: ` : ""}${objection.kind} — ${objection.detail}`)
-    .join("\n");
+    deps.store.emit({
+      missionId: mission().id,
+      actor: "orchestrator",
+      type: "plan_critiqued",
+      objections,
+      replanned: true,
+    });
 
-  return deps.calls.plan(
-    buildPlanInput(
-      deps.store.state(),
-      `${asked ? `${asked}\n\n` : ""}A review of the last plan raised these objections. ` +
-        `Fix each one and return the whole plan:\n${complaint}`,
-    ),
-  );
+    const complaint = objections
+      .map((objection) => `${objection.taskId ? `${objection.taskId}: ` : ""}${objection.kind} — ${objection.detail}`)
+      .join("\n");
+
+    plan = await deps.calls.plan(
+      buildPlanInput(
+        deps.store.state(),
+        `${asked ? `${asked}\n\n` : ""}A review of the last plan raised these objections. ` +
+          `Fix each one and return the whole plan:\n${complaint}`,
+      ),
+    );
+  }
+
+  return plan;
 }
 
 /** One structured-return retry, quoting the offending edge. A plan that cannot be

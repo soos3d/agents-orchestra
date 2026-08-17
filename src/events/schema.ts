@@ -65,6 +65,15 @@ const missionLifecycle = [
     // Optional so a log written before this field replays unchanged, which is what
     // the committed receipt in `src/testing/receipts/` asserts.
     quick: z.boolean().optional(),
+    // The same judgment one polarity along (PLAN-NEXT 8.2): this job is worth spending
+    // on, so run the standard passes with a second critic round and a critic that is
+    // shown the design. Here rather than in a runtime option for `quick`'s reason, and
+    // optional so a log written before the field replays unchanged.
+    //
+    // `quick` and this are refused together where a mission is started — one says the
+    // job is small and the other says it is not, and a log carrying both would be a
+    // mission nobody can say the shape of.
+    moonshot: z.boolean().optional(),
     // How this mission runs — the harness, the worker model, the orchestrator model —
     // as chosen by whoever composed it. Here rather than in a runtime option for the
     // same reason `quick` is: `orchestra resume` rebuilds what it knows from the log,

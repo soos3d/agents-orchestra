@@ -8,6 +8,27 @@ import { ProcessStartError, run } from "./sh.js";
 const node = (script: string) => ["-e", script] as const;
 
 describe("run", () => {
+  // `child.stdin.end()` at the bottom of `run` reads like tidiness beside the `opts.input`
+  // write it follows, and it is load-bearing: a child that waits for EOF on stdin never
+  // finishes without it. `pi -p` is one such child — the same command returned in under a
+  // second with stdin redirected from /dev/null and hung past two minutes with a pipe attached
+  // (`src/testing/cli-transcripts/README.md`) — and a worker in that state burns its whole
+  // wall-clock budget and is then recorded as a timeout, which points an investigation at the
+  // model rather than at the spawn. `claude` and `codex` do not care, so nothing else here
+  // would fail if the line went; this is what fails.
+  test("closes the child's stdin, so a child that waits for EOF finishes", async () => {
+    const result = await run("node", [
+      ...node(
+        'const c=[];process.stdin.on("data",(d)=>c.push(d));' +
+          'process.stdin.on("end",()=>process.stdout.write("eof:"+c.join("")));',
+      ),
+    ]);
+
+    assert.equal(result.code, 0);
+    assert.equal(result.stdout, "eof:");
+    assert.equal(result.timedOut, false);
+  });
+
   test("captures stdout and the exit code", async () => {
     const result = await run("node", [...node('process.stdout.write("hi")')]);
 

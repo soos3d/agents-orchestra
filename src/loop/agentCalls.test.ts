@@ -913,6 +913,41 @@ describe("judgeSystemPrompt", () => {
 // `Qwen/Qwen3-30B-A3B-Instruct-2507` then returned a design note and no criteria at all,
 // twice, and the mission ended in `writeOutcomeSpec`. What is asserted here is that a
 // mission granted no scanner sees the text it saw before 6.3 existed.
+// A prompt and its validation move together. `repoKb` reaches both of these calls as an
+// input field, so both system prompts have to say what it is — a map of one commit that
+// the call cannot browse. Without the staleness half, a design written over the map calls
+// a directory empty because nothing in it was committed yet.
+describe("the repo map in the tool-less prompts", () => {
+  test("research and the architect are both told what `repoKb` is", async () => {
+    const seen: string[] = [];
+    const calls = createAgentCalls({
+      config,
+      runQuery: async ({ systemPrompt }) => {
+        seen.push(systemPrompt);
+        return {
+          text: JSON.stringify({
+            criteria: [],
+            designNote: "x",
+            findings: [],
+            brief: "",
+            confidence: "high",
+          }),
+          spend: { tokens: { measured: 0, estimated: 0, unmeasured: 0 }, wallMs: 0, dispatches: 0 },
+        };
+      },
+    });
+
+    await calls.research({ question: "q", sources: ["codebase"], depth: "deep" });
+    await calls.architect({ goal: "g", brief: "b", findings: [] });
+
+    assert.equal(seen.length, 2);
+    for (const prompt of seen) {
+      assert.match(prompt, /`repoKb`, it is a map of one repository at one/);
+      assert.match(prompt, /snapshot and not a listing/);
+    }
+  });
+});
+
 describe("the scanner offer in the criteria-authoring prompts", () => {
   const authoring = () => {
     const seen: string[] = [];

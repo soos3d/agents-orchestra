@@ -126,3 +126,62 @@ describe("line and a judge panel", () => {
     assert.match(rendered({ met: false }), /c1 ✗$/);
   });
 });
+
+// The work listing (PLAN-NEXT 9.3) folds through the same `apply` the criteria do, and
+// it must fold through it *whatever the event is* — the switch returns early on every
+// case, so a listing carried inside the switch would be dropped by every case that
+// forgot it. This is the assertion that the wrapper is really there.
+describe("apply and the work listing", () => {
+  const withWork = (inputs: readonly EventInput[]) => view(inputs).work;
+
+  test("collects a file recorded by an event the projection otherwise ignores", () => {
+    const work = withWork([
+      { ...orchestrator, type: "design_written", path: "/s/design.md", summary: "the shape" },
+    ]);
+
+    assert.deepEqual(
+      work.files.map((file) => file.label),
+      ["design note"],
+    );
+  });
+
+  // A case that *does* project — `criterion_checked` moves `met` — must carry the
+  // listing too, which is the half a switch-local fold would lose.
+  test("collects an evidence file from an event that also moves a criterion", () => {
+    const after = view([
+      {
+        ...orchestrator,
+        type: "criterion_checked",
+        criterionId: "c1",
+        met: true,
+        evidence: { ...evidence("passed"), checkOutputPath: "/s/criterion-c1.txt" },
+      },
+    ]);
+
+    assert.equal(after.criteria[0]?.met, true, "the projection still ran");
+    assert.deepEqual(
+      after.work.files.map((file) => file.path),
+      ["/s/criterion-c1.txt"],
+      "the listing ran too",
+    );
+  });
+
+  // The panel guard, one reader along: a seat is a record and not a verdict, so it is
+  // not a row either — three rows named after one criterion would sit above the file
+  // that says how the panel actually voted.
+  test("a panel seat contributes no row", () => {
+    const work = withWork([
+      {
+        ...orchestrator,
+        type: "criterion_checked",
+        criterionId: "c1",
+        met: false,
+        panelSeat: 0,
+        lens: "rigour",
+        evidence: { ...evidence("no"), checkOutputPath: "/s/criterion-c1-rigour.txt" },
+      },
+    ]);
+
+    assert.deepEqual(work.files, []);
+  });
+});

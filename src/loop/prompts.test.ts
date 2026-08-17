@@ -227,6 +227,23 @@ describe("buildProgressInput", () => {
 // exactly why it needs a ceiling somebody can see: a design written over a summary of the
 // findings is a design of something nobody looked at, and a mission with a hundred
 // findings would put all of them in the prompt without a number here to fail first.
+// The repository map (PLAN-NEXT 8.1). Absent rather than empty is the property worth
+// pinning: `research` and `architect` have no tools, and an empty map reads to a call that
+// cannot check as "this repository has nothing in it".
+describe("the repo map", () => {
+  test("rides along on both calls that have no tools", () => {
+    const map = "Repository map at HEAD abc1234 — 1 tracked file.\n\n- src/ (1 file)";
+
+    assert.equal(buildResearchInput(aMissionState(), "deep", undefined, map).repoKb, map);
+    assert.equal(buildArchitectInput(aMissionState(), [], undefined, [], map).repoKb, map);
+  });
+
+  test("is absent when this machine has no map, never empty", () => {
+    assert.equal("repoKb" in buildResearchInput(aMissionState()), false);
+    assert.equal("repoKb" in buildArchitectInput(aMissionState(), []), false);
+  });
+});
+
 describe("buildArchitectInput", () => {
   const withFindings = (count: number) =>
     Array.from({ length: count }, (_, index) => ({

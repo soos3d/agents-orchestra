@@ -127,6 +127,7 @@ export const aMission = (patch: Partial<Mission> = {}): Mission => ({
   extensions: 0,
   unattended: false,
   quick: false,
+  moonshot: false,
   createdAt: "2026-07-25T10:00:00.000Z",
   updatedAt: "2026-07-25T10:00:00.000Z",
   ...patch,

@@ -427,6 +427,28 @@ const judgeSchema: z.ZodType<JudgeResult> = z.object({
 const SHAPE = "Answer with a single JSON object and no other text.";
 
 /**
+ * What the two tool-less calls have to be told about the repository map (PLAN-NEXT 8.1).
+ *
+ * One constant for both, `CHECK_AUTHORING_BASE`'s rule: research and the architect are
+ * shown the same string from the same cache, and two descriptions of one field drift the
+ * first time either is corrected. Unconditional rather than a function of whether a map
+ * arrived — it is three sentences, and `repoKb` is absent from the input when there is
+ * none, which is the fact the first clause turns on.
+ *
+ * The staleness sentence is the load-bearing one. The map is built at a commit and cached
+ * until HEAD moves, so a file written this morning and not committed is not in it — and a
+ * design that treats the map as a listing tells a worker a directory is empty when the
+ * worker is about to find work in it.
+ */
+const REPO_MAP = `If the input carries \`repoKb\`, it is a map of one repository at one
+commit: every tracked directory with the number of files in it, and the opening of its
+top-level documents. You have no tools and cannot open a file, so that map is the whole of
+what you can see of the tree — name paths that appear in it, and where you need a file it
+does not list, say what should be created rather than describing it as already there.
+It is a snapshot and not a listing: uncommitted work is absent from it, and a file count is
+not a claim about what the files contain.`;
+
+/**
  * What a call that authors a criterion has to be told about `command` checks.
  *
  * One constant rather than a paragraph per prompt, because the outcome spec is now
@@ -529,6 +551,8 @@ Note the \`check\` union: \`command\` needs a \`command\` string, \`judge\` need
 
 ${checkAuthoring()}
 
+${REPO_MAP}
+
 ${SHAPE}`;
 
 /**
@@ -605,6 +629,8 @@ Note the \`check\` union: \`command\` needs a \`command\` string, \`judge\` need
 
 ${checkAuthoring(scanners)}
 
+${REPO_MAP}
+
 ${SHAPE}`;
 
 const CRITIQUE_PROMPT = `You attack a plan before anything runs on it. You are not
@@ -625,6 +651,12 @@ objections worth raising:
   nothing else. The task then fails however well it was done.
 - **A criterion nothing in the plan satisfies**, or a task that satisfies nothing. Both
   are ways for a mission to finish every task and still be unable to report success.
+
+**Only when the input carries a \`design\`**, there is a fifth: **the plan does not build
+what was designed.** The design is what the work was supposed to be, written before the
+breakdown existed — a task that implements something else, or a piece of the design no
+task carries, is an objection the planner can act on. Say which part of the design and
+which task, or which part nothing covers.
 
 Ground each objection in a task id where it is about one task, and say concretely what
 goes wrong rather than what would be nicer — "t2 edits src/api.ts, which t1 also owns"

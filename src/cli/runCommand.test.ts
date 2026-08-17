@@ -14,6 +14,7 @@ import { zeroSpend } from "../domain/budget.js";
 import { fold } from "../events/fold.js";
 import { type EventInput } from "../events/schema.js";
 import { scriptedCalls } from "../testing/fixtures.js";
+import { makeRepo } from "../testing/gitRepo.js";
 import { aCodeTask, aCriterion, missionCreated, stamp } from "../testing/fixtures.js";
 import { resolveCriteriaChange } from "../loop/criteriaChange.js";
 import { createWebHuman } from "../web/webHuman.js";
@@ -247,7 +248,7 @@ describe("runMission under a surface", () => {
     // and the finally block still has to release.
     await assert.rejects(() =>
       runMission(
-        { goal: "wired?", planOnly: false, quick: false, unattended: false, force: false, web: true, budgetMinutes: 5, runtime: {}, staffing: {}, scanners: [], env: [] },
+        { goal: "wired?", planOnly: false, quick: false, moonshot: false, unattended: false, force: false, web: true, budgetMinutes: 5, runtime: {}, staffing: {}, scanners: [], env: [] },
         config,
         quietIo,
         { createCalls: () => scriptedCalls({}), surface },
@@ -286,7 +287,7 @@ describe("runMission under a surface", () => {
 
     await assert.rejects(() =>
       runMission(
-        { goal: "what would this take?", planOnly: true, quick: false, unattended: false, force: false, web: true, budgetMinutes: 5, runtime: {}, staffing: {}, scanners: [], env: [] },
+        { goal: "what would this take?", planOnly: true, quick: false, moonshot: false, unattended: false, force: false, web: true, budgetMinutes: 5, runtime: {}, staffing: {}, scanners: [], env: [] },
         config,
         quietIo,
         { createCalls: () => scriptedCalls({}), surface },
@@ -321,7 +322,7 @@ describe("runMission spend attribution", () => {
 
     await assert.rejects(() =>
       runMission(
-        { goal: "who spent it?", planOnly: true, quick: false, unattended: true, force: true, web: false, budgetMinutes: 5, runtime: {}, staffing: {}, scanners: [], env: [] },
+        { goal: "who spent it?", planOnly: true, quick: false, moonshot: false, unattended: true, force: true, web: false, budgetMinutes: 5, runtime: {}, staffing: {}, scanners: [], env: [] },
         config,
         quietIo,
         {
@@ -410,6 +411,28 @@ describe("parseRunArgs and the runtime flags", () => {
   });
 });
 
+// The moonshot profile (PLAN-NEXT 8.2). What is asserted is the pair: a preset that
+// reaches the mission, and the one combination that cannot mean anything — a job cannot
+// be both small enough to skip the deep research pass and worth a second critic round,
+// and a log carrying both is a mission nobody can say the shape of.
+describe("parseRunArgs and --moonshot", () => {
+  test("the flag reaches the options, and absent is a standard mission", () => {
+    const standard = parseRunArgs(["reconcile it"]);
+    const moonshot = parseRunArgs(["reconcile it", "--moonshot"]);
+
+    assert.equal(standard.ok ? standard.options.moonshot : undefined, false);
+    assert.equal(moonshot.ok ? moonshot.options.moonshot : undefined, true);
+  });
+
+  test("--quick and --moonshot together are refused, with the fix named", () => {
+    const parsed = parseRunArgs(["reconcile it", "--quick", "--moonshot"]);
+
+    assert.equal(parsed.ok, false);
+    assert.match(parsed.ok === false ? parsed.message : "", /--quick and --moonshot/);
+    assert.match(parsed.ok === false ? parsed.message : "", /Drop whichever/);
+  });
+});
+
 // `--staff research=<card>,plan=<card>`. Two of its three refusals live here, and both
 // are the kind a person hits at the terminal: a decision point that cannot be staffed,
 // and a pair with no `=` in it. The third — a card nobody probed — belongs to
@@ -490,6 +513,7 @@ describe("runMission and staffing", () => {
     goal: "staffed?",
     planOnly: true,
     quick: false,
+    moonshot: false,
     unattended: false,
     force: false,
     web: false,
@@ -554,6 +578,7 @@ describe("runMission and the scanner grant", () => {
     goal: "scan it",
     planOnly: true,
     quick: false,
+    moonshot: false,
     unattended: true,
     force: true,
     web: false,
@@ -716,5 +741,71 @@ describe("--scan and --quick", () => {
   test("either one alone is fine", () => {
     assert.equal(parseRunArgs(["do it", "--quick"]).ok, true);
     assert.equal(parseRunArgs(["do it", "--scan", "deepsec"]).ok, true);
+  });
+});
+
+// An optional `Deps` field is a place a feature can be finished and switched off at once
+// (defects 12b, 23, 24), and the repo map is one: `prepareMission` never touches disk, so
+// the map exists only if this composition root builds it. What is asserted is the wiring —
+// that the two tool-less calls are handed a map when the mission has a repository at all.
+describe("the repo map reaches the calls that cannot look", () => {
+  test("research and the architect are both given one", async () => {
+    const repo = await makeRepo("orchestra-run-kb-");
+    const seen: (string | undefined)[] = [];
+
+    try {
+      await assert.rejects(() =>
+        runMission(
+          {
+            goal: "map it",
+            planOnly: true,
+            quick: false,
+    moonshot: false,
+            unattended: true,
+            force: true,
+            web: false,
+            budgetMinutes: 5,
+            runtime: {},
+            staffing: {},
+            scanners: [],
+            env: [],
+          },
+          {
+            cwd: repo.path,
+            repoRoot: repo.path,
+            stateDir: path.join(repo.path, ".orchestra"),
+            worktreeRoot: path.join(repo.path, ".orchestra", "worktrees"),
+            agents: [],
+            orchestratorModel: "sonnet",
+            maxConcurrency: 4,
+          },
+          quietIo,
+          {
+            createCalls: () => ({
+              ...scriptedCalls({
+                research: [
+                  { brief: "b", findings: [], confidence: "high" as const },
+                  { brief: "b", findings: [], confidence: "high" as const },
+                ],
+                intake: [{ questions: [] }],
+              }),
+              research: async (input) => {
+                seen.push(input.repoKb);
+                return { brief: "b", findings: [], confidence: "high" as const };
+              },
+              architect: async (input) => {
+                seen.push(input.repoKb);
+                throw new Error("stop here");
+              },
+            }),
+          },
+        ),
+      );
+
+      assert.equal(seen.length > 1, true, "the architect was never reached");
+      for (const map of seen) assert.match(map ?? "", /Repository map at HEAD/);
+    } finally {
+      repo.cleanup();
+    }
   });
 });

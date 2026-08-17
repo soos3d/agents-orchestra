@@ -248,6 +248,17 @@ export const clientMessageSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("pause"), missionId: z.string().optional() }),
   z.object({ kind: z.literal("unpause"), missionId: z.string().optional() }),
 
+  // Open one thing this mission produced: a task's merged diff, or a file it wrote
+  // (PLAN-NEXT 9.3). `id` is a **task id** or the `seq` of the event that recorded the
+  // file — never a filename and never a path, which is `compose`'s `workspaceId` rule
+  // applied to the one message that ends in `readFileSync`. The server rebuilds the
+  // listing from its own log and refuses an id that is not in it (`web/work.ts`).
+  //
+  // Which mission is the server's to decide, from the socket's own cursor: there is no
+  // `missionId` here on purpose, so a tab cannot read the artifacts of a mission it is
+  // not watching.
+  z.object({ kind: z.literal("show"), what: z.enum(["diff", "file"]), id: z.string().min(1) }),
+
   // ── serve only (§13). A per-run server rejects these: it has one mission and no
   // registry, and "compose" landing on it would start a second mission inside a
   // process whose lifetime belongs to the first. ──
@@ -271,6 +282,11 @@ export const clientMessageSchema = z.discriminatedUnion("kind", [
     // permission — `writeOutcomeSpec` still refuses an unverifiable spec, and a
     // scan-derived spec that fails it escalates to the research call it skipped.
     quick: z.boolean().default(false),
+    // The opposite judgment, and the same kind of value: a boolean is safe to accept
+    // from a browser in a way a path is not, and it grants nothing — it turns up two
+    // knobs the loop already has (a second critic round, and a critic shown the design
+    // note). Refused together with `quick` below, where the CLI refuses the same pair.
+    moonshot: z.boolean().default(false),
     // How this mission runs (`domain/mission.ts` `missionRuntimeSchema`). Three strings
     // and the shape is where their safety comes from — the same argument that makes
     // `workspaceId` an id and never a path.

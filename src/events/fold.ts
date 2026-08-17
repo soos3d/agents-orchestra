@@ -575,6 +575,10 @@ function seed(event: Extract<Event, { type: "mission_created" }>): MissionState 
       // Absent on any log written before the flag existed, and `false` is the honest
       // reading of that: those missions all ran the full research pass.
       quick: event.quick ?? false,
+      // Absent on every log written before the profile existed, and `false` is the
+      // honest reading: those missions ran one critic round and never showed it a
+      // design note.
+      moonshot: event.moonshot ?? false,
       // Absent on any log written before the choice existed, and an empty object is the
       // honest reading: those missions ran on whatever the machine offered.
       runtime: event.runtime ?? {},

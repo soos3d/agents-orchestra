@@ -182,6 +182,57 @@ describe("the run view", () => {
     assert.ok(paused.includes(">unpause<"), "a paused mission still offers pause");
   });
 
+  // PLAN-NEXT 9.3. The complaint the work pane closes is that a finished mission
+  // reported only that it finished — so the two questions are whether the tab appears
+  // when there is something in it, and whether every row it draws can actually be
+  // opened.
+  test("offers the work pane only once the mission has produced something", () => {
+    assert.ok(!draw(running()).includes(">work<"), "an empty work pane is a tab that teaches the eye to skip tabs");
+
+    const produced = running({
+      work: {
+        files: [{ id: "7", label: "criterion c1", path: "/s/criterion-c1.txt" }],
+        merges: [{ taskId: "t1", branch: "orchestra/t1", from: "a".repeat(40), to: "b".repeat(40) }],
+      },
+    });
+    assert.ok(draw(produced).includes(">work<"), "the work pane is missing with work to show");
+  });
+
+  // A conflicted or empty merge has no second sha and nothing to diff. A row for it
+  // would refuse every click, which teaches the eye to stop clicking the ones that work.
+  test("draws no diff row for a merge that never completed", () => {
+    const html = draw(
+      running({
+        work: {
+          files: [],
+          merges: [{ taskId: "t1", branch: "orchestra/t1", from: "a".repeat(40) }],
+        },
+      }),
+      "work",
+    );
+
+    assert.ok(!html.includes(">work<"), "an unopenable merge still counted towards the tab");
+    assert.ok(html.includes("pull the June ledger"), "the pane should have fallen back to the board");
+  });
+
+  // The reading area is the server's text, and the truncation is said rather than
+  // implied: a patch cut mid-hunk reads as a patch that ends there.
+  test("shows what came back, and says when it was cut short", () => {
+    const html = draw(
+      running({
+        work: {
+          files: [],
+          merges: [{ taskId: "t1", branch: "orchestra/t1", from: "a".repeat(40), to: "b".repeat(40) }],
+        },
+        shown: { what: "diff", id: "t1", title: "t1 — orchestra/t1", text: "+export const answer = 42;", truncated: true },
+      }),
+      "work",
+    );
+
+    assert.ok(html.includes("export const answer = 42;"));
+    assert.ok(html.includes("the first part"), "a truncated diff does not say it was truncated");
+  });
+
   // §11: nothing that stops a mission may be the button you press without reading.
   test("styles no steering control as the obvious one", () => {
     assert.ok(!draw(running()).includes('class="primary"'));

@@ -24,7 +24,7 @@
 import { useEffect, useState } from "preact/hooks";
 import { type ClientMessage } from "../protocol.js";
 import { Contract } from "./contract.js";
-import { core, elapsed, panes, vitals, type PaneKey } from "./hud.js";
+import { core, elapsed, openable, panes, vitals, type PaneKey } from "./hud.js";
 import { taskOrrery } from "./orrery.js";
 import { TaskBrief, TaskDossier } from "./taskPanel.js";
 import { OrreryFigure } from "./orreryFigure.js";
@@ -384,6 +384,93 @@ function Timeline({ timeline }: { timeline: readonly string[] }) {
 }
 
 /**
+ * What the mission produced, and a way to read it (PLAN-NEXT 9.3).
+ *
+ * The complaint this closes is that a finished mission reported only that it finished.
+ * Everything here was already on disk with its path already folded — so this pane is a
+ * list of names and one reading area, and the names are the only thing it holds. Every
+ * button sends an **id**: a task id for a diff, and for a file the `seq` of the event
+ * that recorded it. A filename never crosses the socket in either direction, which is
+ * the rule `web/work.ts` exists to enforce and the reason the server can open these at
+ * all.
+ *
+ * One reading area rather than an expander per row, deliberately. A diff is thousands
+ * of lines; a column of collapsed patches is a page whose scrollbar means nothing, and
+ * the pane is already the width of the board because that is what a patch needs.
+ */
+function Work({ view, send }: { view: View; send: Send }) {
+  // Only merges that completed. A conflicted or empty merge has no second sha and
+  // nothing to diff, and a row that refuses every click teaches the eye to stop
+  // clicking the ones that work.
+  const merged = view.work.merges.filter((merge) => merge.to !== undefined);
+
+  if (merged.length === 0 && view.work.files.length === 0) {
+    return (
+      <p class="quiet">
+        Nothing has been produced yet. Merged diffs and the files a check wrote appear
+        here as the rounds land.
+      </p>
+    );
+  }
+
+  return (
+    <div class="column">
+      {merged.length > 0 ? (
+        <section>
+          <h2>Merged</h2>
+          <div class="card">
+            <div class="chips">
+              {merged.map((merge) => (
+                <button
+                  key={merge.taskId}
+                  title={`diff of ${merge.branch}`}
+                  onClick={() => send({ kind: "show", what: "diff", id: merge.taskId })}
+                >
+                  {merge.taskId}
+                </button>
+              ))}
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      {view.work.files.length > 0 ? (
+        <section>
+          <h2>Evidence</h2>
+          <div class="card">
+            <div class="chips">
+              {view.work.files.map((file) => (
+                <button
+                  key={file.id}
+                  onClick={() => send({ kind: "show", what: "file", id: file.id })}
+                >
+                  {file.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      {view.shown ? (
+        <section>
+          <h2>{view.shown.title}</h2>
+          <pre class="prompt">{view.shown.text}</pre>
+          {/* Said rather than implied: a patch cut short reads as a patch that ends
+              there, and "the last file changed nothing" is the wrong thing to conclude
+              about merged work. */}
+          {view.shown.truncated ? (
+            <p class="quiet">
+              Too long to send in full — this is the first part. The rest is on disk.
+            </p>
+          ) : null}
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
+/**
  * Three rails: what the mission is, what it is doing, and what it wants from you.
  *
  * The right rail is the one that earns the layout. An inbox at the foot of a growing
@@ -391,11 +478,13 @@ function Timeline({ timeline }: { timeline: readonly string[] }) {
  * page painted amber, and it is in the same place every time.
  */
 export function RunView({ view, send, onSelect, pane, onPane, timeline }: RunProps) {
-  // The dossier pane exists only while a task is selected, so closing one from the
-  // dossier itself would otherwise leave the centre rail showing nothing at all. The
-  // board is where a task is picked, so the board is where it falls back to.
-  const shown: PaneKey =
-    pane === "task" && !(view.selected && view.tasks.has(view.selected)) ? "board" : pane;
+  // Two panes exist only conditionally, so both fall back rather than leaving the
+  // centre rail blank. The dossier goes when its task is deselected; the work pane
+  // goes when a tab watches a different mission, because the view resets and this
+  // one's pane choice does not.
+  const conditional = (pane === "task" && !(view.selected && view.tasks.has(view.selected)))
+    || (pane === "work" && openable(view) === 0);
+  const shown: PaneKey = conditional ? "board" : pane;
 
   return (
     <div class="hud">
@@ -435,6 +524,9 @@ export function RunView({ view, send, onSelect, pane, onPane, timeline }: RunPro
             <Contract view={view} />
           </div>
         ) : null}
+        {/* What the mission produced (PLAN-NEXT 9.3), at board width because that is
+            what a patch needs and a 20rem rail could never give it. */}
+        {shown === "work" ? <Work view={view} send={send} /> : null}
         {shown === "timeline" ? <Timeline timeline={timeline} /> : null}
       </section>
 

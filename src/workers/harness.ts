@@ -38,7 +38,7 @@ import { acpAgentCommand, acpTargets } from "./acp/registry.js";
 import { availableContainment, type ProbedAgents } from "./availability.js";
 import { AVAILABLE_TRANSPORTS, CLI_TARGETS } from "./transport.js";
 
-export type Vendor = "anthropic" | "openai" | "opencode";
+export type Vendor = "anthropic" | "openai" | "opencode" | "pi";
 
 /** Who makes the models a target runs, which is what decides the model menu. A target
  *  with no entry has no vendor and is not offered — the same refusal `acpAgentCommand`
@@ -50,6 +50,9 @@ const VENDOR_OF_TARGET: Readonly<Record<string, Vendor>> = {
   // the human's own account and config offer. That is why it is its own vendor rather
   // than being filed under one of the others — see `MODELS_BY_VENDOR`.
   opencode: "opencode",
+  // A gateway too, and for a sharper version of OpenCode's reason: pi ships with no provider
+  // at all, so its menu is not merely account-shaped, it is empty until a human logs one in.
+  pi: "pi",
 };
 
 /**
@@ -77,6 +80,14 @@ export const MODELS_BY_VENDOR: Readonly<Record<Vendor, readonly string[]>> = {
   // at the agent: `session/set_model` rejects a model it does not have, before the
   // prompt. Stage 2's model cards are what fills this in with something verified.
   opencode: [],
+  // Empty, and the capture is what made that the answer rather than a shrug: on a machine with
+  // no provider logged in, `pi --list-models` lists nothing at all, and on one with a provider it
+  // lists whatever that account resolves to. So there is no list to write down here either — and
+  // pi has *less* of one than OpenCode, since it does not even ship a default. Unknown, so
+  // nothing offered and nothing refused; the refusal that would matter does not exist on this
+  // target, because pi answers an invented `--model` with a warning and runs the turn anyway
+  // (`src/testing/cli-transcripts/README.md`).
+  pi: [],
 };
 
 /** A way work can run, named once. `id` is what a message carries and a page renders;

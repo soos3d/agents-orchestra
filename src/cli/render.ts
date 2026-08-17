@@ -176,7 +176,7 @@ function unpriced(totals: MissionMetrics["totals"]): string {
   return reasons.join(", ");
 }
 
-const group = (n: number): string => n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+const group = (n: number): string => n.toLocaleString("en-US");
 
 const count = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
 

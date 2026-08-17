@@ -115,7 +115,49 @@ async function probe(names: readonly string[]): Promise<string[]> {
   return found.filter((agent): agent is string => agent !== undefined);
 }
 
-export const probeAgents = (): Promise<string[]> => probe(KNOWN_AGENTS);
+/**
+ * `pi` is probed by asking what it can run, not by `which` — and that is defect 21's rule, not a
+ * flourish (PLAN-NEXT stage 8.3, captured 2026-08-17 against pi 0.84.2).
+ *
+ * The other three agents are on PATH because a human installed and logged into them, and this
+ * project's install notes say so. pi is different in a way that matters: it ships with **no**
+ * provider configured and no default credential, so a freshly installed `pi` is on PATH and
+ * cannot answer a single prompt. `which pi` on such a machine offers `cli/pi` to synthesis, every
+ * task staffed to it dies at dispatch, each burns its typed retry and takes a replan with it —
+ * which is defect 21 rebuilt out of a one-line convenience.
+ *
+ * **The exit code is the trap**, exactly as `probeContainers` documents for `docker info`:
+ * `pi --list-models` exits **0** either way. So does an empty-stdout check, and that is the
+ * correction: on a machine with no provider, pi prints `No models available. Use /login …` to
+ * **stdout** — 300 bytes of it, with stderr empty — so "stdout is non-empty" reads a refusal as
+ * an offer and re-opens the very defect this probe closes. The hint is what is measured, because
+ * it is the half that was captured; what a logged-in pi prints was never seen on this machine and
+ * is not asserted here. `--offline` so a probe does not make network calls on pi's behalf.
+ *
+ * ponytail: matching pi's own sentence is brittle across pi versions — a rename makes this
+ * offer pi again, which is the direction that costs a dispatch. Narrow it to parsing the model
+ * table once a logged-in pi has been captured and there is a positive shape to match.
+ */
+const PI_NO_MODELS = "No models available";
+
+/** The decidable half of `probePi`, pure so it is testable against the captured bytes — the
+ *  probe itself spawns a real `pi` and is therefore below the suite, `agentCalls.ts`'s trap. */
+export const piListsModels = (stdout: string): boolean => {
+  const listed = stdout.trim();
+  return listed !== "" && !listed.includes(PI_NO_MODELS);
+};
+
+async function probePi(): Promise<string[]> {
+  const result = await run("pi", ["--list-models", "--offline"], { timeoutMs: 15_000 }).catch(
+    () => undefined,
+  );
+  return result?.code === 0 && piListsModels(result.stdout) ? ["pi"] : [];
+}
+
+export const probeAgents = async (): Promise<string[]> => {
+  const [known, pi] = await Promise.all([probe(KNOWN_AGENTS), probePi()]);
+  return [...known, ...pi];
+};
 
 /**
  * Which container backends can actually start a container right now (PLAN-NEXT 3.3).

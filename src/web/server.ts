@@ -30,6 +30,7 @@ import {
   type WorkspacesFrame,
 } from "./protocol.js";
 import { type MissionRegistry } from "./registry.js";
+import { type ShowRequest, type ShowResult } from "./showWork.js";
 
 /** Never configurable. See the header. */
 export const HOST = "127.0.0.1";
@@ -97,6 +98,14 @@ export interface WebServerDeps {
    *  connect rather than on every publish: these are facts about the installation, and
    *  re-probing PATH forty times a minute would be a cost paid for nothing. */
   health?(): HealthFrame;
+  /** Reads one thing a mission produced (PLAN-NEXT 9.3): a diff or a file it wrote.
+   *  Injected rather than done here, because the checkout a mission's merges landed in
+   *  is a composition root's answer — `serve` resolves it through the workspace list
+   *  the way `resume` does, and a per-run server already has one. `missionId` is the
+   *  *socket's* cursor and never the message's: a tab reads the work of the mission it
+   *  is watching, which is one fewer id a browser gets to name. Absent means this
+   *  server shows nothing, and the page is told so rather than left clicking. */
+  show?(request: ShowRequest, missionId: string | undefined): Promise<ShowResult>;
   /** May be async: probing a workspace shells out to git, and the alternative — a
    *  result pushed later on some other frame — would let a client compose against a
    *  directory it was never shown. */
@@ -244,6 +253,31 @@ export async function startWebServer(deps: WebServerDeps): Promise<RunningServer
         }
         sockets.set(socket, { seq: 0, missionId: parsed.message.missionId });
         pushTo(socket);
+        return;
+      }
+
+      // `show` is the server's own for `watch`'s reason: which mission a socket may
+      // read from is this file's cursor, which nothing outside it knows exists. The
+      // answer is text and not state — the page still folds events and only events,
+      // exactly as it does with `noted`.
+      if (parsed.message.kind === "show") {
+        if (!deps.show) {
+          socket.send(JSON.stringify({ kind: "rejected", problem: "this server does not read a mission's files." }));
+          return;
+        }
+        const request: ShowRequest = { what: parsed.message.what, id: parsed.message.id };
+        const watching = sockets.get(socket)?.missionId;
+        void deps
+          .show(request, watching)
+          .catch((error: unknown) => ({ ok: false as const, problem: (error as Error).message }))
+          .then((result) => {
+            if (socket.readyState !== socket.OPEN) return;
+            socket.send(
+              JSON.stringify(
+                result.ok ? { kind: "shown", ...result.shown } : { kind: "rejected", problem: result.problem },
+              ),
+            );
+          });
         return;
       }
 

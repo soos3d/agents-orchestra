@@ -20,6 +20,7 @@ import {
   type ArchitectInput,
   type ArchitectResult,
   type Calls,
+  type CritiqueInput,
   type CritiqueResult,
   type IntakeQuestion,
   type PlanInput,
@@ -73,6 +74,7 @@ function callsFor(options: {
 }): Calls & {
   synthesized: number;
   planInputs: PlanInput[];
+  critiqueInputs: CritiqueInput[];
   depths: string[];
   architectInputs: ArchitectInput[];
 } {
@@ -83,10 +85,12 @@ function callsFor(options: {
   const architectInputs: ArchitectInput[] = [];
   const counters = { synthesized: 0 };
   const planInputs: PlanInput[] = [];
+  const critiqueInputs: CritiqueInput[] = [];
   const depths: string[] = [];
 
   return {
     planInputs,
+    critiqueInputs,
     depths,
     architectInputs,
     get synthesized() {
@@ -114,7 +118,10 @@ function callsFor(options: {
       );
     },
     intake: async () => ({ questions: options.intake ?? [] }),
-    critique: async () => options.critique?.[critiqueIndex++] ?? { objections: [] },
+    critique: async (input) => {
+      critiqueInputs.push(input);
+      return options.critique?.[critiqueIndex++] ?? { objections: [] };
+    },
     plan: async (input) => {
       planInputs.push(input);
       const answer = options.plan?.[planIndex++] ?? { tasks: [aPlannedTask()] };
@@ -1002,6 +1009,56 @@ describe("prepareMission", () => {
         store.inputs.filter((event) => event.type === "plan_critiqued").length,
         1,
       );
+    });
+
+    // PLAN-NEXT 8.2. The profile is a preset over knobs that already exist, and this is
+    // the one it turns up here: the plan the critic bought is itself critiqued once.
+    // Asserted as a *cap* rather than as "more", because a critic with no ceiling is a
+    // budget leak whichever profile asked for it.
+    const moonshotStore = () => testStore([missionCreated({ moonshot: true } as Partial<EventInput>)]);
+
+    test("a moonshot mission critiques the plan the critic bought, and stops there", async () => {
+      const store = moonshotStore();
+      const calls = callsFor({ critique: [objection, objection, objection] });
+
+      await prepareMission({ store, calls, planOnly: true });
+
+      assert.equal(calls.planInputs.length, 3, "two objections did not buy two replans");
+      assert.equal(calls.critiqueInputs.length, 2, "the critic ran more than twice");
+      assert.equal(
+        store.inputs.filter((event) => event.type === "plan_critiqued").length,
+        2,
+      );
+    });
+
+    test("a moonshot mission whose second critique is quiet pays for no third plan", async () => {
+      const store = moonshotStore();
+      const calls = callsFor({ critique: [objection] });
+
+      await prepareMission({ store, calls, planOnly: true });
+
+      assert.equal(calls.planInputs.length, 2);
+      assert.equal(calls.critiqueInputs.length, 2);
+    });
+
+    // The design review round (8.2). The critic is the call that can compare a breakdown
+    // against what it was supposed to implement, and the objection it raises is one the
+    // planner can act on in the replan it already buys. A standard mission's critique
+    // carries the bytes it carried before the profile existed.
+    test("the design reaches the critic on a moonshot mission and nowhere else", async () => {
+      const withDesign = async (store: ReturnType<typeof testStore>) => {
+        const calls = callsFor({});
+        await prepareMission({
+          store,
+          calls,
+          planOnly: true,
+          writeDesign: () => "/state/missions/m1/artifacts/design.md",
+        });
+        return calls.critiqueInputs;
+      };
+
+      assert.match((await withDesign(moonshotStore()))[0]?.design ?? "", /One module, one test/);
+      assert.equal((await withDesign(testStore()))[0]?.design, undefined);
     });
 
     test("a sound plan costs nothing beyond the one call", async () => {

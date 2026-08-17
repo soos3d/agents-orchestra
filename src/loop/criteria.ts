@@ -89,6 +89,13 @@ export type PanelLens = (typeof PANEL_LENSES)[number];
  * existed: no lens means `judgeSystemPrompt` hands back the unmodified `JUDGE_PROMPT`.
  * A quick mission is a human saying the job is small, and paying three judges to grade
  * a one-task outcome is the cost this repository's whole quick path exists to avoid.
+ *
+ * **The moonshot profile (PLAN-NEXT 8.2) does not touch this.** Its plan text asks for
+ * "panel N=2", and two seats is not a bigger panel than three — it is a panel with no
+ * strict majority, where `panelVerdict` reads an even split as unmet and any single seat
+ * can veto a criterion the other passed (`criteria.test.ts`, "an even split is unmet").
+ * Three lensed seats is already what a standard mission convenes and there is no fourth
+ * question worth asking, so the profile spends where a knob exists instead.
  */
 export function panelSeats(quick: boolean): readonly (PanelLens | undefined)[] {
   return quick ? [undefined] : PANEL_LENSES;

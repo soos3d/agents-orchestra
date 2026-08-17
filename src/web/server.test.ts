@@ -563,6 +563,101 @@ describe("the server", () => {
     client.close();
   });
 
+  // ── `show`: reading one thing a mission produced (PLAN-NEXT 9.3) ──
+  //
+  // The listing and the reading are asserted in `work.test.ts` and `showWork.test.ts`.
+  // What only a socket can show is here: that the mission a `show` reads from is the
+  // *cursor's* and not the message's, and that a server with no reader refuses rather
+  // than going quiet.
+
+  test("a show answers on its own frame, for the mission this socket is watching", async () => {
+    const seen: (string | undefined)[] = [];
+    const server = await startWebServer({
+      registry: fakeRegistry({ m1: someEvents(1), m2: someEvents(1) }),
+      onMessage: () => ({ ok: true }),
+      show: async (request, missionId) => {
+        seen.push(missionId);
+        return {
+          ok: true,
+          shown: { what: request.what, id: request.id, title: "t1", text: "diff text", truncated: false },
+        };
+      },
+    });
+    running.push(server);
+
+    const client = await open(server.url);
+    await client.next();
+    client.socket.send('{"kind":"watch","missionId":"m2"}');
+    await client.next();
+
+    client.socket.send('{"kind":"show","what":"diff","id":"t1"}');
+    const frame = await client.next();
+
+    assert.equal(frame.kind, "shown");
+    assert.equal(frame.text, "diff text");
+    // The message carried no mission and cannot: a tab reads the work of the mission
+    // it is watching, which is one fewer id a browser gets to name.
+    assert.deepEqual(seen, ["m2"]);
+    client.close();
+  });
+
+  test("a refused show comes back as a rejection the tab can read", async () => {
+    const server = await startWebServer({
+      registry: fakeRegistry({ m1: someEvents(1) }),
+      onMessage: () => ({ ok: true }),
+      show: async () => ({ ok: false, problem: "that file is not one this mission recorded writing." }),
+    });
+    running.push(server);
+
+    const client = await open(server.url);
+    await client.next();
+    client.socket.send('{"kind":"watch","missionId":"m1"}');
+    await client.next();
+
+    client.socket.send('{"kind":"show","what":"file","id":"/etc/passwd"}');
+    const frame = await client.next();
+
+    assert.equal(frame.kind, "rejected");
+    assert.match(String(frame.problem), /not one this mission recorded/);
+    client.close();
+  });
+
+  // A composition root that wires no reader is a button on the page that would
+  // otherwise click into silence.
+  test("a server with no reader says so rather than going quiet", async () => {
+    const server = await serve(someEvents(1));
+    const client = await open(server.url);
+    await client.next();
+
+    client.socket.send('{"kind":"show","what":"diff","id":"t1"}');
+    const frame = await client.next();
+
+    assert.equal(frame.kind, "rejected");
+    assert.match(String(frame.problem), /does not read a mission's files/);
+    client.close();
+  });
+
+  // A reader that throws must report rather than take the process — and the mission it
+  // is running — down with it, exactly as `onMessage` does.
+  test("a reader that throws answers with its message instead of dying", async () => {
+    const server = await startWebServer({
+      events: () => someEvents(1),
+      onMessage: () => ({ ok: true }),
+      show: () => Promise.reject(new Error("git is not installed")),
+    });
+    running.push(server);
+
+    const client = await open(server.url);
+    await client.next();
+
+    client.socket.send('{"kind":"show","what":"diff","id":"t1"}');
+    const frame = await client.next();
+
+    assert.equal(frame.kind, "rejected");
+    assert.match(String(frame.problem), /git is not installed/);
+    client.close();
+  });
+
   test("a server with neither feed is a bug, loudly", async () => {
     await assert.rejects(
       () => startWebServer({ onMessage: () => ({ ok: true }) }),

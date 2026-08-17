@@ -65,6 +65,19 @@ describe("fold", () => {
     assert.deepEqual(foldOf([missionCreated()]).mission.staffing, {});
   });
 
+  // PLAN-NEXT 8.2, and `staffing`'s failure mode one field along: a mission composed as
+  // a moonshot and resumed the next morning would otherwise carry on as a standard one,
+  // paying for the profile's first critic round and none of its second.
+  test("carries the profile a mission was composed with", () => {
+    const state = foldOf([missionCreated({ moonshot: true } as Partial<EventInput>)]);
+
+    assert.equal(state.mission.moonshot, true);
+  });
+
+  test("a log written before the profile existed folds to a standard mission", () => {
+    assert.equal(foldOf([missionCreated()]).mission.moonshot, false);
+  });
+
   test("an empty log raises rather than producing an empty mission", () => {
     assert.throws(() => fold([]), LogCorruptionError);
   });

@@ -431,3 +431,55 @@ describe("acp agent-initiated requests", () => {
     assert.equal(fsReadTextFileParamsSchema.safeParse({ sessionId: "s" }).success, false);
   });
 });
+
+// Why `acp/prime-agent` is not a registry row (PLAN-NEXT stage 8 item 4).
+//
+// The item asked for prime-agent behind a fence: offered for research work, its
+// sub-agent spawning refused through the envelope's tool classes. The captures say the
+// fence has nothing to attach to, and these two tests are that finding pinned — not a
+// property of code in this repo, but the measurement a future re-capture has to
+// contradict before the row can be reconsidered. Deleting them without re-capturing
+// against a newer prime-agent is how a build ends up with an ungated shell.
+describe("prime-agent 0.7.2 — the captures that refused the row", () => {
+  const primeTranscripts = () => allTranscripts().filter(({ file }) => file.startsWith("prime-agent-"));
+
+  // The gate this whole transport exists for (defect 14) is never opened. Three shell
+  // cells ran in `prime-agent-research-ungated.jsonl` — `ls -la`, `cat README.md`,
+  // `cat add.py` — and the client was asked about none of them. It is the OpenCode
+  // permission-off capture with no `OPENCODE_PERMISSION` to answer it: prime-agent's
+  // ACP implementation carries the SDK's `session/request_permission` constant and
+  // never sends the request.
+  test("no capture contains a session/request_permission — the gate is never opened", () => {
+    const asked = primeTranscripts().flatMap(({ file, lines }) =>
+      lines
+        .filter(
+          (line) =>
+            line.dir === "in" &&
+            (line.frame as Record<string, unknown> | null)?.["method"] === "session/request_permission",
+        )
+        .map(() => file),
+    );
+
+    assert.ok(primeTranscripts().length > 0, "the prime-agent captures are missing");
+    assert.deepEqual(asked, []);
+  });
+
+  // `honoursModel` is read off the launch row and only a capture may set it. Here the
+  // capture sets it false: the ACP surface has no `session/set_model` at all, and the
+  // model is fixed at process startup by `--provider`/`--model` on the argv.
+  test("session/set_model is method-not-found, so nothing on the wire carries our model", () => {
+    const lines = transcript("prime-agent-set-model-unsupported.jsonl");
+    const request = lines.find(
+      (line) => line.dir === "out" && (line.frame as Record<string, unknown>)["method"] === "session/set_model",
+    );
+    assert.ok(request, "no session/set_model was attempted");
+
+    const id = (request.frame as Record<string, unknown>)["id"];
+    const response = lines.find(
+      (line) => line.dir === "in" && (line.frame as Record<string, unknown> | null)?.["id"] === id,
+    );
+    const error = (response?.frame as Record<string, { code?: number }> | undefined)?.["error"];
+
+    assert.equal(error?.code, -32601);
+  });
+});

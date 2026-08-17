@@ -132,6 +132,17 @@ export const missionSchema = z.object({
    *  and a plan of one task rather than a decomposition. Folded from `mission_created`
    *  so a resumed mission keeps the shape it was started with. */
   quick: z.boolean(),
+  /**
+   * The opposite judgment, made the same way: this job is worth spending on. A preset
+   * over knobs that already exist (PLAN-NEXT 8.2) — the standard passes plus a second
+   * critic round and a critic that is shown the design note. It grants nothing: every
+   * gate, cap and envelope is the one a standard mission has.
+   *
+   * Folded from `mission_created` for `quick`'s reason: a mission composed one evening
+   * and resumed the next morning has to run the second half on the choice its first half
+   * ran on, and a mode held in process memory would quietly downgrade it.
+   */
+  moonshot: z.boolean(),
   /** How this mission runs, as chosen at compose time. Defaulted rather than optional
    *  so every reader gets an object and nothing has to ask whether it was recorded. */
   runtime: missionRuntimeSchema.default({}),

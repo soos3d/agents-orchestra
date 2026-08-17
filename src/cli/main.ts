@@ -6,6 +6,7 @@ import path from "node:path";
 import { discoverConfig, missionDir, type DiscoveredConfig } from "../config/discover.js";
 import { doctor, formatReport } from "../config/doctor.js";
 import { ensureGitignored, ensurePrivateDir, forgetMission } from "../config/hygiene.js";
+import { ensureRepoKb } from "../config/kb.js";
 import { createEventLog } from "../events/log.js";
 import { fold } from "../events/fold.js";
 import { missionMetrics, staffingMetrics } from "../events/metrics.js";
@@ -57,6 +58,8 @@ const USAGE = `orchestra — a looping orchestrator for any kind of task
   run flags
     --plan-only        research, spec, plan, estimate — then stop. Nothing dispatched.
     --quick            a small job: one light research pass, planned as one task
+    --moonshot         the opposite: a second critic round, and the critic reads the
+                       design note. Not with --quick.
     --budget <minutes> wall-clock ceiling for the mission (default 240)
     --saved <name>     replay a saved mission. Scan and research run again.
     --unattended       skip sign-off. Requires --saved or --force.
@@ -308,6 +311,13 @@ export async function main(
       for (const outcome of probed) {
         if (!outcome.ok) io.err(`  ${outcome.card.id}: ${outcome.problem}`);
       }
+
+      // And the repository map, for the same reason one line up (PLAN-NEXT 8.1): this is
+      // the command whose job is finding out what this machine has, and building the map
+      // here is what makes the first mission's research call cheap rather than the one
+      // that pays for the walk. `run` builds it too — same function, same HEAD key — so a
+      // machine that never runs `doctor` is not a machine without a map.
+      await ensureRepoKb(config.stateDir, config.repoRoot, (message) => io.err(message));
 
       const report = doctor(config);
       io.out(formatReport(report));

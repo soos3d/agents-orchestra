@@ -44,6 +44,23 @@ function App() {
           setNote(frame.note);
           return;
         }
+        // One diff or one file, rendered by the server (PLAN-NEXT 9.3). Lands on the
+        // view rather than in a local state hook so the work pane can read it without
+        // three components' worth of prop threading — and it is not folded from
+        // anything, exactly like `health`.
+        if (frame.kind === "shown") {
+          setView((current) => ({
+            ...current,
+            shown: {
+              what: frame.what,
+              id: frame.id,
+              title: frame.title,
+              text: frame.text,
+              truncated: frame.truncated,
+            },
+          }));
+          return;
+        }
         if (frame.kind === "missions") {
           setView((current) => ({ ...current, missions: frame.missions }));
           return;

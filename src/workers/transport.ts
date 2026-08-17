@@ -14,6 +14,7 @@ import { type Reformatter } from "./report.js";
 import { buildWorkerEnv } from "./childEnv.js";
 import { CLAUDE_TRANSPORT_VARS, runClaudeCode } from "./claudeCode.js";
 import { CODEX_TRANSPORT_VARS, runCodex } from "./codex.js";
+import { PI_TRANSPORT_VARS, runPi } from "./pi.js";
 
 /**
  * The registry: the transports that are actually built, as opposed to the five §7
@@ -35,12 +36,31 @@ export const AVAILABLE_TRANSPORTS: readonly string[] = ["cli", "acp"];
  *  which is the list it has to stay equal to. Not every probed agent has a `cli`
  *  launcher: `opencode` speaks ACP and nothing else here, so a machine holding only it
  *  has no `cli` transport at all. */
-export const CLI_TARGETS: readonly string[] = ["claude", "codex"];
+export const CLI_TARGETS: readonly string[] = ["claude", "codex", "pi"];
+
+/** How each `cli` target is launched and what its child environment is built from, in one place
+ *  so the two cannot be wired apart.
+ *
+ *  It replaced a `target === "codex"` boolean, which was correct for exactly as long as there
+ *  were two targets: a third one would have run through `claude`'s launcher with `claude`'s
+ *  credentials while the log named it, and nothing about that is loud. A record keyed by the
+ *  same strings `CLI_TARGETS` lists is the shape that cannot do that — and `runnerFor` refuses
+ *  an unknown key rather than defaulting to one, because a target validation let through is a
+ *  planning problem (defect 21) and not a reason to run something else. */
+export type CliRunner = typeof runClaudeCode;
+
+const CLI_RUNNERS: Readonly<
+  Record<string, { readonly run: CliRunner; readonly vars: readonly string[] } | undefined>
+> = {
+  claude: { run: runClaudeCode, vars: CLAUDE_TRANSPORT_VARS },
+  codex: { run: runCodex, vars: CODEX_TRANSPORT_VARS },
+  pi: { run: runPi, vars: PI_TRANSPORT_VARS },
+};
 
 export interface CliTransportOptions {
   /** Injected so what a worker is *told* is assertable without spawning a CLI — the
    *  same reason `createCliReformatter` takes one (defect 18). */
-  runners?: { claude: typeof runClaudeCode; codex: typeof runCodex };
+  runners?: Readonly<Record<string, CliRunner | undefined>>;
   /** The environment this process was started with, from which a worker's own is
    *  *constructed* (defect 42). Injected for the reason `runners` is: what a worker
    *  receives has to be assertable without spawning anything, and a test cannot put a
@@ -153,9 +173,21 @@ export function createCliTransport(options: CliTransportOptions = {}): WorkerTra
     // What the worker is told is assembled in one place for every transport, so the
     // CLI and ACP paths cannot drift into two contracts (`prompt.ts`).
     const prompt = workerPrompt(task, artifactDir, designNote);
-    const runners = options.runners ?? { claude: runClaudeCode, codex: runCodex };
-    const codex = transport.target === "codex";
-    const run = codex ? runners.codex : runners.claude;
+    // `target` is optional on a `TransportRef` and an absent one has always meant `claude`
+    // here — kept rather than tightened, because a log written before targets existed still
+    // folds and would otherwise fail at dispatch on a field it never carried.
+    const target = transport.target ?? "claude";
+    const launch = CLI_RUNNERS[target];
+    if (launch === undefined) {
+      throw new Error(
+        `The cli transport has no launcher for target '${target}' — it can start ` +
+          `${CLI_TARGETS.join(", ")}. Plan this task with one of those, or add the target's ` +
+          `launcher beside the others in transport.ts.`,
+      );
+    }
+    // An injected runner replaces the launcher for its own target and nothing else, so a test
+    // that fakes `claude` still fails loudly if the task it built is routed to `pi`.
+    const run = options.runners?.[target] ?? launch.run;
 
     // Constructed, never filtered (defect 42): what the CLI needs to start plus the
     // variables this task's envelope granted it, and nothing else this process happens
@@ -163,7 +195,7 @@ export function createCliTransport(options: CliTransportOptions = {}): WorkerTra
     // here the only question left is which of those names the machine actually has.
     const env = buildWorkerEnv({
       parent: options.parentEnv ?? process.env,
-      transportVars: codex ? CODEX_TRANSPORT_VARS : CLAUDE_TRANSPORT_VARS,
+      transportVars: launch.vars,
       ...(task.agentSpec.env ? { allowed: task.agentSpec.env } : {}),
     });
 

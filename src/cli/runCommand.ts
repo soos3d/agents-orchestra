@@ -31,6 +31,7 @@ import {
   type DiscoveredConfig,
 } from "../config/discover.js";
 import { writeDesignNote } from "../config/hygiene.js";
+import { ensureRepoKb } from "../config/kb.js";
 import { readLore } from "../memory/lore.js";
 import { loadSavedMission, seedFromSaved, type SavedMission } from "../memory/savedMission.js";
 import { staffableCards } from "../providers/modelCard.js";
@@ -42,6 +43,7 @@ import { DEFAULT_TOOL_CLASSES } from "../workers/toolCatalogue.js";
 import { type ClientMessage } from "../web/protocol.js";
 import { grantedSecrets } from "../workers/redact.js";
 import { startWebServer, type RunningServer } from "../web/server.js";
+import { showWork } from "../web/showWork.js";
 import { createWebHuman, type WebHuman } from "../web/webHuman.js";
 import { executeMission, staffableRoles } from "./execute.js";
 import { renderCriteria, renderEstimate, renderPlan } from "./render.js";
@@ -59,6 +61,10 @@ export interface RunOptions {
    *  one task. A hint, never a permission: the outcome-spec gate is unchanged, and a
    *  spec it rejects escalates to the research call that was skipped. */
   quick: boolean;
+  /** The opposite judgment, and a preset over knobs that already exist (PLAN-NEXT 8.2):
+   *  the standard passes, a second critic round, and a critic shown the design note.
+   *  Grants nothing — every gate and cap is the one a standard mission has. */
+  moonshot: boolean;
   unattended: boolean;
   force: boolean;
   /** The saved mission to replay (§7). Scan and research run again regardless. */
@@ -154,6 +160,7 @@ export function parseStaff(value: string): { ok: true; staffing: MissionStaffing
 const RUN_FLAGS = {
   "plan-only": { type: "boolean" },
   quick: { type: "boolean" },
+  moonshot: { type: "boolean" },
   unattended: { type: "boolean" },
   force: { type: "boolean" },
   "no-web": { type: "boolean" },
@@ -200,6 +207,7 @@ export function parseRunArgs(argv: readonly string[]): ParsedRun {
   let values: Partial<{
     "plan-only": boolean;
     quick: boolean;
+    moonshot: boolean;
     unattended: boolean;
     force: boolean;
     "no-web": boolean;
@@ -323,6 +331,19 @@ export function parseRunArgs(argv: readonly string[]): ParsedRun {
     };
   }
 
+  // The two are opposite judgments about the same job (PLAN-NEXT 8.2). Taking both would
+  // mean deciding which one wins here, and whichever answer this file picked, half the
+  // people typing it would get the other mission.
+  if (values.quick === true && values.moonshot === true) {
+    return {
+      ok: false,
+      message:
+        "--quick and --moonshot do not go together. One says the job is small enough to " +
+        "skip the deep research pass, the other says it is worth a second critic round. " +
+        "Drop whichever is not true of this job.",
+    };
+  }
+
   const unattended = values.unattended === true;
   // §7 couples the two deliberately: the easy path to skipping sign-off is a mission
   // whose criteria a human already approved and has not edited since. `--force` is
@@ -343,6 +364,7 @@ export function parseRunArgs(argv: readonly string[]): ParsedRun {
       goal,
       planOnly: values["plan-only"] === true,
       quick: values.quick === true,
+      moonshot: values.moonshot === true,
       unattended,
       force: values.force === true,
       web: values["no-web"] !== true,
@@ -543,6 +565,7 @@ export async function runMission(
     budget,
     unattended: options.unattended,
     quick: options.quick,
+    moonshot: options.moonshot,
     // Recorded for `runtime`'s reason, and omitted the same way when nothing was chosen:
     // a resumed mission runs its second half on what its first half ran on.
     ...(Object.keys(options.staffing).length > 0 ? { staffing: options.staffing } : {}),
@@ -596,6 +619,15 @@ export async function runMission(
   } else if (web) {
     ownedServer = await startWebServer({
       events: () => store.events(),
+      // A per-run server has one mission and one checkout, so the workspace dance
+      // `serve` does collapses to the config this run was discovered with. The
+      // `missionId` argument is the socket's cursor and is always absent here — this
+      // server streams its one mission unasked (PLAN-NEXT 9.3).
+      show: (request) =>
+        showWork(request, {
+          events: store.events(),
+          ...(config.repoRoot ? { repoRoot: config.repoRoot } : {}),
+        }),
       onMessage: (message) =>
         handleFromDashboard(message, web, wired, missionId, io, () => panic.abort()),
       onWarn: (message) => io.err(message),
@@ -609,6 +641,14 @@ export async function runMission(
   // empty log is corruption by rule. The push here is what carries the events
   // emitted before the wiring existed.
   publish?.();
+
+  // The repository as a map, for the two calls that have no tools to look at one
+  // (PLAN-NEXT 8.1). Built here rather than inside `prepareMission`, which never touches
+  // disk and never runs git, and awaited out here because the call below is a closure.
+  // A cache keyed on HEAD, so it is one `git rev-parse` on every run after the first.
+  const repoKb = await ensureRepoKb(config.stateDir, config.repoRoot, (message) =>
+    io.err(message),
+  );
 
   // Either surface may answer; §10's one-inbox rule, one level down.
   const surfaces = [...(deps.human ? [deps.human] : []), ...(web ? [web] : [])];
@@ -663,6 +703,12 @@ export async function runMission(
         wired.state().mission.capabilityEnvelope,
         config.scanners ?? [],
       ),
+      // The repository as a map, for the two calls that have no tools to look at one
+      // (PLAN-NEXT 8.1). Bound unconditionally for `writeDesign`'s reason, and built here
+      // rather than inside `prepareMission`, which never touches disk. A cache keyed on
+      // HEAD, so this is one `git rev-parse` on every run after the first — and the empty
+      // string outside a repository, which is the prompt every mission had before.
+      repoKb,
       onWarn: (message) => io.err(message),
     }));
 

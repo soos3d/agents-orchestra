@@ -11,6 +11,7 @@
 // bundle time. The browser sends decisions; zod validates them on the far side.
 import { type Event } from "../../events/schema.js";
 import { type ClientMessage, type HealthFrame, type WorkspacesFrame } from "../protocol.js";
+import { type Shown } from "../work.js";
 import { type MissionSummary } from "./state.js";
 
 /** What the server can say. It sends events and listings, never rendered state —
@@ -24,7 +25,11 @@ export type ServerFrame =
   /** A decision whose only effect is a file on disk — saving a mission, promoting an
    *  agent — saying so. It is a sentence, never state: nothing on the page is folded
    *  from it. */
-  | { kind: "noted"; note: string };
+  | { kind: "noted"; note: string }
+  /** One thing the mission produced, rendered (PLAN-NEXT 9.3): a diff or a file it
+   *  wrote. Read like `noted` — a text the page displays, never something it folds,
+   *  and it carries no path because the server never sent one. */
+  | ({ kind: "shown" } & Shown);
 
 export interface Wire {
   send(message: ClientMessage): void;

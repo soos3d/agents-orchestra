@@ -38,6 +38,7 @@ import { containmentFor } from "../workers/availability.js";
 import { staffingOffer } from "../workers/harness.js";
 import { createCliReformatter, createCliTransport } from "../workers/transport.js";
 import { artifactRoot, loreDir, type DiscoveredConfig } from "../config/discover.js";
+import { ensureRepoKb } from "../config/kb.js";
 import { loadProfiles } from "../memory/profiles.js";
 import { staffableCards } from "../providers/modelCard.js";
 import { offeredRoles, type OfferedRole } from "../agents/offer.js";
@@ -221,6 +222,14 @@ export async function executeMission(deps: ExecuteDeps): Promise<ExecuteResult> 
       ...staffingOffer(deps.config, state.mission.runtime, staffableCards(deps.config.stateDir, (message) =>
         deps.io.err(message),
       )),
+      // The repository map (PLAN-NEXT 8.1), bound here as well as in `runCommand` for
+      // the reason `roles` is: a quick mission's first send-back buys back the deep
+      // research call, and on a resumed mission that call is made from here. Built or
+      // read from cache at whatever HEAD the repo is on now, which is the point of
+      // keying it on the sha rather than on the mission.
+      repoKb: await ensureRepoKb(deps.config.stateDir, deps.config.repoRoot, (message: string) =>
+        deps.io.err(message),
+      ),
       unattended: state.mission.unattended,
     });
 

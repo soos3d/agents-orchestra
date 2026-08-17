@@ -26,6 +26,7 @@ import {
 import { type Estimate } from "../../domain/mission.js";
 import { type Task } from "../../domain/task.js";
 import { type HealthFrame } from "../protocol.js";
+import { emptyWork, foldWork, type Shown, type WorkView } from "../work.js";
 
 /** An inbox card. `id` is present only where the card can be answered — a gate has
  *  no reply box here, and an intake question is answered on its own screen. */
@@ -114,6 +115,13 @@ export interface View {
   artifacts: readonly { taskId?: string; artifact: Artifact }[];
   ledger: TaskLedger | null;
   selected: string | null;
+  /** What this mission produced and can be opened (PLAN-NEXT 9.3), folded from the same
+   *  log by the same reducer the server runs — `web/work.ts` says why that matters. */
+  work: WorkView;
+  /** The one thing that is opened at a time, as the server rendered it. Read like
+   *  `note` in `main.tsx`: it arrives on a frame, nothing folds it, and it decides
+   *  nothing. `null` until something is clicked. */
+  shown: Shown | null;
 }
 
 /** Everything that belongs to one mission's stream.
@@ -157,6 +165,8 @@ export const emptyMission = (): Omit<
   artifacts: [],
   ledger: null,
   selected: null,
+  work: emptyWork(),
+  shown: null,
 });
 
 export const emptyView = (): View => ({
@@ -190,9 +200,22 @@ const without = <T>(map: ReadonlyMap<string, T>, key: string): Map<string, T> =>
   return next;
 };
 
-/** One event onto the view. Returns a new view rather than mutating, so a render is
- *  a pure function of what came back and Preact can tell that something changed. */
+/**
+ * One event onto the view. Returns a new view rather than mutating, so a render is a
+ * pure function of what came back and Preact can tell that something changed.
+ *
+ * The work listing is folded *around* the switch below rather than as cases inside it,
+ * because every case returns early and a case that also had to remember to carry the
+ * listing forward is a case that will one day forget. The reducer itself is
+ * `web/work.ts`'s, shared with the server for the reason its header gives.
+ */
 export function apply(view: View, event: Event): View {
+  const next = project(view, event);
+  const work = foldWork(next.work, event);
+  return work === next.work ? next : { ...next, work };
+}
+
+function project(view: View, event: Event): View {
   switch (event.type) {
     case "mission_created":
       return { ...view, goal: event.goal, startedAt: event.at };

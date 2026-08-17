@@ -32,6 +32,7 @@ real merges, nine criteria met with evidence.
 | Model cards | a model is offered only once `orchestra doctor` has probed it and written the transcript its `verifiedBy` names. See [Models and providers](./models.md) |
 | Staffed decision points | `--staff plan=<card>` routes one of seven decision points through an OpenAI-compatible provider; `judge` is excluded by shape, because it reads the artifacts it grades |
 | Architect + plan critic | research splits into researcher → architect for non-quick missions, the architect writes a design note workers are handed by path, and the plan is attacked once before dispatch |
+| `--moonshot` | the opposite of `--quick` and a preset over the same knobs: a second critic round, and the critic reads the design note. Refused alongside `--quick`. See [Moonshot mode](./cli.md#moonshot-mode) |
 | Judge panels | criteria that gate sign-off are judged by three seats with distinct lenses and resolved by strict majority; quick missions still convene one |
 | Gates before judges | deterministic checks run first, and a failure suppresses that round's panels at no judge spend |
 | Scanner gate | `--scan deepsec` runs a specialist over the merged tree; absent or ungranted, the `VerifySpec` variant is refused at `writeOutcomeSpec` rather than skipped |

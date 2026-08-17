@@ -686,6 +686,26 @@ describe("serve", () => {
     assert.equal(client.runs[0]?.unattended, false);
   });
 
+  // PLAN-NEXT 8.2. The compose card offers both checkboxes, so it can send both — and
+  // the pair is refused here for the reason `--quick --moonshot` is refused at parse:
+  // whichever one this process picked, half the people ticking both would get the other
+  // mission.
+  test("moonshot rides the compose through, and never alongside quick", async () => {
+    const config = scratchConfig();
+    const client = await boot(config);
+    await client.next();
+
+    client.send({ kind: "compose", goal: "worth spending on", moonshot: true });
+    await client.next();
+    assert.equal(client.runs[0]?.moonshot, true);
+
+    client.send({ kind: "compose", goal: "both at once", quick: true, moonshot: true });
+    const refused = await client.nextDecision();
+
+    assert.equal(refused.kind, "rejected");
+    assert.match(String(refused.problem), /untick one/);
+  });
+
   test("the doctor report reaches the page, and names what this machine can start", async () => {
     const config = scratchConfig();
     const client = await boot(config);

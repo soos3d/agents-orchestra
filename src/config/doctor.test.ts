@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { type ModelCard } from "../providers/modelCard.js";
-import { checkChannel, checkContainment, checkProviders } from "./doctor.js";
+import { checkChannel, checkContainment, checkKb, checkProviders } from "./doctor.js";
 
 describe("checkChannel", () => {
   test("no mirror is the default and passes", () => {
@@ -106,5 +106,37 @@ describe("checkContainment", () => {
     const check = checkContainment({ ...base, containers: ["docker"], containerImage: "org/worker" });
     assert.equal(check.level, "ok");
     assert.match(check.detail, /docker running org\/worker/);
+  });
+});
+
+// The map is a cache, so every one of its absences is a normal state and none of them may
+// stop a mission: no repo, no build yet, and a directory somebody deleted all land here.
+describe("checkKb", () => {
+  const base = {
+    cwd: "/repo",
+    stateDir: "/state",
+    worktreeRoot: "/wt",
+    agents: [],
+    orchestratorModel: "opus",
+    maxConcurrency: 4,
+  };
+
+  test("no repository is nothing to index", () => {
+    const check = checkKb(base);
+    assert.equal(check.level, "ok");
+    assert.match(check.detail, /no repo to index/);
+  });
+
+  test("an unbuilt map passes and says what to type", () => {
+    const check = checkKb({ ...base, repoRoot: "/repo" });
+    assert.equal(check.level, "ok");
+    assert.ok(check.fix);
+  });
+
+  test("a built map reports the commit it describes", () => {
+    const check = checkKb({ ...base, repoRoot: "/repo" }, { head: "abc1234def", index: "- src/" });
+    assert.equal(check.level, "ok");
+    assert.match(check.detail, /abc1234/);
+    assert.match(check.detail, /HEAD moves/);
   });
 });

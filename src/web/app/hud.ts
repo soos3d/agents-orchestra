@@ -50,6 +50,13 @@ const waiting = (view: View): number =>
 const running = (view: View): number =>
   [...view.tasks.values()].filter((task) => task.status === "running").length;
 
+/** How many things this mission has produced that can actually be opened: a file it
+ *  wrote, or a merge that completed. A started-and-never-finished merge is counted out
+ *  deliberately — it has no second sha, so there is nothing to diff, and a row that
+ *  refuses every click is worse than no row (PLAN-NEXT 9.3). */
+export const openable = (view: View): number =>
+  view.work.files.length + view.work.merges.filter((merge) => merge.to !== undefined).length;
+
 /**
  * The status core: the one element on the page that rotates, and the first thing a
  * returning human looks at.
@@ -156,7 +163,7 @@ function criteriaVital(view: View): Vital {
 
 /** The centre rail's contents. Everything that is not the board is one click away, and
  *  this is that click as data. */
-export type PaneKey = "board" | "map" | "task" | "contract" | "timeline";
+export type PaneKey = "board" | "map" | "task" | "contract" | "work" | "timeline";
 
 export interface Pane {
   key: PaneKey;
@@ -168,6 +175,7 @@ export interface Pane {
 
 export function panes(view: View): readonly Pane[] {
   const live = running(view);
+  const shown = openable(view);
   return [
     {
       key: "board",
@@ -189,6 +197,12 @@ export function panes(view: View): readonly Pane[] {
       label: "contract",
       badge: view.criteria.length > 0 ? String(view.criteria.length) : "",
     },
+    // What the mission actually produced (PLAN-NEXT 9.3). Offered only once there is
+    // something in it, for the `task` pane's reason: a tab that is empty for the first
+    // half of every mission is a tab the eye learns to skip. The badge counts openable
+    // things rather than tasks — a mission with five tasks and one merged diff has one
+    // thing to read, and a badge of 5 would send somebody looking for the other four.
+    ...(shown > 0 ? [{ key: "work" as const, label: "work", badge: String(shown) }] : []),
     { key: "timeline", label: "timeline", badge: "" },
   ];
 }

@@ -71,6 +71,20 @@ export interface ResearchInput {
    * and re-deriving it is how a retry becomes a coin flip.
    */
   rejected?: string;
+  /**
+   * The repository as a rendered map — directories with file counts and the opening of
+   * its top-level docs (PLAN-NEXT 8.1, `config/kb.ts`).
+   *
+   * A **rendered string** for `SynthesizeInput.roster`'s reason: `describe()` JSON-dumps
+   * whatever it is given, and a list of paths would spend the whole budget on punctuation.
+   * Budgeted by `KB_INDEX_BUDGET` at the seam that builds it.
+   *
+   * This call has no tools (§3), so without it the codebase source in `sources` is a
+   * heading over nothing. Absent when the mission has no repository, when HEAD has no
+   * commit, or when the cache could not be built — every one of which is a mission that
+   * ran before this existed.
+   */
+  repoKb?: string;
 }
 
 export interface ResearchResult {
@@ -120,6 +134,16 @@ export interface ArchitectInput {
    * anyway is refused by `writeOutcomeSpec`, which is the other half of this pair.
    */
   scanners?: string[];
+  /**
+   * The repository as a rendered map (PLAN-NEXT 8.1) — the same string `research` gets,
+   * from the same cache, and absent for the same reasons.
+   *
+   * This is the call that names concrete files and concrete interfaces in a design note
+   * every code worker then opens, and it has no tools to check that any of them exist.
+   * The map is what a directory named in that note is checked against; it is still a
+   * snapshot of a commit rather than a listing, which is what the prompt says about it.
+   */
+  repoKb?: string;
 }
 
 export interface ArchitectResult {
@@ -216,6 +240,17 @@ export interface CritiqueInput {
   /** What the plan has to satisfy — an objection is only worth raising against the
    *  contract the mission is actually judged on. */
   criteria: Criterion[];
+  /**
+   * The architect's design summary, on a moonshot mission only (PLAN-NEXT 8.2) — the
+   * design review round.
+   *
+   * The same projection the planner gets, never the note itself: this is the call that
+   * reads a breakdown against what it was supposed to implement, and an objection it can
+   * raise here ("the design puts the migration behind a flag and no task creates one")
+   * is one the planner can act on in the replan it already buys. Absent everywhere else,
+   * so a standard mission's critique prompt carries the bytes it carried before.
+   */
+  design?: string;
 }
 
 export interface Objection {
