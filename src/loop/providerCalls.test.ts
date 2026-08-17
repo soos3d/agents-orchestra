@@ -293,3 +293,30 @@ describe("staffedCalls", () => {
     assert.equal(built, 1);
   });
 });
+
+// The failure mode: a mission that granted research the web *and* staffed it to a card,
+// where the card is a chat completion holding no tools — the grant would be silently
+// dropped, which is the `honoursModel` trap and defects 22 and 40's class
+// (PLAN-NEXT 11.3).
+describe("resolveStaffing and the web grant", () => {
+  test("refuses the pair, naming both flags", () => {
+    const resolved = resolveStaffing(
+      { research: "Qwen/Qwen3-4B-fast" },
+      [aCard()],
+      { nebius: "k" },
+      true,
+    );
+
+    assert.equal(resolved.ok, false);
+    assert.match(resolved.ok ? "" : resolved.problem, /--research-web/);
+    assert.match(resolved.ok ? "" : resolved.problem, /--staff research=/);
+  });
+
+  test("either alone still resolves", () => {
+    assert.equal(
+      resolveStaffing({ research: "Qwen/Qwen3-4B-fast" }, [aCard()], { nebius: "k" }).ok,
+      true,
+    );
+    assert.equal(resolveStaffing({ plan: "Qwen/Qwen3-4B-fast" }, [aCard()], { nebius: "k" }, true).ok, true);
+  });
+});

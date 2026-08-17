@@ -3,7 +3,12 @@
 // request should still be refused.
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { describeViolations, envelopeSchema, violations } from "./envelope.js";
+import {
+  allowedFetchHost,
+  describeViolations,
+  envelopeSchema,
+  violations,
+} from "./envelope.js";
 import { anEnvelope } from "../testing/fixtures.js";
 
 const envelope = anEnvelope({
@@ -138,5 +143,50 @@ describe("envelope", () => {
 
     assert.equal(found.length, 3);
     assert.match(describeViolations(found), /browser\.commit/);
+  });
+});
+
+// The failure mode: a fetch that reads as granted because the URL contains the host,
+// or a URL nothing can parse being passed through as if it had been checked. Both hand
+// a research call egress the mission's human never approved (PLAN-NEXT 11.3).
+describe("allowedFetchHost", () => {
+  const granted = ["docs.python.org", "nodejs.org"];
+
+  test("an exact host is allowed and a neighbour is not", () => {
+    assert.equal(allowedFetchHost("https://docs.python.org/3/library/json.html", granted), true);
+    assert.equal(allowedFetchHost("https://evil.example/docs.python.org", granted), false);
+    // A subdomain is a different machine, `violations`' rule: exact hosts only.
+    assert.equal(allowedFetchHost("https://api.docs.python.org/", granted), false);
+  });
+
+  test("a host is matched case-insensitively, in the URL and in the grant", () => {
+    assert.equal(allowedFetchHost("https://DOCS.python.ORG/x", granted), true);
+    assert.equal(allowedFetchHost("https://nodejs.org/x", [" NodeJS.org "]), true);
+  });
+
+  test("anything URL refuses is denied rather than passed through", () => {
+    assert.equal(allowedFetchHost("docs.python.org", granted), false);
+    assert.equal(allowedFetchHost("", granted), false);
+  });
+
+  test("a grant that named no host allows nothing", () => {
+    assert.equal(allowedFetchHost("https://docs.python.org/", []), false);
+  });
+});
+
+// `research` folds like `containment` and `env`, or a log written before the field
+// existed stops folding and the mission cannot be resumed.
+describe("the research grant's default", () => {
+  test("an envelope written before the field existed folds as closed", () => {
+    const parsed = envelopeSchema.safeParse({
+      toolClasses: [],
+      domains: [],
+      fsRoots: ["/repo"],
+      network: "none",
+      maxSpend: { wallMs: 1000 },
+      approval: "local",
+    });
+
+    assert.equal(parsed.success && parsed.data.research, "closed");
   });
 });

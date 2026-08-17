@@ -9,7 +9,7 @@
 // criterion exits non-zero so a pipeline notices.
 import { parseArgs } from "node:util";
 import { spendPhase, type Budget, type Spend } from "../domain/budget.js";
-import { type Envelope } from "../domain/envelope.js";
+import { hostOf, type Envelope } from "../domain/envelope.js";
 import { type Criterion, type PlannedTask } from "../domain/ledger.js";
 import {
   staffableCalls,
@@ -104,6 +104,24 @@ export interface RunOptions {
    * every mission that did not type the flag.
    */
   env: string[];
+  /**
+   * Whether the `research` decision point may read the web (`--research-web`) —
+   * PLAN-NEXT 11.3.
+   *
+   * A grant like `--scan` and `--env`, and it goes into the envelope for their reason:
+   * egress is a human's decision and belongs where the blast-radius decisions live.
+   * `"closed"` is every mission that did not type the flag.
+   */
+  research: Envelope["research"];
+  /**
+   * Hosts `WebFetch` may reach (`--domain docs.python.org`), the existing
+   * `Envelope.domains` a `net.read` worker is already checked against.
+   *
+   * Empty under a web grant is a real state and not a mistake: search still works and
+   * every fetch is denied, which arrives in the inbox as one advisory question naming
+   * what to grant next time.
+   */
+  domains: string[];
 }
 
 /**
@@ -170,6 +188,8 @@ const RUN_FLAGS = {
   "orchestrator-model": { type: "string" },
   scan: { type: "string", multiple: true },
   env: { type: "string", multiple: true },
+  "research-web": { type: "boolean" },
+  domain: { type: "string", multiple: true },
   saved: { type: "string" },
   budget: { type: "string" },
 } as const;
@@ -185,6 +205,7 @@ const VALUE_FLAG_REFUSALS: Readonly<Record<string, string>> = {
     "--orchestrator-model takes a value, e.g. --orchestrator-model sonnet.",
   "--scan": `--scan takes a scanner name, e.g. --scan ${SCANNERS[0]}.`,
   "--env": "--env takes a variable name, e.g. --env STRIPE_KEY.",
+  "--domain": "--domain takes a host, e.g. --domain docs.python.org.",
   "--saved": "--saved takes a name, e.g. --saved monthly-reconcile.",
   "--budget": "--budget takes a number of minutes, e.g. --budget 90.",
 };
@@ -217,6 +238,8 @@ export function parseRunArgs(argv: readonly string[]): ParsedRun {
     "orchestrator-model": string;
     scan: string[];
     env: string[];
+    "research-web": boolean;
+    domain: string[];
     saved: string;
     budget: string;
   }>;
@@ -299,6 +322,41 @@ export function parseRunArgs(argv: readonly string[]): ParsedRun {
     }
   }
 
+  const domains = values.domain ?? [];
+  for (const value of domains) {
+    // Exact hosts, `envelopeSchema.domains`' rule: an allowlist that accepts patterns
+    // eventually holds one too broad to mean anything, approved by a human who read it
+    // as specific. A URL is the likelier slip and is refused with the host to type
+    // instead — `allowedFetchHost` compares hostnames, so `https://host/docs` would
+    // match nothing while reading as granted.
+    const host = hostOf(value) ?? hostOf(`https://${value}`);
+    if (value.includes("*") || host === undefined || host !== value.toLowerCase()) {
+      return {
+        ok: false,
+        message:
+          `--domain takes one exact host, e.g. --domain docs.python.org. '${value}' is ` +
+          `not one${host === undefined ? "" : ` — try --domain ${host}`}.`,
+      };
+    }
+  }
+
+  const research: Envelope["research"] = values["research-web"] === true ? "web" : "closed";
+
+  // A quick mission's only research pass is the scan, and the scan is never given tools:
+  // it is the cheap first look, and a mission a human called small is not the one to spend
+  // a multi-turn web pass on. Accepting both would leave a grant no call is ever told
+  // about, which is a flag that reads as honoured and does nothing — `--scan`'s refusal
+  // one grant along.
+  if (values.quick === true && research === "web") {
+    return {
+      ok: false,
+      message:
+        "--research-web and --quick do not go together. A quick mission's only research " +
+        "pass is the scan, which is never given tools, so the grant would do nothing. " +
+        "Drop --quick to research the web.",
+    };
+  }
+
   const saved = values.saved;
   const minutes = values.budget === undefined ? DEFAULT_BUDGET_MINUTES : Number(values.budget);
   if (!Number.isFinite(minutes) || minutes <= 0) {
@@ -373,6 +431,8 @@ export function parseRunArgs(argv: readonly string[]): ParsedRun {
       staffing,
       scanners,
       env,
+      research,
+      domains,
       ...(saved === undefined ? {} : { saved }),
     },
   };
@@ -399,13 +459,17 @@ export function defaultEnvelope(
   budget: Budget,
   scanners: readonly string[] = [],
   env: readonly string[] = [],
+  research: Envelope["research"] = "closed",
+  domains: readonly string[] = [],
 ): Envelope {
   return {
     // From the catalogue rather than written out here, because these classes have to
     // resolve to tools synthesis can actually offer — a class this file invents grants
     // nothing and every task fails validation on a spelling.
     toolClasses: [...DEFAULT_TOOL_CLASSES],
-    domains: [],
+    // The hosts `--domain` granted, which `WebFetch` on a granted research call and a
+    // `net.read` worker are both held to. Empty is every mission that did not type it.
+    domains: [...domains],
     fsRoots: [config.repoRoot ?? config.cwd],
     // No mission variables (defect 42). A worker gets the vars its transport needs to
     // start — those live beside the launch in `workers/` — and nothing else until a
@@ -421,6 +485,10 @@ export function defaultEnvelope(
     // Granted by name or not at all (PLAN-NEXT 6.3). A deepsec scan costs real money per
     // file, so a terminal run that never typed `--scan` never pays for one.
     scanners: [...scanners],
+    // Closed unless `--research-web` was typed (PLAN-NEXT 11.3). Egress is the same kind
+    // of decision as containment, and a research call that reads the web on nobody's
+    // instruction is the default this field exists to refuse.
+    research,
     maxSpend: budget,
     approval: "local",
   };
@@ -483,6 +551,14 @@ export async function runMission(
     }
   }
 
+  // A saved mission carries the staffing it was run with (PLAN-NEXT 11.2), which is what
+  // makes `save … --as kimi-deepseek` a preset rather than a flag string to remember. A
+  // `--staff` pair typed now wins per decision point, for `--scan`'s reason: a grant typed
+  // now is a human's decision made now. Merged here, before `resolveStaffing`, so a preset
+  // naming a card whose probe transcript has since gone is refused with the same message
+  // the flag gets rather than falling through to the Agent SDK silently.
+  const staffing: MissionStaffing = { ...saved?.staffing, ...options.staffing };
+
   const goal = options.goal || saved?.goal || "";
   const missionId = newMissionId(goal, new Date());
   const dir = missionDir(config.stateDir, missionId);
@@ -517,9 +593,10 @@ export async function runMission(
   // mission that would run its research on the default model and fail three phases later
   // with a directory already on disk (PLAN-NEXT 4.2's door).
   const resolved = resolveStaffing(
-    options.staffing,
+    staffing,
     staffableCards(config.stateDir, (message) => io.err(message)),
     config.providerKeys ?? {},
+    options.research === "web",
   );
   if (!resolved.ok) {
     io.err(resolved.problem);
@@ -539,7 +616,7 @@ export async function runMission(
         // does. `metrics` prices off this and never off what was asked for.
         ...(ranOn ? { model: ranOn } : {}),
       }),
-    options.staffing,
+    staffing,
     panic.signal,
   );
 
@@ -560,15 +637,26 @@ export async function runMission(
           maxSpend: budget,
           scanners: [...new Set([...saved.envelope.scanners, ...options.scanners])],
           env: [...new Set([...saved.envelope.env, ...options.env])],
+          // `--research-web` and `--domain` widen a saved envelope for `--scan`'s reason:
+          // the grant is a decision a human is making now, about this run.
+          research: options.research === "web" ? "web" : saved.envelope.research,
+          domains: [...new Set([...saved.envelope.domains, ...options.domains])],
         }
-      : defaultEnvelope(config, budget, options.scanners, options.env),
+      : defaultEnvelope(
+          config,
+          budget,
+          options.scanners,
+          options.env,
+          options.research,
+          options.domains,
+        ),
     budget,
     unattended: options.unattended,
     quick: options.quick,
     moonshot: options.moonshot,
     // Recorded for `runtime`'s reason, and omitted the same way when nothing was chosen:
     // a resumed mission runs its second half on what its first half ran on.
-    ...(Object.keys(options.staffing).length > 0 ? { staffing: options.staffing } : {}),
+    ...(Object.keys(staffing).length > 0 ? { staffing } : {}),
     // Omitted when nothing was chosen rather than sent empty, so a log reads as "no
     // choice was made" and not as "a choice was made and it was nothing" — the same
     // distinction `roster` draws when it is absent instead of `[]`.

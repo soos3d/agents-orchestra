@@ -34,6 +34,7 @@ export const anEnvelope = (patch: Partial<Envelope> = {}): Envelope => ({
   network: "none",
   containment: "none",
   scanners: [],
+  research: "closed",
   maxSpend: { wallMs: 4 * 60 * 60_000 },
   approval: "local",
   ...patch,

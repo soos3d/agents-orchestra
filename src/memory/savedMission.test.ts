@@ -225,4 +225,42 @@ describe("saved missions", () => {
       assert.equal(new Set(seeded.factsGiven.map((entry) => entry.id)).size, 2);
     });
   });
+
+  // The failure mode: `--staff` is typed once at the terminal and then has to be
+  // remembered forever, because the preset that carries everything else about the mission
+  // drops the one field that decides which model answers which decision point. The other
+  // half is the field being new: a preset written before it existed must still load, or
+  // adding it breaks every saved mission on disk.
+  describe("staffing", () => {
+    const staffed = { research: "moonshotai/Kimi-K3", critique: "deepseek-ai/DeepSeek-V4-Pro" };
+
+    test("survives the save/load round trip", () => {
+      const state = signedOffState();
+      const file = saveMission(
+        stateDir,
+        "kimi-deepseek",
+        { ...state, mission: { ...state.mission, staffing: staffed } },
+        "2026-08-17T10:00:00.000Z",
+      );
+
+      assert.deepEqual(loadSavedMission(stateDir, "kimi-deepseek").staffing, staffed);
+      // And in the prose, not only in the payload — the file is meant to be read.
+      assert.match(fs.readFileSync(file, "utf8"), /## Staffing[\s\S]*moonshotai\/Kimi-K3/);
+    });
+
+    test("a preset saved before the field existed still parses", () => {
+      const { staffing: _dropped, ...old } = aSavedMission({ staffing: staffed });
+
+      const parsed = parseSavedMission(renderSavedMission(old as SavedMission));
+
+      assert.equal(parsed.ok, true);
+      assert.equal(parsed.ok && parsed.saved.staffing, undefined);
+    });
+
+    test("an unstaffed mission records no field rather than an empty one", () => {
+      const file = saveMission(stateDir, "monthly", signedOffState(), "2026-08-09T10:00:00.000Z");
+
+      assert.equal(fs.readFileSync(file, "utf8").includes('"staffing"'), false);
+    });
+  });
 });

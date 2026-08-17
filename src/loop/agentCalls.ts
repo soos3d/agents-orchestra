@@ -30,9 +30,14 @@
 //   worker's report — read-only, and asserted against every other call getting none.
 //   See `JUDGE_TOOLS`.
 import path from "node:path";
+// Type-only, so it is erased at compile time and the lazy `import()` in `runViaAgentSdk`
+// stays the only thing that loads the SDK — a `--plan-only` run against a supplied
+// `Calls` must still never look for credentials.
+import type { HookInput } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { type DiscoveredConfig } from "../config/discover.js";
 import { evidenceSchema } from "../domain/artifacts.js";
+import { allowedFetchHost, hostOf } from "../domain/envelope.js";
 import { tokensFrom, type Spend } from "../domain/budget.js";
 import {
   criterionSchema,
@@ -69,6 +74,10 @@ export type RunQuery = (input: {
   maxTurns?: number;
   /** Absolute directories the call may read outside the process cwd — `judge` only. */
   directories?: readonly string[];
+  /** The hosts a granted `research` call may fetch (PLAN-NEXT 11.3). Absent for every
+   *  other call and for every mission that granted no egress; present-and-empty is a
+   *  grant that named no host, where search works and every fetch is denied. */
+  domains?: readonly string[];
   /** The mission's repository. Absent only when nothing was discovered (P3). */
   cwd?: string;
   /**
@@ -89,6 +98,9 @@ export type RunQuery = (input: {
    *  priced off this and never off the model that was *asked for* — the distinction has
    *  already cost a 5× error once (`.claude/notes/spend.md`). */
   ranOn?: string;
+  /** Hosts this call asked to fetch and was refused (PLAN-NEXT 11.3). Absent from every
+   *  transport that grants no tools, which is every one but the Agent SDK. */
+  deniedHosts?: readonly string[];
 }>;
 
 export interface AgentCallsDeps {
@@ -132,6 +144,71 @@ export const JUDGE_TOOLS = ["Read", "Glob", "Grep"];
 export const JUDGE_MAX_TURNS = 20;
 
 /**
+ * The second place §3's "no tools" rule bends, and it is narrower than `judge`'s
+ * (PLAN-NEXT 11.3).
+ *
+ * The ledger already demands what the call could not produce: a `Finding` carries a
+ * `source` and `"web"` is in `sourceKind`, so every web-shaped finding a closed mission
+ * returns is a recollection wearing a citation. The grant is read-only egress and
+ * nothing else — no `Read`, `Glob` or `Grep`, so none of the repository enters the call
+ * and the context discipline §4 exists for is untouched.
+ *
+ * The names are `net.read`'s in `workers/toolCatalogue.ts`, which is where a tool name
+ * is written down once.
+ */
+export const RESEARCH_WEB_TOOLS = ["WebSearch", "WebFetch"];
+
+/**
+ * The turn cap for a granted research call, and the reason it is not `MAX_TURNS`.
+ *
+ * Six is a backstop sized for a call that cannot loop: with `tools: []` there is nothing
+ * to interrupt. Searching and then fetching what the search returned is a loop, so the
+ * old backstop would fire on a legitimate answer — `error_max_turns`, no result, and the
+ * mission pays for a research call that returned nothing. Same number as `JUDGE_MAX_TURNS`
+ * and for the same shape of work: N reads before one answer.
+ */
+export const RESEARCH_MAX_TURNS = 20;
+
+/**
+ * Whether one tool call from a granted research call is inside the mission's allowlist.
+ *
+ * Pure, exported and tested because the callback that uses it lives in
+ * `runViaAgentSdk` — below the fixture seam, in the file six defects hid in — and a
+ * permission decision nothing can assert is the optional-`Deps` trap with a security
+ * boundary attached.
+ *
+ * `WebSearch` is not decidable here and saying so is the honest answer: its results come
+ * from a backend rather than from a host the envelope could name, so there is no URL to
+ * check and it is allowed whenever the grant exists. `WebFetch` is the enforced half.
+ * Anything else is denied — the grant is two tools, and a third arriving means the
+ * option list and this function disagree.
+ */
+export function webFetchDecision(
+  toolName: string,
+  input: unknown,
+  domains: readonly string[],
+): { allow: true } | { allow: false; host: string; message: string } {
+  if (toolName === "WebSearch") return { allow: true };
+  if (toolName !== "WebFetch") {
+    return { allow: false, host: "", message: `${toolName} is not granted to this call.` };
+  }
+
+  const url = (input as { url?: unknown }).url;
+  const target = typeof url === "string" ? url : "";
+  if (allowedFetchHost(target, domains)) return { allow: true };
+
+  const host = hostOf(target) ?? target;
+  return {
+    allow: false,
+    host,
+    message:
+      `This mission's envelope does not grant ${host || "that host"}. ` +
+      `Use a source it does grant${domains.length > 0 ? ` (${domains.join(", ")})` : ""}, ` +
+      `or return the claim as a guess rather than a finding.`,
+  };
+}
+
+/**
  * The directories a judge is allowed to read, derived from the artifacts it was handed.
  *
  * Defect 40, and the third layer of one wound: defect 22 gave the judge tools, 33 and 39
@@ -162,6 +239,12 @@ export function createAgentCalls(deps: AgentCallsDeps): Calls {
   // is the same class of failure as a judge reading `main` pre-merge (defect 33).
   const cwd = deps.config.repoRoot ?? deps.config.cwd;
 
+  // What a granted `research` call was refused, collected across its attempts. Local to
+  // this factory rather than returned through `ask`, because only `research` is ever
+  // granted a fetch and only `research` reads the list — threading a second return value
+  // through every call to carry one call's fact is the shape `onSpend` already rejected.
+  const deniedHosts = new Set<string>();
+
   const ask = async <T>(
     call: keyof Calls,
     spec: {
@@ -172,6 +255,7 @@ export function createAgentCalls(deps: AgentCallsDeps): Calls {
       tools?: string[];
       maxTurns?: number;
       directories?: readonly string[];
+      domains?: readonly string[];
     },
   ): Promise<T> => {
     const systemPrompt = withSchema(spec.systemPrompt, spec.schema);
@@ -185,10 +269,12 @@ export function createAgentCalls(deps: AgentCallsDeps): Calls {
         maxTurns: spec.maxTurns ?? MAX_TURNS,
         schema: spec.schema,
         ...(spec.directories ? { directories: spec.directories } : {}),
+        ...(spec.domains ? { domains: spec.domains } : {}),
         ...(cwd ? { cwd } : {}),
         ...(deps.signal ? { signal: deps.signal } : {}),
       });
       deps.onSpend?.(call, result.spend, result.ranOn);
+      for (const host of result.deniedHosts ?? []) deniedHosts.add(host);
       // The raw text rides along so a rejection can quote it (P4). Discarded on the
       // happy path by the caller, which only reads `value`.
       return { ...validate(result.text, spec.schema), raw: result.text };
@@ -209,12 +295,25 @@ export function createAgentCalls(deps: AgentCallsDeps): Calls {
   };
 
   return {
-    research: (input) =>
-      ask("research", {
-        systemPrompt: RESEARCH_PROMPT,
+    research: async (input) => {
+      const result = await ask("research", {
+        systemPrompt: researchSystemPrompt(input.web?.domains),
         prompt: describe("Research request", input),
         schema: researchSchema,
-      }),
+        // Tools and a real turn cap only where egress was granted (PLAN-NEXT 11.3), so
+        // an ungranted mission's call is the one that has always run.
+        ...(input.web
+          ? {
+              tools: RESEARCH_WEB_TOOLS,
+              maxTurns: RESEARCH_MAX_TURNS,
+              domains: input.web.domains,
+            }
+          : {}),
+      });
+      // Absent rather than empty when nothing was refused, so `prepareMission` raises a
+      // question on a fact rather than on the length of a list.
+      return deniedHosts.size === 0 ? result : { ...result, deniedHosts: [...deniedHosts] };
+    },
 
     architect: (input) =>
       ask("architect", {
@@ -501,7 +600,47 @@ export function checkAuthoring(scanners: readonly string[] = []): string {
   );
 }
 
-const RESEARCH_PROMPT = `You research a mission before it is planned.
+/**
+ * What a granted research call is told about its egress, and nothing when it has none
+ * (PLAN-NEXT 11.3) — `checkAuthoring`'s shape and its reason.
+ *
+ * An ungranted mission's prompt is byte-identical to the one it had before this stage,
+ * which is the only version any model has been measured on. The paragraph is short and
+ * about what to *do* with the tools, because the scanner offer that broke Qwen was long
+ * and mostly about what not to do.
+ */
+export function researchAuthoring(domains: readonly string[] = []): string {
+  return (
+    `You have \`WebSearch\` and \`WebFetch\` for this call, and no other tools — you ` +
+    `still cannot open a file in the repository. Use them: a finding with ` +
+    `\`sourceKind: "web"\` must carry the URL you actually fetched as its \`source\`, ` +
+    `and a claim you did not fetch is a guess whatever you remember about it.\n\n` +
+    (domains.length > 0
+      ? `\`WebFetch\` is held to this mission's allowlist: ${domains.join(", ")}. A fetch ` +
+        `outside it is refused and the refusal names the host — take the claim to a ` +
+        `granted source or return it as a guess. `
+      : `This mission granted no hosts, so every \`WebFetch\` is refused and search ` +
+        `results are all you have. Return what you cannot fetch as a guess. `) +
+    `Search itself is not constrained by that list: results come from a backend rather ` +
+    `than a host, so what you search is up to you and what you fetch is not. A search ` +
+    `result is not a fetch — put a claim you took from a snippet in \`guesses\`, with the ` +
+    `search and the URL it pointed at as its \`basis\`. A \`"web"\` finding sourced to a ` +
+    `host outside the allowlist, or to anything that is not a URL, is dropped before the ` +
+    `architect reads it, because this mission cannot have fetched it.`
+  );
+}
+
+/**
+ * The research call's system prompt, with the egress paragraph only where a human
+ * granted egress — `judgeSystemPrompt`'s shape, so the lens lands before `SHAPE` rather
+ * than after it.
+ */
+export function researchSystemPrompt(domains?: readonly string[]): string {
+  const granted = domains === undefined ? [] : [researchAuthoring(domains)];
+  return [RESEARCH_BODY, ...granted, SHAPE].join("\n\n");
+}
+
+const RESEARCH_BODY = `You research a mission before it is planned.
 
 An architect reads what you return and writes the outcome spec from it, so findings are
 the deliverable here — **with one exception, and \`solePass\` is how you know you are it**
@@ -551,9 +690,7 @@ Note the \`check\` union: \`command\` needs a \`command\` string, \`judge\` need
 
 ${checkAuthoring()}
 
-${REPO_MAP}
-
-${SHAPE}`;
+${REPO_MAP}`;
 
 /**
  * The architect's system prompt, carrying the scanner offer only when the mission has
@@ -985,6 +1122,7 @@ const runViaAgentSdk: RunQuery = async ({
   tools,
   maxTurns,
   directories,
+  domains,
   cwd,
   signal,
 }) => {
@@ -994,6 +1132,11 @@ const runViaAgentSdk: RunQuery = async ({
 
   const controller = new AbortController();
   if (signal) signal.addEventListener("abort", () => controller.abort(), { once: true });
+
+  // What the allowlist refused, reported back so the mission can raise it as a question
+  // (PLAN-NEXT 11.3). The decision itself is `webFetchDecision`, which is pure and tested
+  // — this closure is the wiring and the recording, which is all that cannot be.
+  const denied = new Set<string>();
 
   const response = query({
     prompt,
@@ -1008,13 +1151,76 @@ const runViaAgentSdk: RunQuery = async ({
         ...(cwd ? { cwd } : {}),
       }),
       abortController: controller,
+      // Only where egress was granted: a call with no tools has nothing to ask about,
+      // and a gate wired unconditionally would be a permission channel that decides
+      // nothing on every mission but one.
+      //
+      // `PreToolUse` and not `canUseTool`, which is the same class of mistake as
+      // `allowedTools`-for-`tools` one layer along and was caught the same way — by a
+      // real run rather than by the suite, this file being below the fixture seam.
+      // `canUseTool` is documented as "called before each tool execution" and is not:
+      // the CLI consults it only for a call its own rules route to *ask*, and `WebFetch`
+      // is auto-allowed. Measured, with a callback that denied everything and recorded
+      // every invocation: it was never invoked, and `developer.mozilla.org` — granted by
+      // nobody — was fetched and quoted. `permissionMode: "default"` did not change it.
+      // A `PreToolUse` hook fires on every tool call whatever the rules decided, its
+      // `deny` bypasses `canUseTool` by design, and the call carries on with the refusal
+      // as the tool's result, which is the behaviour this grant needs: one refused host
+      // must not cost the mission the research it could reach.
+      ...(domains === undefined
+        ? {}
+        : {
+            // The allow half, and it is not redundant with the hook. A hook that returns
+            // no decision leaves the call to the CLI's ordinary permission flow, which
+            // *asks* — and with nothing to answer, `WebSearch` came back as a permission
+            // error in a real run and the research pass lost its search tool. So: the
+            // hook is the door that always fires and refuses, and this answers the ask
+            // for the calls the hook let through. Both read the same pure decision, and
+            // `denied` is a Set, so a host that arrives down both paths is recorded once.
+            canUseTool: async (toolName: string, toolInput: Record<string, unknown>) => {
+              const decision = webFetchDecision(toolName, toolInput, domains);
+              if (decision.allow) return { behavior: "allow" as const, updatedInput: toolInput };
+              if (decision.host) denied.add(decision.host);
+              return { behavior: "deny" as const, message: decision.message };
+            },
+            hooks: {
+              PreToolUse: [
+                {
+                  hooks: [
+                    // `HookInput` is the whole union and one member of it carries no
+                    // tool at all, so the narrowing is the compiler's, not a cast. Only
+                    // `PreToolUse` is registered, so the other members are unreachable —
+                    // allowed rather than denied, because refusing a shape this file does
+                    // not understand would fail correct work.
+                    async (input: HookInput) => {
+                      if (!("tool_name" in input)) return {};
+                      const decision = webFetchDecision(input.tool_name, input.tool_input, domains);
+                      if (decision.allow) return {};
+                      if (decision.host) denied.add(decision.host);
+                      return {
+                        hookSpecificOutput: {
+                          hookEventName: "PreToolUse" as const,
+                          permissionDecision: "deny" as const,
+                          permissionDecisionReason: decision.message,
+                        },
+                      };
+                    },
+                  ],
+                },
+              ],
+            },
+          }),
     },
   });
 
   for await (const message of response) {
     if (message.type !== "result") continue;
     if (message.subtype !== "success") throw failedResult(message);
-    return { text: message.result, spend: spendOf(message.usage, message.duration_ms) };
+    return {
+      text: message.result,
+      spend: spendOf(message.usage, message.duration_ms),
+      ...(denied.size > 0 ? { deniedHosts: [...denied] } : {}),
+    };
   }
 
   throw new Error(

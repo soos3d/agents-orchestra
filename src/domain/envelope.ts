@@ -50,6 +50,25 @@ export const envelopeSchema = z.object({
    * folding, and "granted nothing" is the honest reading of a mission that never said.
    */
   scanners: z.array(z.string().min(1)).default([]),
+  /**
+   * Whether the `research` decision point may read the web (PLAN-NEXT 11.3).
+   *
+   * `containment`'s and `scanners`' shape, for their reason: it is egress and it is a
+   * human's decision. `"closed"` is the mission every log before this one recorded —
+   * research reasons over the scan and its own weights, and a web-shaped finding it
+   * returns is a recollection wearing a citation. `"web"` grants `WebSearch` and
+   * `WebFetch` to that one call and nothing else: no `Read`, no `Glob`, no `Grep`, so
+   * none of the repository enters it.
+   *
+   * Not `toolClasses`. `violations()` reads that list against *worker* specs, so
+   * granting `net.read` there to unlock research would widen every worker on the
+   * mission at the same time.
+   *
+   * `.default("closed")` for the reason `env` has one: the envelope is embedded in
+   * `mission_created`, so every log written before this field existed has to keep
+   * folding, and "closed" is the honest reading of a mission that never said.
+   */
+  research: z.enum(["closed", "web"]).default("closed"),
   maxSpend: budgetSchema,
   // "This mission's gates never leave this machine" is a blast-radius property and
   // belongs next to the rest of them (§17).
@@ -127,6 +146,35 @@ export function violations(
       ? [{ field: "containment" as const, requested: "none" }]
       : []),
   ];
+}
+
+/**
+ * Whether a URL a granted `research` call wants to fetch is inside the allowlist
+ * (PLAN-NEXT 11.3).
+ *
+ * Exact host, `violations()`'s rule one call along: `domains` is the same list a
+ * `net.read` worker is checked against, and a second matching rule would be a second
+ * meaning for the same field. A URL that will not parse is denied rather than passed
+ * through — the model wrote it, and a fetch this function cannot read the host of is
+ * one it cannot claim is granted.
+ *
+ * Takes the hosts rather than the whole envelope because the caller is `agentCalls.ts`,
+ * which is handed a decision point's input and never mission state.
+ */
+export function allowedFetchHost(url: string, domains: readonly string[]): boolean {
+  const host = hostOf(url);
+  if (host === undefined) return false;
+  return domains.some((granted) => granted.trim().toLowerCase() === host);
+}
+
+/** Lower-cased, or `undefined` for anything `URL` refuses. Hosts are case-insensitive
+ *  and a grant typed in either case means the same machine. */
+export function hostOf(url: string): string | undefined {
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return undefined;
+  }
 }
 
 export function describeViolations(found: readonly EnvelopeViolation[]): string {

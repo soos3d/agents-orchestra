@@ -8,6 +8,7 @@ import {
   aCriterion,
   aMission,
   aMissionState,
+  anEnvelope,
   aProgressLedger,
   aReport,
 } from "../testing/fixtures.js";
@@ -51,6 +52,40 @@ describe("buildResearchInput", () => {
   // `writeOutcomeSpec` refused `(empty)` and the mission escalated to the deep call it
   // was trying to skip. Quick cost two research calls and saved nothing. The scan has
   // to know when its own answer is the whole of the mission's research.
+  // The failure mode: a grant that reaches the cheap first look, or one that reaches a
+  // mission nobody granted. Both are a research call holding egress on nobody's say-so,
+  // and the derivation is what keeps the answer readable off the folded envelope.
+  describe("the web grant (PLAN-NEXT 11.3)", () => {
+    const granted = (domains: string[] = ["docs.python.org"]) =>
+      aMissionState({
+        mission: aMission({
+          capabilityEnvelope: anEnvelope({ research: "web", domains }),
+        }),
+      });
+
+    test("a closed mission's research input carries no grant at all", () => {
+      assert.equal(buildResearchInput(aMissionState(), "deep").web, undefined);
+    });
+
+    test("a granted mission's deep pass carries the envelope's hosts", () => {
+      assert.deepEqual(buildResearchInput(granted(), "deep").web, {
+        domains: ["docs.python.org"],
+      });
+    });
+
+    // The scan is the cheap look and, on a quick mission, the only pass — which is why
+    // `--research-web --quick` is refused rather than quietly giving the scan tools.
+    test("the scan is never granted, even on a granted mission", () => {
+      assert.equal(buildResearchInput(granted(), "scan").web, undefined);
+    });
+
+    // A grant naming no host is a real state: search works, every fetch is denied, and
+    // the denials arrive in the inbox. Absent would turn the tools off instead.
+    test("a grant with no host is present and empty, not absent", () => {
+      assert.deepEqual(buildResearchInput(granted([]), "deep").web, { domains: [] });
+    });
+  });
+
   describe("the scan on a quick mission", () => {
     test("is told it is the only research pass there will be", () => {
       const state = aMissionState({ mission: aMission({ quick: true }) });

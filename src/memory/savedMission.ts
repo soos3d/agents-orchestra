@@ -3,8 +3,8 @@
 // Invoice reconciliation is monthly and a dependency audit is weekly. Re-briefing
 // from scratch each time discards the sign-off that was already given, the envelope
 // that was already scoped, and the guesses that were already corrected — so a saved
-// mission carries the goal, the envelope, the criteria as a *skeleton*, and last
-// time's intake answers.
+// mission carries the goal, the envelope, the criteria as a *skeleton*, last time's
+// intake answers, and which decision points were staffed to a model card.
 //
 // What it deliberately does not carry is the outcome. `met`, `evidence`, and
 // `lastCheckedRound` are stripped here rather than filtered later, because the
@@ -26,6 +26,7 @@ import { verifySpecSchema } from "../domain/artifacts.js";
 import { envelopeSchema } from "../domain/envelope.js";
 import { type Criterion, type LedgerEntry, type TaskLedger } from "../domain/ledger.js";
 import { type MissionState } from "../events/fold.js";
+import { missionStaffingSchema } from "../domain/mission.js";
 import { assertPlainName, parseFencedPayload } from "./fencedPayload.js";
 
 export const savedMissionSchema = z.object({
@@ -36,6 +37,17 @@ export const savedMissionSchema = z.object({
   // rather than by a filter somebody has to remember to apply.
   criteriaSkeleton: z.array(z.object({ statement: z.string().min(1), check: verifySpecSchema })),
   intakeAnswers: z.array(z.object({ question: z.string().min(1), answer: z.string() })),
+  /**
+   * Which decision points ran on a model card (PLAN-NEXT 11.2), so `--staff` survives into
+   * the preset and is not a flag string somebody has to remember.
+   *
+   * Optional rather than defaulted, for `mission_created.staffing`'s reason: every saved
+   * mission written before this field existed still parses, and absent reads as "no choice
+   * was recorded" rather than as "a choice was made and it was nothing". No second door —
+   * `resolveStaffing` refuses a card this machine never probed whether the id arrived from
+   * a flag or from here, which is the point of putting the check before the log opens.
+   */
+  staffing: missionStaffingSchema.optional(),
   savedAt: z.string().min(1),
   fromMissionId: z.string().min(1),
 });
@@ -63,6 +75,8 @@ export function renderSavedMission(saved: SavedMission): string {
           (criterion, index) => `${index + 1}. ${criterion.statement} — check: ${criterion.check.kind}`,
         );
 
+  const staffed = Object.entries(saved.staffing ?? {}).map(([call, card]) => `- **${call}** ${card}`);
+
   return [
     `# ${saved.name}`,
     "",
@@ -80,6 +94,13 @@ export function renderSavedMission(saved: SavedMission): string {
     "## Intake answers from last time",
     "",
     ...answers,
+    "",
+    // In the prose too, not only in the payload: the whole value of a staffing preset is
+    // which model answers which decision point, and a human who cannot read that off the
+    // file has to open the JSON to find out what they are about to pay for.
+    "## Staffing",
+    "",
+    ...(staffed.length === 0 ? ["_Agent SDK for every decision point_"] : staffed),
     "",
     "## Payload",
     "",
@@ -136,6 +157,9 @@ export function saveMission(
       check: criterion.check,
     })),
     intakeAnswers: intakeAnswersOf(state),
+    // Omitted when nothing was staffed, so the field means what `mission_created.staffing`
+    // means and an old preset and a default one read the same.
+    ...(Object.keys(mission.staffing).length > 0 ? { staffing: mission.staffing } : {}),
     savedAt,
     fromMissionId: mission.id,
   };

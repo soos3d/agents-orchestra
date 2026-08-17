@@ -7,6 +7,7 @@ import {
   verifySpecSchema,
   verifySpecWithoutScannerSchema,
 } from "./artifacts.js";
+import { allowedFetchHost } from "./envelope.js";
 import { workerKindSchema } from "./task.js";
 
 // Every entry is addressable because a task has to be able to name what produced it.
@@ -130,6 +131,44 @@ export type PlannedTask = z.infer<typeof plannedTaskSchema>;
 export type TaskLedger = z.infer<typeof taskLedgerSchema>;
 export type ProgressLedger = z.infer<typeof progressLedgerSchema>;
 export type CriterionDiff = z.infer<typeof criterionDiffSchema>;
+
+/**
+ * The findings a mission is allowed to believe: everything except a `"web"` finding
+ * the mission could not have fetched (PLAN-NEXT 11.3).
+ *
+ * The other half of `Envelope.research`, and it moves in the same commit as the prompt
+ * that asks for a fetched URL — the standing rule that a prompt and its validation move
+ * together. A closed mission's research call has no tools, so a finding it sources to a
+ * URL is a recollection wearing a citation; kept, it enters `factsVerified` and becomes
+ * ground truth the next mission is told not to re-verify.
+ *
+ * A *granted* mission is the same failure one grant along, and the first real run wrote
+ * both shapes: a mission granted `nodejs.org` returned findings sourced to
+ * `WebFetch refusal for https://developer.mozilla.org/…`, and a mission granted
+ * `example.com` returned twelve `nodejs.org` URLs it had only ever seen in search
+ * snippets. So the grant is checked per finding rather than believed wholesale —
+ * `allowedFetchHost`, the same function `canUseTool` refuses a live fetch with, because a
+ * second host rule is a second meaning for `domains`. A source with no parseable host is
+ * not a fetched URL either and goes the same way: `WebSearch` cannot be constrained to a
+ * host, so a search-derived claim is legitimate research and belongs in `guesses`, which
+ * is what the granted prompt now says.
+ *
+ * Dropped rather than demoted to a guess. A guess carries an id that has to stay unique
+ * across memory's and research's lists, and inventing one here to hold a claim the model
+ * has already been told to put in `guesses` buys a second reducer for a case the prompt
+ * already handles. The caller warns, which is what keeps the drop visible.
+ */
+export function groundedFindings(
+  findings: readonly Finding[],
+  research: "closed" | "web",
+  domains: readonly string[],
+): Finding[] {
+  return findings.filter(
+    (finding) =>
+      finding.sourceKind !== "web" ||
+      (research === "web" && allowedFetchHost(finding.source, domains)),
+  );
+}
 
 export const emptyLedger = (): TaskLedger => ({
   factsGiven: [],

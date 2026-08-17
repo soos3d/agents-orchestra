@@ -16,6 +16,11 @@ import {
   type RunQuery,
   checkAuthoring,
   judgeSystemPrompt,
+  researchAuthoring,
+  researchSystemPrompt,
+  webFetchDecision,
+  RESEARCH_MAX_TURNS,
+  RESEARCH_WEB_TOOLS,
 } from "./agentCalls.js";
 import { PANEL_LENSES } from "./criteria.js";
 import { judgeLens } from "./prompts.js";
@@ -1030,5 +1035,150 @@ describe("the scanner offer in the criteria-authoring prompts", () => {
     assert.equal(checkAuthoring(), checkAuthoring([]));
     assert.doesNotMatch(checkAuthoring(), /scanner/i);
     assert.match(checkAuthoring(["deepsec"]), /deepsec/);
+  });
+});
+
+// The failure mode this whole block exists for: a mission that granted no egress paying
+// for a different prompt, different turn cap, or a tool it never approved — and a
+// granted one whose tools are attached but whose prompt never says a source must be
+// fetched. `agentCalls.ts` is below the fixture seam, so what the model *receives* is
+// asserted here or nowhere (PLAN-NEXT 11.3).
+describe("the web grant on the research call", () => {
+  const spend: Spend = { tokens: { measured: 0, estimated: 0, unmeasured: 0 }, wallMs: 0, dispatches: 0 };
+  const researched = () => {
+    const seen: Parameters<RunQuery>[0][] = [];
+    const calls = createAgentCalls({
+      config,
+      runQuery: async (input) => {
+        seen.push(input);
+        return {
+          text: JSON.stringify({ brief: "b", findings: [], confidence: "high" }),
+          spend,
+        };
+      },
+    });
+    return { seen, calls };
+  };
+
+  // The done-when the stage is measured against: an ungranted mission's prompt is the
+  // one every model has been observed to answer, byte for byte.
+  test("an ungranted mission's prompt is byte-identical to the one it had", () => {
+    assert.equal(researchSystemPrompt(), researchSystemPrompt(undefined));
+    assert.doesNotMatch(researchSystemPrompt(), /WebFetch|WebSearch|allowlist/);
+    // Insertion-only: the granted prompt is the closed one with exactly the authoring
+    // paragraph spliced in, so no word of the text a model has been measured on can be
+    // edited under cover of adding the grant.
+    assert.equal(
+      researchSystemPrompt([]).replace(`\n\n${researchAuthoring([])}`, ""),
+      researchSystemPrompt(),
+    );
+  });
+
+  // `groundedFindings` drops a `"web"` finding sourced outside the allowlist, and a rule
+  // enforced with no prompt saying so is a call whose honest answer is deleted without it
+  // being told where the honest answer goes. `WebSearch` cannot be held to a host, so the
+  // snippet-derived claim is legitimate research — it just is not a fetch.
+  test("a granted mission is told where a search-derived claim goes", () => {
+    const granted = researchAuthoring(["nodejs.org"]);
+
+    assert.match(granted, /A search result is not a fetch/);
+    assert.match(granted, /`guesses`/);
+    assert.match(granted, /outside the allowlist/);
+  });
+
+  test("a closed mission gets no tools and the backstop turn cap", async () => {
+    const { seen, calls } = researched();
+
+    await calls.research({ question: "q", sources: ["codebase"], depth: "deep" });
+
+    assert.deepEqual(seen[0]!.tools, []);
+    assert.equal(seen[0]!.maxTurns, MAX_TURNS);
+    assert.equal(seen[0]!.domains, undefined);
+  });
+
+  // Searching and then fetching what the search returned is a loop, and `MAX_TURNS` is
+  // sized for a call that cannot loop: with the old backstop the call ends
+  // `error_max_turns` having produced nothing on a legitimate answer.
+  test("a granted mission gets exactly the two read-only tools and room to use them", async () => {
+    const { seen, calls } = researched();
+
+    await calls.research({
+      question: "q",
+      sources: ["web"],
+      depth: "deep",
+      web: { domains: ["docs.python.org"] },
+    });
+
+    assert.deepEqual(seen[0]!.tools, RESEARCH_WEB_TOOLS);
+    assert.deepEqual([...seen[0]!.tools!].sort(), ["WebFetch", "WebSearch"]);
+    assert.equal(seen[0]!.maxTurns, RESEARCH_MAX_TURNS);
+    assert.deepEqual(seen[0]!.domains, ["docs.python.org"]);
+    // The prompt half moves with the tools: a granted finding's source is the URL that
+    // was actually fetched, and the allowlist is named so the model can plan around it.
+    assert.match(seen[0]!.systemPrompt, /docs\.python\.org/);
+    assert.match(seen[0]!.systemPrompt, /sourceKind: "web"/);
+  });
+
+  // The grant is read-only egress and nothing else — no `Read`, `Glob` or `Grep`, or the
+  // repository enters the call and §4's context discipline is gone.
+  test("the grant never includes a filesystem tool", () => {
+    for (const tool of ["Read", "Glob", "Grep", "Write", "Bash"]) {
+      assert.equal(RESEARCH_WEB_TOOLS.includes(tool), false);
+    }
+  });
+
+  // Denied hosts have to reach `prepareMission`, which raises them as one advisory
+  // question. Carried on the result rather than through the schema: no model wrote them.
+  test("a denied host comes back on the result rather than failing the call", async () => {
+    const calls = createAgentCalls({
+      config,
+      runQuery: async () => ({
+        text: JSON.stringify({ brief: "b", findings: [], confidence: "high" }),
+        spend,
+        deniedHosts: ["evil.example"],
+      }),
+    });
+
+    const result = await calls.research({
+      question: "q",
+      sources: ["web"],
+      depth: "deep",
+      web: { domains: [] },
+    });
+
+    assert.deepEqual(result.deniedHosts, ["evil.example"]);
+    assert.equal(result.brief, "b");
+  });
+});
+
+// The permission callback runs below the fixture seam, so the decision it makes is
+// pulled out here: a fetch allowed because the URL merely mentions a granted host, or a
+// third tool arriving and being waved through, is egress nobody approved.
+describe("webFetchDecision", () => {
+  const granted = ["docs.python.org"];
+
+  test("allows a granted fetch and denies one outside the list, naming the host", () => {
+    assert.equal(webFetchDecision("WebFetch", { url: "https://docs.python.org/3/" }, granted).allow, true);
+
+    const denied = webFetchDecision("WebFetch", { url: "https://evil.example/x" }, granted);
+    assert.equal(denied.allow, false);
+    assert.equal(denied.allow === false && denied.host, "evil.example");
+    assert.match(denied.allow === false ? denied.message : "", /docs\.python\.org/);
+  });
+
+  // Stated plainly because it cannot be fixed: results come from a backend, not from a
+  // host the envelope could name, so there is nothing here to check.
+  test("search is allowed under the grant because it has no host to check", () => {
+    assert.equal(webFetchDecision("WebSearch", { query: "anything" }, []).allow, true);
+  });
+
+  test("any other tool is denied, since the grant is two tools", () => {
+    assert.equal(webFetchDecision("Read", { file_path: "/etc/passwd" }, granted).allow, false);
+    assert.equal(webFetchDecision("Bash", { command: "curl x" }, granted).allow, false);
+  });
+
+  test("a fetch with no usable url is denied rather than allowed by default", () => {
+    assert.equal(webFetchDecision("WebFetch", {}, granted).allow, false);
+    assert.equal(webFetchDecision("WebFetch", { url: 42 }, granted).allow, false);
   });
 });

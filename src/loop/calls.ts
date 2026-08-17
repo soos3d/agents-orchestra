@@ -85,6 +85,19 @@ export interface ResearchInput {
    * ran before this existed.
    */
   repoKb?: string;
+  /**
+   * Read-only egress for this call, and absent on every mission that did not grant it
+   * (PLAN-NEXT 11.3, `Envelope.research`).
+   *
+   * Present means `WebSearch` and `WebFetch`; `domains` is the allowlist `WebFetch` is
+   * held to, and it may legitimately be empty — a grant with no host named still gets
+   * search, and every fetch is denied in-call and reported afterwards.
+   *
+   * An object rather than a boolean beside a list, so "granted" is one fact rather than
+   * two fields that can disagree: an empty `domains` array is not the same statement as
+   * no grant, and `absent` is the only thing that turns the tools off.
+   */
+  web?: { domains: string[] };
 }
 
 export interface ResearchResult {
@@ -103,6 +116,16 @@ export interface ResearchResult {
   criteria?: readonly unknown[];
   guesses?: Guess[];
   outOfScope?: string[];
+  /**
+   * Hosts a granted call tried to fetch and was denied, because `Envelope.domains` does
+   * not name them (PLAN-NEXT 11.3).
+   *
+   * Not model output — the transport records it, and no schema validates it, which is
+   * why it is here rather than in `researchSchema`. The call carries on either way; the
+   * hosts arrive at `prepareMission` and become one advisory `question_asked`, which is
+   * `raiseSecrets`' rule: a missing grant is a question, never a stop.
+   */
+  deniedHosts?: string[];
 }
 
 export interface ArchitectInput {

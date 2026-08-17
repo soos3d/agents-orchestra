@@ -71,12 +71,23 @@ export function buildResearchInput(
   // statements alone so no previous run's `met` can reach the call.
   const priorCriteria = ledger.criteria.map((criterion) => ({ statement: criterion.statement }));
 
+  const envelope = state.mission.capabilityEnvelope;
+
   return {
     ...(known.length > 0 ? { known } : {}),
     ...(priorCriteria.length > 0 ? { priorCriteria } : {}),
     // Absent on a first call, which is what keeps "a rejection happened" a fact rather
     // than a field the model has to interpret the emptiness of.
     ...(rejected === undefined ? {} : { rejected }),
+    // Read-only egress, and only on the deep pass (PLAN-NEXT 11.3). Derived from the
+    // folded envelope rather than passed in, `solePass`' rule: a grant threaded through
+    // the composition root is a grant that can disagree with the one on the log a resume
+    // folds. The scan never gets tools even on a granted mission — it is the cheap first
+    // look, and on a quick mission it is the only pass, which `--research-web --quick`
+    // is refused to keep true.
+    ...(depth === "deep" && envelope.research === "web"
+      ? { web: { domains: [...envelope.domains] } }
+      : {}),
     // Derived rather than passed, so it cannot disagree with what `prepareMission`
     // will actually do: the scan is the whole of a quick mission's research, and it
     // has to be told, or it declines to write criteria and the gate escalates to the

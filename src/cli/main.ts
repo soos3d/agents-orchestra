@@ -75,6 +75,11 @@ const USAGE = `orchestra — a looping orchestrator for any kind of task
     --scan <name>      let this mission's outcome spec gate on a security scanner
                        (deepsec). Off by default: a scan runs an AI agent over the
                        changed files and costs real money per file.
+    --research-web     let the research pass read the web (WebSearch and WebFetch).
+                       Off by default, and not with --quick or --staff research=<card>.
+    --domain <host>    a host --research-web may fetch (repeatable). WebFetch is held
+                       to this list; search is not, because results come from a backend
+                       rather than a host. A denied fetch lands in the inbox.
     --env <NAME>       let this mission's workers read one environment variable, by
                        name (repeatable). Without it a mission plans against mocks and
                        asks. The value is read from your shell, never typed here and

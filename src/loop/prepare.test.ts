@@ -1072,3 +1072,142 @@ describe("prepareMission", () => {
     });
   });
 });
+
+// The failure mode: a closed mission's recollection entering `factsVerified` as ground
+// truth with a URL beside it, and a granted mission's refused fetch leaving no trace a
+// human could act on. Both are PLAN-NEXT 11.3's two halves at the composition root.
+describe("the web grant in prepare", () => {
+  const webFinding = {
+    claim: "The endpoint is documented as /healthz",
+    source: "https://docs.python.org/3/",
+    sourceKind: "web" as const,
+    confidence: "high" as const,
+  };
+
+  test("a closed mission's web-shaped finding never reaches the ledger", async () => {
+    const store = testStore();
+    const warnings: string[] = [];
+
+    await prepareMission({
+      store,
+      calls: callsFor({ research: [aResearchResult({ findings: [webFinding] })] }),
+      onWarn: (message) => warnings.push(message),
+    });
+
+    assert.deepEqual(store.state().mission.ledger.factsVerified, []);
+    // Dropped visibly, or the brief quotes a claim nobody can trace.
+    assert.match(warnings.join("\n"), /--research-web/);
+  });
+
+  test("a granted mission keeps it, since the call could actually fetch", async () => {
+    const store = testStore([
+      missionCreated({ envelope: anEnvelope({ research: "web", domains: ["docs.python.org"] }) }),
+    ]);
+
+    await prepareMission({
+      store,
+      calls: callsFor({ research: [aResearchResult({ findings: [webFinding] })] }),
+    });
+
+    assert.equal(store.state().mission.ledger.factsVerified.length, 1);
+  });
+
+  // The first real granted run wrote both of these, and every source string below is
+  // copied from its log. A mission granted `nodejs.org` recorded three `"web"` findings
+  // whose sources were the *refusals* it had just been handed, and a mission granted
+  // `example.com` recorded twelve sourced to `nodejs.org` URLs it had only seen in search
+  // snippets. Both are the citation-shaped recollection 11.3 exists to stop, one grant
+  // along: the fetch never happened and the finding says it did.
+  test("a granted mission drops a web finding it could not have fetched", async () => {
+    const store = testStore([
+      missionCreated({ envelope: anEnvelope({ research: "web", domains: ["nodejs.org"] }) }),
+    ]);
+    const warnings: string[] = [];
+    const refused = (source: string) => ({ ...webFinding, source });
+
+    await prepareMission({
+      store,
+      calls: callsFor({
+        research: [
+          aResearchResult({
+            findings: [
+              refused("WebFetch refusal for https://developer.mozilla.org/en-US/docs/Web/API/WebSocket"),
+              refused("WebFetch refusal for https://undici.nodejs.org/#/docs/api/WebSocket"),
+              refused(
+                "WebSearch permission error, query 'MDN WebSocket constructor url protocols SyntaxError exc…'",
+              ),
+              refused(
+                'https://developer.mozilla.org/en-US/docs/Web/API/WebSocket (fetch refused: "This mission\'s…")',
+              ),
+              refused("https://nodejs.org/api/globals.html"),
+            ],
+          }),
+        ],
+      }),
+      onWarn: (message) => warnings.push(message),
+    });
+
+    // Only the host the mission actually granted survives. `undici.nodejs.org` is a
+    // different machine from `nodejs.org` — `allowedFetchHost`'s exact match, which is the
+    // rule the live fetch was refused under.
+    assert.deepEqual(
+      store.state().mission.ledger.factsVerified.map((fact) => fact.source.ref),
+      ["https://nodejs.org/api/globals.html"],
+    );
+    assert.match(warnings.join("\n"), /--domain/);
+  });
+
+  test("a granted mission drops a search-snippet URL outside its allowlist", async () => {
+    const store = testStore([
+      missionCreated({ envelope: anEnvelope({ research: "web", domains: ["example.com"] }) }),
+    ]);
+
+    await prepareMission({
+      store,
+      calls: callsFor({
+        research: [
+          aResearchResult({
+            findings: [
+              { ...webFinding, source: "https://nodejs.org/en/blog/announcements/v22-release-announce" },
+              { ...webFinding, source: "https://nodejs.org/en/blog/release/v22.0.0" },
+            ],
+          }),
+        ],
+      }),
+    });
+
+    assert.deepEqual(store.state().mission.ledger.factsVerified, []);
+  });
+
+  // `raiseSecrets`' rule: a missing grant is a question, never a stop. The mission
+  // planned and finished; the host arrives in the inbox as one advisory item.
+  test("a denied fetch arrives as one advisory question and stops nothing", async () => {
+    const store = testStore([
+      missionCreated({ envelope: anEnvelope({ research: "web", domains: [] }) }),
+    ]);
+
+    const result = await prepareMission({
+      store,
+      calls: callsFor({
+        research: [aResearchResult({ deniedHosts: ["evil.example", "evil.example"] })],
+      }),
+    });
+
+    assert.equal(result.ok, true);
+    const asked = store.inputs.filter((event) => event.type === "question_asked");
+    assert.equal(asked.length, 1);
+    assert.match(JSON.stringify(asked[0]), /--domain evil\.example/);
+    assert.equal((asked[0] as { advisory?: boolean }).advisory, true);
+    assert.deepEqual((asked[0] as { blocks?: string[] }).blocks, []);
+  });
+
+  test("a mission that was refused nothing asks nothing", async () => {
+    const store = testStore([
+      missionCreated({ envelope: anEnvelope({ research: "web", domains: ["docs.python.org"] }) }),
+    ]);
+
+    await prepareMission({ store, calls: callsFor({}) });
+
+    assert.equal(store.inputs.some((event) => event.type === "question_asked"), false);
+  });
+});

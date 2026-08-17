@@ -428,6 +428,12 @@ export async function serve(
         // browser is the wrong place to decide that, and a mission that needs one plans
         // against mocks and says so in the inbox. `--env` at the terminal is the door.
         env: [],
+        // And no compose control for read-only egress (PLAN-NEXT 11.3), for the reason
+        // the two above have none: a browser-composed mission gets the closed research
+        // call every mission had before the grant existed, and `--research-web
+        // --domain <host>` at the terminal is the door.
+        research: "closed",
+        domains: [],
       };
       const workspaceConfig = await configFor(workspace);
       // Detached deliberately: compose returns while the mission runs for hours. A

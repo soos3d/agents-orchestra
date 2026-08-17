@@ -159,8 +159,25 @@ export function resolveStaffing(
   staffing: MissionStaffing,
   cards: readonly ModelCard[],
   keys: Readonly<Record<string, string>>,
+  /** Whether this mission granted `research` read-only egress (PLAN-NEXT 11.3). */
+  researchWeb = false,
 ): ResolvedStaffing {
   const byCall: Partial<Record<keyof MissionStaffing, ModelCard>> = {};
+
+  // A staffed research call cannot hold the tools the grant is made of — a chat
+  // completion has none, which is `judge`'s reasoning one call along and defects 22 and
+  // 40's class. Honouring the grant on a card would be the `honoursModel` trap: a
+  // control that implies something it does not do, and a mission billed for a web pass
+  // that read nothing.
+  if (researchWeb && staffing.research !== undefined) {
+    return {
+      ok: false,
+      problem:
+        `--research-web cannot be combined with --staff research=${staffing.research}. A ` +
+        `staffed decision point runs as a chat completion, which holds no tools, so the ` +
+        `web grant would do nothing. Drop one of the two.`,
+    };
+  }
 
   for (const [call, id] of Object.entries(staffing)) {
     if (id === undefined) continue;

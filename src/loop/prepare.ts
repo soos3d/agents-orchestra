@@ -16,6 +16,7 @@
 import { type OfferedRole } from "../agents/offer.js";
 import { zeroSpend } from "../domain/budget.js";
 import {
+  groundedFindings,
   type Criterion,
   type Fact,
   type Finding,
@@ -227,6 +228,14 @@ export async function prepareMission(deps: PrepareDeps): Promise<PrepareResult> 
   let research = quick ? scan : await deps.calls.research(
         buildResearchInput(deps.store.state(), "deep", undefined, deps.repoKb),
       );
+  // The validation half of the web grant (PLAN-NEXT 11.3), applied before the event and
+  // therefore before the ledger, the architect's input and the sign-off screen — one site,
+  // because a finding kept anywhere is a finding that becomes `factsVerified`.
+  research = withGroundedFindings(deps, research);
+  // A denied fetch is a question and never a stop, `raiseSecrets`' rule: the call carried
+  // on, the mission plans on what it did reach, and the human decides whether the host is
+  // worth granting on the next run.
+  raiseDeniedFetches(deps, base, research.deniedHosts);
   emit({
     ...base,
     type: "research_completed",
@@ -308,7 +317,7 @@ export async function prepareMission(deps: PrepareDeps): Promise<PrepareResult> 
     if ("envVars" in second) raiseSecrets(deps, base, second.envVars);
     // The deep answer replaces the scan's for everything downstream — the findings it
     // appends to the ledger below, and the brief the sign-off screen shows.
-    if (quick && "brief" in second) research = second;
+    if (quick && "brief" in second) research = withGroundedFindings(deps, second);
 
     if (!spec.ok) {
       emit({ ...base, type: "outcome_spec_rejected", rejected: spec.rejected });
@@ -614,6 +623,66 @@ function recordDesign(
     return;
   }
   deps.store.emit({ ...base, type: "design_written", path, summary: designSummary(note) });
+}
+
+/**
+ * A research answer with the findings its mission is allowed to believe (PLAN-NEXT 11.3).
+ *
+ * The drop is warned about rather than silent: a dropped finding is the model's own
+ * memory with a URL attached, and a human reading the brief has no way to tell which
+ * claim went missing otherwise. The warning names the flag that would have made the
+ * finding legitimate — `--research-web` with no grant, `--domain` with one — because the
+ * fix is a grant on the next run; nothing here widens an envelope, for `raiseSecrets`'
+ * reason.
+ */
+function withGroundedFindings<T extends { findings: Finding[] }>(deps: PrepareDeps, answer: T): T {
+  const envelope = deps.store.state().mission.capabilityEnvelope;
+  const findings = groundedFindings(answer.findings, envelope.research, envelope.domains);
+  if (findings.length === answer.findings.length) return answer;
+
+  deps.onWarn?.(
+    `${answer.findings.length - findings.length} finding(s) sourced to the web were ` +
+      `dropped: ` +
+      (envelope.research === "web"
+        ? `this mission's allowlist is ${envelope.domains.join(", ") || "empty"}, so the ` +
+          `research call could not have fetched them. Start it again with --domain <host> ` +
+          `for the host each one cites.`
+        : `this mission granted no egress, so the research call could not have fetched ` +
+          `them. Start it again with --research-web --domain <host> to research the web ` +
+          `for real.`),
+  );
+  return { ...answer, findings };
+}
+
+/**
+ * Hosts a granted research call was refused (PLAN-NEXT 11.3).
+ *
+ * `raiseSecrets` one grant along, and the same three decisions: the mission does not stop,
+ * the question goes through `question_asked` rather than a second inbox, and nothing here
+ * widens the envelope. `blocks` is empty because there is no task yet to park — this runs
+ * before the plan exists — and `advisory` says so on the event, so a later resume does not
+ * wait on an answer nothing needs.
+ */
+function raiseDeniedFetches(
+  deps: PrepareDeps,
+  base: { missionId: string; actor: "orchestrator" },
+  hosts: readonly string[] | undefined,
+): void {
+  const denied = [...new Set(hosts ?? [])];
+  if (denied.length === 0) return;
+
+  deps.store.emit({
+    ...base,
+    type: "question_asked",
+    questionId: `domain-${denied.join("+")}`,
+    question:
+      `Research tried to read ${denied.join(", ")}, which this mission's envelope does ` +
+      `not grant, so the fetch was refused and it carried on with what it could reach. ` +
+      `To use ${denied.length === 1 ? "that host" : "those hosts"}, start the mission ` +
+      `again with ${denied.map((host) => `--domain ${host}`).join(" ")}.`,
+    blocks: [],
+    advisory: true,
+  });
 }
 
 /**

@@ -15,7 +15,8 @@ import { fold } from "../events/fold.js";
 import { type EventInput } from "../events/schema.js";
 import { scriptedCalls } from "../testing/fixtures.js";
 import { makeRepo } from "../testing/gitRepo.js";
-import { aCodeTask, aCriterion, missionCreated, stamp } from "../testing/fixtures.js";
+import { aCodeTask, aCriterion, anEnvelope, missionCreated, stamp } from "../testing/fixtures.js";
+import { renderSavedMission, savedDir } from "../memory/savedMission.js";
 import { resolveCriteriaChange } from "../loop/criteriaChange.js";
 import { createWebHuman } from "../web/webHuman.js";
 import {
@@ -248,7 +249,7 @@ describe("runMission under a surface", () => {
     // and the finally block still has to release.
     await assert.rejects(() =>
       runMission(
-        { goal: "wired?", planOnly: false, quick: false, moonshot: false, unattended: false, force: false, web: true, budgetMinutes: 5, runtime: {}, staffing: {}, scanners: [], env: [] },
+        { goal: "wired?", planOnly: false, quick: false, moonshot: false, unattended: false, force: false, web: true, budgetMinutes: 5, runtime: {}, staffing: {}, scanners: [], env: [], research: "closed", domains: [] },
         config,
         quietIo,
         { createCalls: () => scriptedCalls({}), surface },
@@ -287,7 +288,7 @@ describe("runMission under a surface", () => {
 
     await assert.rejects(() =>
       runMission(
-        { goal: "what would this take?", planOnly: true, quick: false, moonshot: false, unattended: false, force: false, web: true, budgetMinutes: 5, runtime: {}, staffing: {}, scanners: [], env: [] },
+        { goal: "what would this take?", planOnly: true, quick: false, moonshot: false, unattended: false, force: false, web: true, budgetMinutes: 5, runtime: {}, staffing: {}, scanners: [], env: [], research: "closed", domains: [] },
         config,
         quietIo,
         { createCalls: () => scriptedCalls({}), surface },
@@ -322,7 +323,7 @@ describe("runMission spend attribution", () => {
 
     await assert.rejects(() =>
       runMission(
-        { goal: "who spent it?", planOnly: true, quick: false, moonshot: false, unattended: true, force: true, web: false, budgetMinutes: 5, runtime: {}, staffing: {}, scanners: [], env: [] },
+        { goal: "who spent it?", planOnly: true, quick: false, moonshot: false, unattended: true, force: true, web: false, budgetMinutes: 5, runtime: {}, staffing: {}, scanners: [], env: [], research: "closed", domains: [] },
         config,
         quietIo,
         {
@@ -522,6 +523,8 @@ describe("runMission and staffing", () => {
     staffing,
     scanners: [],
     env: [],
+    research: "closed" as const,
+    domains: [],
   });
 
   test("hands the mission's staffing to whatever builds its calls", async () => {
@@ -552,6 +555,61 @@ describe("runMission and staffing", () => {
     assert.match(errors.join("\n"), /invented\/card/);
     // Nothing was written: a refusal that leaves a mission directory behind has already
     // started the mission it was refusing.
+    assert.equal(fs.existsSync(path.join(config.stateDir, "missions")), false);
+  });
+
+  // The same door, one source along (PLAN-NEXT 11.2). A staffing choice that survives into
+  // a preset is a card id nobody re-typed, so it is also a card id nobody re-checked: the
+  // machine that replays the preset may not be the machine that saved it, and a probe
+  // transcript can be deleted between the two. Falling through to the Agent SDK there would
+  // silently run the mission on a model nobody chose and bill it to the wrong ceiling.
+  test("refuses an unprobed card that arrived from a saved preset, not a flag", async () => {
+    const config = aConfig();
+    fs.mkdirSync(savedDir(config.stateDir), { recursive: true });
+    fs.writeFileSync(
+      path.join(savedDir(config.stateDir), "kimi-deepseek.md"),
+      renderSavedMission({
+        name: "kimi-deepseek",
+        goal: "reconcile the invoices",
+        envelope: anEnvelope(),
+        criteriaSkeleton: [],
+        intakeAnswers: [],
+        staffing: { plan: "invented/card" },
+        savedAt: "2026-08-17T10:00:00.000Z",
+        fromMissionId: "m1",
+      }),
+    );
+
+    const errors: string[] = [];
+    const code = await runMission(
+      { ...options({}), goal: "", saved: "kimi-deepseek" },
+      config,
+      { out: () => {}, err: (line: string) => errors.push(line) },
+      { createCalls: () => scriptedCalls({}) },
+    );
+
+    assert.equal(code, 1);
+    assert.match(errors.join("\n"), /invented\/card/);
+    assert.equal(fs.existsSync(path.join(config.stateDir, "missions")), false);
+  });
+
+  // The same trap one grant along: `runMission` is the only site that holds both the
+  // envelope's web grant and the mission's staffing, so a refusal implemented in
+  // `resolveStaffing` and never passed the grant is a rule that is switched off.
+  test("refuses --research-web beside a staffed research call, before the log opens", async () => {
+    const config = aConfig();
+    const errors: string[] = [];
+    const io = { out: () => {}, err: (line: string) => errors.push(line) };
+
+    const code = await runMission(
+      { ...options({ research: "some/card" }), research: "web" as const },
+      config,
+      io,
+      { createCalls: () => scriptedCalls({}) },
+    );
+
+    assert.equal(code, 1);
+    assert.match(errors.join("\n"), /--research-web cannot be combined/);
     assert.equal(fs.existsSync(path.join(config.stateDir, "missions")), false);
   });
 });
@@ -587,6 +645,8 @@ describe("runMission and the scanner grant", () => {
     staffing: {},
     scanners,
     env: [],
+    research: "closed" as const,
+    domains: [],
   });
 
   const scanConfig = (stateDir: string, probed?: string[]): DiscoveredConfig => ({
@@ -769,6 +829,8 @@ describe("the repo map reaches the calls that cannot look", () => {
             staffing: {},
             scanners: [],
             env: [],
+            research: "closed",
+            domains: [],
           },
           {
             cwd: repo.path,
@@ -807,5 +869,64 @@ describe("the repo map reaches the calls that cannot look", () => {
     } finally {
       repo.cleanup();
     }
+  });
+});
+
+// The failure mode: a grant that reads as honoured and does nothing — accepted beside
+// `--quick`, whose only research pass is the toolless scan — or a `--domain` that never
+// matches because a URL was typed where a host belongs (PLAN-NEXT 11.3).
+describe("--research-web and --domain", () => {
+  test("absent is the closed mission every log before this recorded", () => {
+    const parsed = parseRunArgs(["do the thing"]);
+
+    assert.equal(parsed.ok && parsed.options.research, "closed");
+    assert.deepEqual(parsed.ok ? parsed.options.domains : undefined, []);
+  });
+
+  test("the grant and its hosts reach the options", () => {
+    const parsed = parseRunArgs([
+      "do the thing",
+      "--research-web",
+      "--domain",
+      "docs.python.org",
+      "--domain",
+      "nodejs.org",
+    ]);
+
+    assert.equal(parsed.ok && parsed.options.research, "web");
+    assert.deepEqual(parsed.ok ? parsed.options.domains : undefined, [
+      "docs.python.org",
+      "nodejs.org",
+    ]);
+  });
+
+  test("--research-web with --quick is refused with the fix named", () => {
+    const parsed = parseRunArgs(["do the thing", "--research-web", "--quick"]);
+
+    assert.equal(parsed.ok, false);
+    assert.match(parsed.ok ? "" : parsed.message, /Drop --quick/);
+  });
+
+  test("a URL or a wildcard is refused, since the allowlist is exact hosts", () => {
+    const url = parseRunArgs(["g", "--domain", "https://docs.python.org/3/"]);
+    assert.equal(url.ok, false);
+    assert.match(url.ok ? "" : url.message, /--domain docs\.python\.org/);
+
+    assert.equal(parseRunArgs(["g", "--domain", "*.python.org"]).ok, false);
+  });
+
+  test("the envelope carries the grant, which is what a resume folds", () => {
+    const envelope = defaultEnvelope(
+      { cwd: "/repo", stateDir: "/repo/.orchestra", worktreeRoot: "/w", agents: [], orchestratorModel: "sonnet", maxConcurrency: 4 },
+      { wallMs: 1000 },
+      [],
+      [],
+      "web",
+      ["docs.python.org"],
+    );
+
+    assert.equal(envelope.research, "web");
+    assert.deepEqual(envelope.domains, ["docs.python.org"]);
+    assert.equal(defaultEnvelope({ cwd: "/repo", stateDir: "/repo/.orchestra", worktreeRoot: "/w", agents: [], orchestratorModel: "sonnet", maxConcurrency: 4 }, { wallMs: 1000 }).research, "closed");
   });
 });
