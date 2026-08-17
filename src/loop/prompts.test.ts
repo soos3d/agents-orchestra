@@ -11,7 +11,16 @@ import {
   aProgressLedger,
   aReport,
 } from "../testing/fixtures.js";
-import { buildPlanInput, buildProgressInput, buildResearchInput } from "./prompts.js";
+import {
+  ARCHITECT_INPUT_BUDGET,
+  buildArchitectInput,
+  buildPlanInput,
+  buildProgressInput,
+  buildResearchInput,
+  designSummary,
+  judgeLens,
+} from "./prompts.js";
+import { PANEL_LENSES } from "./criteria.js";
 
 describe("buildResearchInput", () => {
   test("asks the mission's goal, memory first", () => {
@@ -211,5 +220,145 @@ describe("buildProgressInput", () => {
     const state = aMissionState({ mission: aMission({ round: 7, stalls: 2, resets: 1 }) });
 
     assert.deepEqual(buildProgressInput(state).counters, { round: 7, stalls: 2, resets: 1 });
+  });
+});
+
+// The architect's input is the whole evidence base rather than a précis of it, which is
+// exactly why it needs a ceiling somebody can see: a design written over a summary of the
+// findings is a design of something nobody looked at, and a mission with a hundred
+// findings would put all of them in the prompt without a number here to fail first.
+describe("buildArchitectInput", () => {
+  const withFindings = (count: number) =>
+    Array.from({ length: count }, (_, index) => ({
+      claim: `finding ${index}: the router registers routes in a table at module load`,
+      source: `src/routes/${index}.ts`,
+      sourceKind: "codebase" as const,
+      confidence: "high" as const,
+    }));
+
+  test("carries the goal, the brief and the findings it was handed", () => {
+    const state = aMissionState({ brief: "a router with no health route" });
+
+    const input = buildArchitectInput(state, withFindings(2));
+
+    assert.match(input.goal, /Add a \/health endpoint/);
+    assert.equal(input.brief, "a router with no health route");
+    assert.equal(input.findings.length, 2);
+  });
+
+  // The findings are passed rather than folded because at this point in `prepareMission`
+  // they are not on the ledger yet — reading state would hand the architect the *scan's*
+  // findings and call them the research pass's.
+  test("does not substitute the ledger's facts for the findings it was given", () => {
+    const state = aMissionState({
+      mission: aMission({
+        ledger: {
+          ...emptyLedger(),
+          factsVerified: [
+            {
+              id: "f1",
+              text: "the scan saw a router",
+              addedRound: 0,
+              source: { kind: "research", ref: "src/routes" },
+              observedAt: "2026-08-16T00:00:00.000Z",
+            } as Fact,
+          ],
+        },
+      }),
+    });
+
+    const input = buildArchitectInput(state, withFindings(1));
+
+    assert.equal(input.findings.length, 1);
+    assert.match(input.findings[0]!.claim, /finding 0/);
+  });
+
+  // Intake runs before the architect (§2b). A design settled without the human's answers
+  // is a design of the wrong thing, so what they said has to be in this call's input.
+  test("carries what the human answered at intake as known facts", () => {
+    const state = aMissionState({
+      mission: aMission({
+        ledger: {
+          ...emptyLedger(),
+          factsGiven: [
+            {
+              id: "g1",
+              text: "fiscal year, not calendar",
+              addedRound: 0,
+              source: { kind: "human", ref: "intake" },
+              observedAt: "2026-08-16T00:00:00.000Z",
+            } as Fact,
+          ],
+        },
+      }),
+    });
+
+    assert.deepEqual(buildArchitectInput(state, []).known, ["fiscal year, not calendar"]);
+  });
+
+  test("the first call is not told about a rejection that has not happened", () => {
+    assert.equal(buildArchitectInput(aMissionState(), []).rejected, undefined);
+    assert.equal(buildArchitectInput(aMissionState(), [], "no check").rejected, "no check");
+  });
+
+  test("a realistic evidence base fits the budget", () => {
+    const state = aMissionState({ brief: "x".repeat(2_000) });
+
+    const rendered = JSON.stringify(buildArchitectInput(state, withFindings(40)));
+
+    assert.ok(
+      rendered.length <= ARCHITECT_INPUT_BUDGET,
+      `the architect's input is ${rendered.length} characters, over the ${ARCHITECT_INPUT_BUDGET} budget`,
+    );
+  });
+});
+
+// The planner gets a projection of the design note and the worker gets the file. The
+// failure mode is the easy one: pasting the whole note into the call that already carries
+// the entire ledger.
+describe("designSummary", () => {
+  test("a short note is carried whole", () => {
+    assert.equal(designSummary("# Design\n\nOne module."), "# Design\n\nOne module.");
+  });
+
+  test("a long one is cut on a line boundary and says it was cut", () => {
+    const note = Array.from({ length: 400 }, (_, i) => `- decision ${i}`).join("\n");
+
+    const summary = designSummary(note);
+
+    assert.ok(summary.length < note.length);
+    assert.match(summary, /continues; the full text is on disk/);
+    // Cut between lines, so the planner never reads half a decision as a whole one.
+    const body = summary.split("\n\n(The design note")[0]!;
+    for (const line of body.split("\n")) {
+      assert.match(line, /^- decision \d+$/, `'${line}' is half a line`);
+    }
+  });
+});
+
+// The failure mode: three panel seats reading the same paragraph. Quorum over three
+// samples of one opinion costs three calls and resolves nothing, so what distinguishes
+// the seats has to be asserted rather than assumed from the lens names.
+describe("judgeLens", () => {
+  test("every lens is a distinct paragraph that names its own seat", () => {
+    const texts = PANEL_LENSES.map((lens) => judgeLens(lens));
+
+    assert.equal(new Set(texts).size, PANEL_LENSES.length);
+    for (const [index, lens] of PANEL_LENSES.entries()) {
+      assert.match(texts[index]!, /Your seat on this panel is/);
+      assert.ok(
+        texts[index]!.includes(lens.replaceAll("-", " ")),
+        `the ${lens} seat does not say which lens it is`,
+      );
+    }
+  });
+
+  // A seat told to grade only its own lens returns `met: true` on work that fails the
+  // other two, and the quorum then reads three yeses as agreement.
+  test("a lens narrows what a seat weighs, never what it may conclude", () => {
+    for (const lens of PANEL_LENSES) {
+      assert.match(judgeLens(lens), /Weigh whether/);
+      assert.doesNotMatch(judgeLens(lens), /ignore|only judge|do not consider/i);
+    }
   });
 });

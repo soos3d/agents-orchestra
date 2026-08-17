@@ -8,7 +8,14 @@
 // work (Galley's lesson, specs.md §0).
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { shouldCheckCriterion } from "./criteria.js";
+import {
+  deterministicFirst,
+  isDeterministicCheck,
+  PANEL_LENSES,
+  panelSeats,
+  panelVerdict,
+  shouldCheckCriterion,
+} from "./criteria.js";
 import { type Criterion } from "../domain/ledger.js";
 
 const criterion = (patch: Partial<Criterion> = {}): Criterion => ({
@@ -96,10 +103,32 @@ describe("shouldCheckCriterion", () => {
 
   // The expensive complement. `met: true` and nothing moved is the common case in
   // every round after the criterion passes, and it must cost nothing.
-  test("never re-judges a criterion that is already met", () => {
+  // **This assertion was inverted deliberately.** It used to read `false`: a met criterion
+  // was never re-judged, whatever landed afterwards. That is the wrong expectation in two
+  // directions. Work merging after a criterion passed can break it and nothing would
+  // notice — run 8's bug with the polarity flipped — and, since PLAN-NEXT 6.2, the gate
+  // can skip the one round `invalidated` fires in, after which a stale `met: true` is
+  // unreachable for the rest of the mission and the run completes on it. The cost is one
+  // extra panel per re-landing, which is bounded by the landings rather than by the
+  // rounds.
+  test("re-judges a met criterion when a contributor landed after the verdict", () => {
     assert.equal(
       shouldCheckCriterion({
         criterion: criterion({ met: true, lastCheckedRound: 4 }),
+        allDone: true,
+        landed: [landed(4), landed(11)],
+        round: 12,
+      }),
+      true,
+    );
+  });
+
+  // The expensive half is still asserted: nothing new landed, so nothing is re-judged and
+  // a round costs no judge call.
+  test("never re-judges a met criterion while nothing new lands", () => {
+    assert.equal(
+      shouldCheckCriterion({
+        criterion: criterion({ met: true, lastCheckedRound: 11 }),
         allDone: true,
         landed: [landed(4), landed(11)],
         round: 12,
@@ -131,6 +160,84 @@ describe("shouldCheckCriterion", () => {
         round: 5,
       }),
       false,
+    );
+  });
+});
+
+// The failure mode for the rest of this file: a panel that costs three model calls and
+// decides what one would have. Quorum has to be derived from the votes actually cast, or
+// a threshold and a seat count drift apart and a panel of three passes on one vote.
+describe("panelSeats", () => {
+  test("a quick mission convenes one seat with no lens", () => {
+    assert.deepEqual(panelSeats(true), [undefined]);
+  });
+
+  test("a standard mission convenes one seat per lens", () => {
+    assert.deepEqual([...panelSeats(false)], [...PANEL_LENSES]);
+    assert.equal(new Set(PANEL_LENSES).size, PANEL_LENSES.length);
+  });
+
+  // Not a style point. A lens is what `judgeSystemPrompt` branches on, and a quick
+  // mission that acquired one would be paying for a different prompt than the token
+  // count it was measured at.
+  test("the quick seat is unlensed, so its prompt is the unmodified one", () => {
+    assert.equal(panelSeats(true).length, 1);
+    assert.equal(panelSeats(true)[0], undefined);
+  });
+});
+
+describe("panelVerdict", () => {
+  test("a single seat decides alone, which is every mission before panels", () => {
+    assert.equal(panelVerdict([true]), true);
+    assert.equal(panelVerdict([false]), false);
+  });
+
+  test("two of three carries, whichever way it splits", () => {
+    assert.equal(panelVerdict([true, true, false]), true);
+    assert.equal(panelVerdict([false, true, false]), false);
+    assert.equal(panelVerdict([true, false, true]), true);
+  });
+
+  // `met: true` needs a majority to have shown it, not merely the absence of one
+  // against. An even split has not shown anything.
+  test("an even split is unmet", () => {
+    assert.equal(panelVerdict([true, false]), false);
+    assert.equal(panelVerdict([true, true, false, false]), false);
+  });
+
+  test("no votes is unmet rather than vacuously true", () => {
+    assert.equal(panelVerdict([]), false);
+  });
+});
+
+describe("the deterministic gate", () => {
+  const command = { kind: "command" as const, command: "npm test" };
+  const judge = { kind: "judge" as const, rubric: "PASS if it reads well" };
+
+  test("a command and a scanner are settled by a machine; a judge is not", () => {
+    assert.equal(isDeterministicCheck(command), true);
+    assert.equal(isDeterministicCheck({ kind: "scanner", scanner: "deepsec" }), true);
+    assert.equal(isDeterministicCheck(judge), false);
+  });
+
+  // The trap, not a definition: a `none` criterion is always answered `met: false`, so
+  // counting it as deterministic would close the gate the first round it was seen and
+  // suppress every panel for the rest of the mission.
+  test("a criterion with no check cannot gate, because it cannot fail either", () => {
+    assert.equal(isDeterministicCheck({ kind: "none", reason: "nothing to check" }), false);
+  });
+
+  test("deterministic checks come first, and ties keep the spec's order", () => {
+    const ordered = deterministicFirst([
+      { id: "a", check: judge },
+      { id: "b", check: command },
+      { id: "c", check: judge },
+      { id: "d", check: command },
+    ]);
+
+    assert.deepEqual(
+      ordered.map((c) => c.id),
+      ["b", "d", "a", "c"],
     );
   });
 });

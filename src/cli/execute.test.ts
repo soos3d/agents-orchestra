@@ -37,6 +37,7 @@ import { emptyLedger } from "../domain/ledger.js";
 import { fold } from "../events/fold.js";
 import { type EventInput } from "../events/schema.js";
 import { type Calls } from "../loop/calls.js";
+import { type DispatchDeps } from "../loop/dispatch.js";
 import { type HumanPort } from "../loop/human.js";
 import { type LoopDeps, type MissionStore } from "../loop/run.js";
 import { type DiscoveredConfig } from "../config/discover.js";
@@ -94,6 +95,108 @@ describe("continuationFor", () => {
     });
 
     assert.equal(continuationFor(state).kind, "loop");
+  });
+
+  // PLAN-NEXT 7.1. `secret_required` raises a question that parks nothing, on a mission
+  // that is still running — the whole point being that a missing credential is a question
+  // and not a stop. This gate used to read any open item as "something is waiting", which
+  // halted the mission with its mock-first plan already written and paid for.
+  test("a question that parks nothing does not halt a running mission", () => {
+    const state = aMissionState({
+      mission: aMission({
+        status: "executing",
+        ledger: planned(),
+        signedOffAt: "2026-07-25T10:05:00.000Z",
+      }),
+      tasks: [aCodeTask()],
+      inbox: [
+        {
+          id: "secret-STRIPE_KEY",
+          kind: "question",
+          summary: "The design needs STRIPE_KEY, which this mission's envelope does not grant.",
+          openedAt: "2026-07-25T11:00:00.000Z",
+        },
+      ],
+    });
+
+    assert.equal(continuationFor(state).kind, "loop");
+  });
+
+  // The same shape with a task actually parked on it is the case the gate exists for.
+  test("a question a task is parked on still halts", () => {
+    const state = aMissionState({
+      mission: aMission({
+        status: "executing",
+        ledger: planned(),
+        signedOffAt: "2026-07-25T10:05:00.000Z",
+      }),
+      tasks: [aCodeTask({ status: "blocked" })],
+      blockedBy: { t1: "ask-t1-r2" },
+      inbox: [
+        {
+          id: "ask-t1-r2",
+          kind: "question",
+          taskId: "t1",
+          summary: "Task t1 is blocked: which account?",
+          openedAt: "2026-07-25T11:00:00.000Z",
+        },
+      ],
+    });
+
+    assert.equal(continuationFor(state).kind, "halted");
+  });
+
+  // The same advisory question on a mission that parked for an unrelated reason — an API
+  // 529, a budget stop, a shutdown all leave `blocked` behind. Reading the status as
+  // "this question is being waited on" held a mission with 5 of 6 criteria met hostage
+  // to a question whose own text says it will finish either way, and nothing ever
+  // answers an advisory question, so the hold was permanent.
+  test("an advisory question does not halt a mission that parked for another reason", () => {
+    const state = aMissionState({
+      mission: aMission({
+        status: "blocked",
+        ledger: planned(),
+        signedOffAt: "2026-07-25T10:05:00.000Z",
+      }),
+      tasks: [aCodeTask()],
+      inbox: [
+        {
+          id: "secret-STRIPE_SECRET_KEY",
+          kind: "question",
+          advisory: true,
+          summary: "The design needs STRIPE_SECRET_KEY … it will finish either way.",
+          openedAt: "2026-07-25T11:00:00.000Z",
+        },
+      ],
+    });
+
+    assert.equal(continuationFor(state).kind, "loop");
+  });
+
+  // The other direction, and the reason the status disjunct cannot simply be deleted:
+  // the reset-cap escalation blocks every task that is not `done`, which is `[]` when
+  // they all are. Nothing parks on it, so `blockedBy` is empty — the mission status is
+  // the only thing left that catches it, and resuming past it runs on regardless of the
+  // question the escalation exists to ask.
+  test("a reset-cap escalation blocking no task still halts", () => {
+    const state = aMissionState({
+      mission: aMission({
+        status: "blocked",
+        ledger: planned(),
+        signedOffAt: "2026-07-25T10:05:00.000Z",
+      }),
+      tasks: [aCodeTask({ status: "done" })],
+      inbox: [
+        {
+          id: "escalation-r6",
+          kind: "question",
+          summary: "This mission has replanned 3 times. Narrower goal, or different approach?",
+          openedAt: "2026-07-25T11:00:00.000Z",
+        },
+      ],
+    });
+
+    assert.equal(continuationFor(state).kind, "halted");
   });
 
   test("blocked on an unanswered question halts rather than re-asking it", () => {
@@ -252,6 +355,10 @@ describe("executeMission", () => {
       research: async () => {
         throw new Error("resume does not research a mission that already has a plan");
       },
+      architect: async () => {
+        throw new Error("resume does not re-architect a mission that already has a spec");
+      },
+      critique: async () => ({ objections: [] }),
       intake: async () => {
         throw new Error("intake ran before the plan existed; resume does not repeat it");
       },
@@ -400,6 +507,10 @@ describe("executeMission", () => {
         research: async () => {
           throw new Error("resume does not research a mission that already has a plan");
         },
+        architect: async () => {
+          throw new Error("resume does not re-architect a mission that already has a spec");
+        },
+        critique: async () => ({ objections: [] }),
         intake: async () => {
           throw new Error("intake ran before the plan existed");
         },
@@ -485,6 +596,49 @@ describe("executeMission", () => {
     assert.match(result.evidence.checkOutput, /exit 0/);
   });
 
+  // PLAN-NEXT 7.3, composition root. `secrets` is an optional field on two `Deps`
+  // interfaces, which is precisely the shape in which `requestExtension`, `owns` and
+  // `reformat` were each built, tested and left switched off (defects 12b, 23, 24). Here
+  // the cost of that would be a scrubber that passes its own unit tests while every real
+  // mission writes the key to disk — so this reads the wiring, through the real
+  // `buildLoopDeps`, with a granted variable actually in the environment.
+  test("the entry point hands the granted values to the checker that writes evidence", async () => {
+    const KEY = "sk_live_wired_9d8f7a6b";
+    const previous = process.env.ORCHESTRA_TEST_SECRET;
+    process.env.ORCHESTRA_TEST_SECRET = KEY;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "orchestra-wired-"));
+
+    try {
+      const store = testStore([
+        missionCreated({
+          envelope: anEnvelope({ env: ["ORCHESTRA_TEST_SECRET"] }),
+        } as Partial<EventInput>),
+        ...planOnlyMission().slice(1),
+      ]);
+      const deps = await buildLoopDeps(store, {} as Calls, { ...config, cwd: process.cwd() });
+
+      const result = await deps.checkCriterion!(
+        aCriterion({
+          check: { kind: "command", command: "node -p process.env.ORCHESTRA_TEST_SECRET" },
+        }),
+        { tasks: [], cwd: deps.cwd!, evidenceDir: dir },
+      );
+
+      // The check prints the granted value itself, which is the worst case and the real
+      // one: a test command that echoes an environment it was given. It is gone from the
+      // field the event carries and from the file the loop keeps.
+      assert.equal(result.met, true);
+      assert.match(result.evidence.checkOutput, /\[redacted:ORCHESTRA_TEST_SECRET\]/);
+      assert.equal(result.evidence.checkOutput.includes(KEY), false);
+      const kept = fs.readFileSync(path.join(dir, "criterion-c1.txt"), "utf8");
+      assert.equal(kept.includes(KEY), false, "the granted value is in the evidence file");
+    } finally {
+      if (previous === undefined) delete process.env.ORCHESTRA_TEST_SECRET;
+      else process.env.ORCHESTRA_TEST_SECRET = previous;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   // P2, composition root. The artifact directory is a contract with two ends — a
   // worker is told where to write and a check is told where to look — and both are
   // optional fields, which is the shape a feature gets finished and switched off in.
@@ -512,6 +666,50 @@ describe("executeMission", () => {
     const dir = path.join(stateDir, "missions", "m1", "artifacts", "t-root");
     assert.equal(fs.existsSync(dir), true);
     assert.equal(fs.statSync(dir).mode & 0o777, 0o700);
+  });
+
+  // PLAN-NEXT 5.2, and the same composition-root lesson: the design note is an optional
+  // field on `DispatchDeps` and another on the transport's input, which is twice the
+  // shape a feature gets finished and switched off in. `dispatchOptionsFor` exists so
+  // that decision is assertable without spawning a worker.
+  describe("the design note reaches dispatch", () => {
+    const bare: DispatchDeps = {
+      emit: () => {},
+      transport: async () => ({ raw: "{}", elapsedMs: 1 }),
+      verify: async () => ({ passed: true, output: "", spec: { kind: "none", reason: "n/a" } }),
+    };
+
+    test("a mission with a note hands the dispatch its path", () => {
+      const options = dispatchOptionsFor(bare, {}, { path: "/state/m1/artifacts/design.md" });
+
+      assert.equal(options.designNote, "/state/m1/artifacts/design.md");
+    });
+
+    // A quick mission has no architect and no note, and a worker is told nothing about
+    // one rather than being handed an empty string to open.
+    test("a mission without one carries no field at all", () => {
+      assert.equal("designNote" in dispatchOptionsFor(bare, {}), false);
+    });
+
+    // And the value comes off the fold, which is what makes a resumed mission give its
+    // workers the same path the run that planned it would have.
+    test("the entry point reads it from the folded log", async () => {
+      const store = testStore([
+        ...planOnlyMission(),
+        {
+          missionId: "m1",
+          actor: "orchestrator",
+          type: "design_written",
+          path: "/state/missions/m1/artifacts/design.md",
+          summary: "# Design",
+        },
+      ]);
+
+      const deps = await buildLoopDeps(store, {} as Calls, config);
+
+      assert.ok(deps.dispatch);
+      assert.equal(store.state().design?.path, "/state/missions/m1/artifacts/design.md");
+    });
   });
 
   // P5, and the composition-root lesson again (defects 12b, 23, 24): the janitor is an
@@ -837,6 +1035,10 @@ describe("executeMission", () => {
       research: async () => {
         throw new Error("no research in the loop");
       },
+      architect: async () => {
+        throw new Error("no architect in the loop");
+      },
+      critique: async () => ({ objections: [] }),
       intake: async () => {
         throw new Error("no intake in the loop");
       },

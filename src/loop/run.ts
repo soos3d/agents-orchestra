@@ -20,7 +20,12 @@ import { type EventInput } from "../events/schema.js";
 import { promotable, readyTasks, standstill } from "../scheduler/ready.js";
 import { validatePlan } from "../scheduler/validate.js";
 import { type Calls } from "./calls.js";
-import { shouldCheckCriterion } from "./criteria.js";
+import {
+  deterministicFirst,
+  isDeterministicCheck,
+  panelSeats,
+  shouldCheckCriterion,
+} from "./criteria.js";
 import { type DispatchOutcome } from "./dispatch.js";
 import { type ExtendRequest } from "./human.js";
 import { noteAsFact, pendingNotes } from "./notes.js";
@@ -380,13 +385,31 @@ async function applyPolicy(
  * *Whether* to run a given check is `shouldCheckCriterion` (`criteria.ts`) — a pure
  * decision, separately tested, because a false verdict that can never be revisited
  * and a judge re-fired every round are opposite mistakes and both cost a mission.
+ *
+ * **Deterministic checks run first and a failing one closes the round to judges**
+ * (PLAN-NEXT 6.2). A command exits 0 or it does not, and a scanner returns a list; both
+ * are settled by a machine for nothing. A judge panel is the mission's largest recurring
+ * spend, and paying three of them to grade prose in a tree whose tests are red buys an
+ * answer that is either wrong or about to be re-asked. The gated criteria are left
+ * untouched rather than marked unmet — `lastCheckedRound` does not move, so the panel
+ * convenes on its own next round once the deterministic half is green, and the failing
+ * command criterion is what the replan is looking at meanwhile.
  */
 async function checkCriteria(deps: LoopDeps, state: MissionState, round: number): Promise<void> {
   const planned = new Set(state.mission.ledger.plan.map((task) => task.id));
   // An empty plan means nothing has re-planned yet, so every task is current.
   const current = (taskId: string) => planned.size === 0 || planned.has(taskId);
+  const panel = panelSeats(state.mission.quick === true);
+  // Seeded from the ledger rather than started at `false`, because a deterministic check
+  // does not re-fire every round: one that failed in round 5 is not re-run in round 6, so
+  // a flag that only remembered this round's checks would leave round 6's gate wide open
+  // and convene a panel against a tree whose tests are still red. `met === false` is the
+  // level, not the edge.
+  let gateFailed = state.mission.ledger.criteria.some(
+    (criterion) => isDeterministicCheck(criterion.check) && criterion.met === false,
+  );
 
-  for (const criterion of state.mission.ledger.criteria) {
+  for (const criterion of deterministicFirst(state.mission.ledger.criteria)) {
     const contributors = state.tasks.filter((task) => task.satisfies.includes(criterion.id));
     if (contributors.length === 0) continue;
 
@@ -397,20 +420,38 @@ async function checkCriteria(deps: LoopDeps, state: MissionState, round: number)
     const allDone = landed.length > 0 && outstanding.length === 0;
 
     if (!shouldCheckCriterion({ criterion, allDone, landed, round })) continue;
+    const deterministic = isDeterministicCheck(criterion.check);
+    if (!deterministic && gateFailed) continue;
 
     const result = await deps.checkCriterion(criterion, {
       tasks: landed,
       cwd: deps.cwd,
       ...(deps.artifactRoot ? { evidenceDir: deps.artifactRoot } : {}),
+      panel,
     });
-    deps.store.emit({
+    if (deterministic && !result.met) gateFailed = true;
+
+    const base = {
       missionId: state.mission.id,
-      actor: "orchestrator",
-      type: "criterion_checked",
+      actor: "orchestrator" as const,
+      type: "criterion_checked" as const,
       criterionId: criterion.id,
-      met: result.met,
-      evidence: result.evidence,
-    });
+    };
+    // Each seat, then the panel's answer. A panel of one emits only the answer, which
+    // is the single event every mission before PLAN-NEXT 6.1 wrote — a seat event
+    // beside it would double the log's verdict count for no second opinion.
+    if (result.votes && result.votes.length > 1) {
+      for (const vote of result.votes) {
+        deps.store.emit({
+          ...base,
+          met: vote.met,
+          evidence: vote.evidence,
+          panelSeat: vote.seat,
+          ...(vote.lens ? { lens: vote.lens } : {}),
+        });
+      }
+    }
+    deps.store.emit({ ...base, met: result.met, evidence: result.evidence });
   }
 }
 

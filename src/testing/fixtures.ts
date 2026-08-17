@@ -14,7 +14,9 @@ import { type WorkerReport } from "../domain/report.js";
 import { type AgentSpec, type Task } from "../domain/task.js";
 import { type MissionState } from "../events/fold.js";
 import {
+  type ArchitectResult,
   type Calls,
+  type CritiqueResult,
   type IntakeQuestion,
   type IntakeResult,
   type JudgeResult,
@@ -31,6 +33,7 @@ export const anEnvelope = (patch: Partial<Envelope> = {}): Envelope => ({
   env: [],
   network: "none",
   containment: "none",
+  scanners: [],
   maxSpend: { wallMs: 4 * 60 * 60_000 },
   approval: "local",
   ...patch,
@@ -110,6 +113,7 @@ export const aMission = (patch: Partial<Mission> = {}): Mission => ({
   id: "m1",
   modelByPhase: {},
   runtime: {},
+  staffing: {},
   goal: "Add a /health endpoint",
   ledger: emptyLedger(),
   capabilityEnvelope: anEnvelope(),
@@ -146,6 +150,7 @@ export const aMissionState = (patch: Partial<MissionState> = {}): MissionState =
   paused: false,
   brief: "",
   outOfScope: [],
+  secretsRequired: [],
   lastSeq: 1,
   ...patch,
 });
@@ -184,8 +189,10 @@ export function stamp(inputs: readonly EventInput[], clock = fixedClock()): Even
 
 export interface Script {
   research?: ResearchResult[];
+  architect?: ArchitectResult[];
   intake?: IntakeResult[];
   plan?: PlanResult[];
+  critique?: CritiqueResult[];
   synthesize?: AgentSpec[];
   progress?: ProgressLedger[];
   judge?: JudgeResult[];
@@ -221,12 +228,18 @@ export interface ScriptedCalls extends Calls {
 export function scriptedCalls(script: Script): ScriptedCalls {
   const counts: Record<keyof Calls, number> = {
     research: 0,
+    architect: 0,
     intake: 0,
     plan: 0,
+    critique: 0,
     synthesize: 0,
     progress: 0,
     judge: 0,
   };
+
+  // The last criteria a scripted `research` answer carried, so an unscripted `architect`
+  // can hand them straight back. See the defaults below.
+  let researched: ResearchResult | undefined;
 
   const next = <T>(name: keyof Calls, queue: T[] | undefined): T => {
     const index = counts[name]++;
@@ -239,12 +252,38 @@ export function scriptedCalls(script: Script): ScriptedCalls {
 
   return {
     counts,
-    research: async () => next("research", script.research),
+    research: async () => {
+      researched = next("research", script.research);
+      return researched;
+    },
+    /**
+     * Defaults to handing back whatever criteria the last `research` answer carried, so
+     * a test written before the architect existed still drives a mission whose spec its
+     * script wrote (PLAN-NEXT 5.1). It is not a stand-in for the call: a test *about*
+     * the architect scripts it, and the default's design note is obviously canned.
+     *
+     * `counts.architect` still moves, so "was the architect reached?" stays assertable —
+     * which is what a quick mission's test needs.
+     */
+    architect: async () => {
+      if (script.architect !== undefined) return next("architect", script.architect);
+      counts.architect++;
+      return {
+        ...(researched?.criteria ? { criteria: researched.criteria } : {}),
+        ...(researched?.guesses ? { guesses: researched.guesses } : {}),
+        ...(researched?.outOfScope ? { outOfScope: researched.outOfScope } : {}),
+        designNote: "# Design\n\nA scripted design note.",
+      };
+    },
     // Defaults to asking nothing, so the many tests written before intake existed keep
     // driving the loop without scripting a question they do not care about.
     intake: async () =>
       script.intake === undefined ? { questions: [] } : next("intake", script.intake),
     plan: async () => next("plan", script.plan),
+    // Defaults to no objection, which is the answer a sound plan gets — so a test that
+    // does not care about the critic pays for no replan and its plan count is unchanged.
+    critique: async () =>
+      script.critique === undefined ? { objections: [] } : next("critique", script.critique),
     synthesize: async () => next("synthesize", script.synthesize),
     progress: async () => next("progress", script.progress),
     judge: async () => next("judge", script.judge),

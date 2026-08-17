@@ -478,6 +478,7 @@ function Compose({ view, send }: { view: View; send: Send }) {
               goal,
               planOnly: planBox?.checked === true,
               quick: quickBox?.checked === true,
+              staffing: chosenStaffing(),
               // Read off the three selects, each of which was populated from the
               // server's own `health` frame — so what goes out is a value that came
               // in, never a string this page composed. `""` is the "let the planner
@@ -563,6 +564,27 @@ function Runtime({ health }: { health: View["health"] }) {
             </option>
           ))}
         </select>
+
+        {/* One row per staffable decision point, and only on a machine that has probed a
+            provider — a machine with no cards gets no rows rather than five empty
+            dropdowns offering nothing (PLAN-NEXT 4.3). `judge` is absent from the list by
+            construction: it reads the artifacts it grades, and a chat completion has no
+            tools. */}
+        {health.modelCards.length > 0
+          ? STAFFABLE.map((call) => (
+              <>
+                <label for={`compose-staff-${call}`}>{call} runs on</label>
+                <select id={`compose-staff-${call}`}>
+                  <option value="">the orchestrator model</option>
+                  {health.modelCards.map((card) => (
+                    <option key={card.id} value={card.id}>
+                      {card.id} ({card.tier}, {card.provider})
+                    </option>
+                  ))}
+                </select>
+              </>
+            ))
+          : null}
       </div>
       <p class="quiet">
         The orchestrator runs on the Claude Agent SDK — planning, research and judging are
@@ -577,6 +599,33 @@ function Runtime({ health }: { health: View["health"] }) {
       ) : null}
     </details>
   );
+}
+
+/** The decision points a card may be staffed to. The page's copy of
+ *  `missionStaffingSchema`'s keys — the server refuses anything else, and this list is
+ *  only what gets a control. */
+const STAFFABLE = [
+  "research",
+  "architect",
+  "intake",
+  "plan",
+  "critique",
+  "synthesize",
+  "progress",
+] as const;
+
+/** Which decision points the human moved off the orchestrator model, read at click time.
+ *  Every value came from an `<option>` the server sent, and `isOfferedStaffing` checks
+ *  that again on arrival — this is the readable half of the contract, not the enforcing
+ *  half. */
+function chosenStaffing(): Record<string, string> {
+  const chosen: Record<string, string> = {};
+  for (const call of STAFFABLE) {
+    const value = (document.getElementById(`compose-staff-${call}`) as HTMLSelectElement | null)
+      ?.value.trim();
+    if (value) chosen[call] = value;
+  }
+  return chosen;
 }
 
 /** The three selects, read at click time and omitted when left on "let the planner

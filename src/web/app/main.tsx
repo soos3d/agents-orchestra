@@ -79,6 +79,7 @@ function App() {
               harnesses: frame.harnesses,
               orchestratorModels: frame.orchestratorModels,
               orchestratorModel: frame.orchestratorModel,
+              modelCards: frame.modelCards,
               fixedModels: frame.fixedModels,
             },
           }));

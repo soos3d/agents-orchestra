@@ -41,6 +41,43 @@ describe("the acp permission port", () => {
     );
   });
 
+  // PLAN-NEXT 7.3. This channel exists for exactly the call that carries a credential —
+  // an agent asking to run `curl -H "Authorization: Bearer …"` — and the request it
+  // quotes is written to the log and rendered on whatever surface answers. Scrubbed
+  // before either, so the human still sees which variable is in the call and the log
+  // never sees the value.
+  test("a granted value in the quoted tool call reaches neither the log nor the surface", async () => {
+    const log = recorder();
+    const shown: string[] = [];
+    const port = createPermissionPort({
+      emit: log.emit,
+      missionId: "m1",
+      ask: async (request) => {
+        shown.push(request.detail);
+        return true;
+      },
+      secrets: [{ name: "STRIPE_KEY", value: "sk_live_9d8f7a6b5c4d" }],
+    });
+
+    // Both fields. OpenCode's permission frame carries no tool name and its later
+    // updates rewrite the title to what the tool is *doing* — `bash` became `ls -la` in
+    // the capture — so `tool` is a command string often enough that scrubbing only the
+    // detail would leave the same value on the same event one field along.
+    await port.requestPermission("t1", {
+      tool: 'curl -H "Authorization: Bearer sk_live_9d8f7a6b5c4d"',
+      detail: 'curl -H "Authorization: Bearer sk_live_9d8f7a6b5c4d" https://api.stripe.com',
+    });
+
+    const [requested] = typed(log.inputs, "permission_requested");
+    const detail = (requested as unknown as { detail: string }).detail;
+    const tool = (requested as unknown as { tool: string }).tool;
+    assert.equal(detail.includes("sk_live_9d8f7a6b5c4d"), false, "the key is on the log");
+    assert.equal(tool.includes("sk_live_9d8f7a6b5c4d"), false, "the key is in the tool name");
+    assert.match(tool, /\[redacted:STRIPE_KEY\]/);
+    assert.match(detail, /\[redacted:STRIPE_KEY\]/);
+    assert.deepEqual(shown, [detail], "the surface was shown something else than the log");
+  });
+
   test("request ids are unique per request, so two in flight cannot answer each other", async () => {
     const log = recorder();
     const seen: string[] = [];

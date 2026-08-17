@@ -40,7 +40,8 @@ import { saveProfile } from "../memory/profiles.js";
 import { saveMission } from "../memory/savedMission.js";
 import { createMissionRegistry } from "../web/registry.js";
 import { healthFrame } from "../web/health.js";
-import { isOfferedRuntime, type ClientMessage } from "../web/protocol.js";
+import { staffableCards } from "../providers/modelCard.js";
+import { isOfferedRuntime, isOfferedStaffing, type ClientMessage } from "../web/protocol.js";
 import { startWebServer, type Handled, type RunningServer } from "../web/server.js";
 import { createWebHuman, type WebHuman } from "../web/webHuman.js";
 import { resumeMission } from "./resumeCommand.js";
@@ -114,7 +115,14 @@ export async function serve(
   // about the installation rather than about a mission. Re-running it on every publish
   // would spend a syscall storm to report a version number that cannot change while
   // the process is up.
-  const health = healthFrame(config, doctor(config));
+  // The cards this machine has probed ride in the same frame, for the harness menu's
+  // reason: the page renders what the server offered and the server refuses what it did
+  // not offer (`isOfferedStaffing`).
+  const health = healthFrame(
+    config,
+    doctor(config),
+    staffableCards(config.stateDir, (message) => io.err(message)),
+  );
 
   /** One live mission per workspace, keyed by workspace id. */
   const sessions = new Map<string, LiveSession>();
@@ -338,6 +346,12 @@ export async function serve(
       const offered = isOfferedRuntime(health, chosen);
       if (!offered.ok) return offered;
 
+      // The same rule for the card menu (PLAN-NEXT 4.3). A card id decides which provider
+      // this process posts a prompt and an API key to, so a browser may only name one the
+      // server itself probed and sent.
+      const staffed = isOfferedStaffing(health, message.staffing);
+      if (!staffed.ok) return staffed;
+
       const runOptions: RunOptions = {
         goal: message.goal,
         planOnly: message.planOnly,
@@ -347,6 +361,17 @@ export async function serve(
         web: true,
         budgetMinutes: message.budgetMinutes ?? DEFAULT_BUDGET_MINUTES,
         runtime: chosen,
+        staffing: message.staffing,
+        // No compose control for a specialist gate yet (PLAN-NEXT 6.3): the grant costs
+        // real money per file, and a checkbox for it belongs with the compose card's own
+        // plan rather than smuggled in behind the harness rows. A browser-composed
+        // mission grants none, which is what every mission granted before the flag.
+        scanners: [],
+        // And no compose control for a credential grant, for the same reason one field
+        // along (PLAN-NEXT 7.1): granting a variable hands a live key to a subprocess, a
+        // browser is the wrong place to decide that, and a mission that needs one plans
+        // against mocks and says so in the inbox. `--env` at the terminal is the door.
+        env: [],
       };
       const workspaceConfig = await configFor(workspace);
       // Detached deliberately: compose returns while the mission runs for hours. A

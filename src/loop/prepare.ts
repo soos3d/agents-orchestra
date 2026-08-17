@@ -32,7 +32,14 @@ import { estimatePlan } from "./estimate.js";
 import { unattendedHuman, type HumanPort, type SignoffPresentation } from "./human.js";
 import { runIntake } from "./intake.js";
 import { writeOutcomeSpec, type SpecRejection } from "./outcomeSpec.js";
-import { buildPlanInput, buildResearchInput } from "./prompts.js";
+import {
+  buildArchitectInput,
+  buildCritiqueInput,
+  buildPlanInput,
+  buildResearchInput,
+  designSummary,
+} from "./prompts.js";
+import { redact, type Secret } from "../workers/redact.js";
 import { type MissionStore } from "./run.js";
 import { SynthesisError, synthesizeTasks } from "./synthesize.js";
 
@@ -65,6 +72,42 @@ export interface PrepareDeps {
   transports?: readonly string[];
   /** Absent means nobody is there, which is what `--unattended` amounts to. */
   human?: HumanPort;
+  /**
+   * Where the architect's design note goes, as a closure rather than a directory
+   * (PLAN-NEXT 5.1) — `recall`'s shape, for `recall`'s reason: prepare never touches
+   * disk, so the composition root binds this to the mission's artifact root and hands
+   * back the absolute path it wrote.
+   *
+   * Best-effort by design, like `keepEvidence`: it returns `undefined` when there is
+   * nowhere to write or the write failed, and a mission that cannot save a design note
+   * still plans. What is lost then is the note, not the criteria — the architect's other
+   * answer went through `writeOutcomeSpec` and is on the log either way.
+   */
+  writeDesign?(note: string): string | undefined;
+  /**
+   * The specialist scanners this mission may use as a criterion's check (PLAN-NEXT 6.3).
+   *
+   * Bound at the composition root like `roles` and `transports`, and for their reason:
+   * prepare probes nothing. It is already the intersection of what the envelope granted
+   * and what this machine answered for (`availableScanners`), so what arrives here is
+   * runnable — the architect is offered exactly this list and `writeOutcomeSpec` refuses
+   * anything outside it. Absent is every mission until a human grants one.
+   */
+  scanners?: readonly string[];
+  /**
+   * The granted variables this machine holds a value for (PLAN-NEXT 7.3), so the prepare
+   * phase is inside the scrub rather than in front of it.
+   *
+   * `buildLoopDeps` derives this list for the loop, and the loop runs *after* prepare —
+   * which left `research_completed`, `design_written` and the design note itself as the
+   * three surfaces written before any scrubber existed. Research and the architect are
+   * calls with tools against the repository, so a granted value sitting in a file there
+   * (a `.env` a previous round wrote, a fixture, the hardcoded credential a scanner is
+   * about to flag) can be quoted into a design note that every code worker's prompt then
+   * names by path. Bound at the composition root like `writeDesign` and empty on every
+   * mission that granted nothing, which makes the scrub an identity.
+   */
+  secrets?: readonly Secret[];
   onWarn?(message: string): void;
   now?: () => string;
 }
@@ -173,36 +216,73 @@ export async function prepareMission(deps: PrepareDeps): Promise<PrepareResult> 
   emit({
     ...base,
     type: "research_completed",
-    brief: research.brief,
-    findings: research.findings,
+    brief: redact(research.brief, deps.secrets ?? []),
+    findings: research.findings.map((finding) => ({
+      ...finding,
+      claim: redact(finding.claim, deps.secrets ?? []),
+    })),
     depth: quick ? ("scan" as const) : ("deep" as const),
     spend: zeroSpend(),
   });
 
   move("specifying", "research complete");
 
+  // The architect (PLAN-NEXT 5.1), and the whole of what `quick` skips here. A quick
+  // mission's spec is the scan's own criteria, exactly as it was before this call
+  // existed — `solePass` is what makes that answer load-bearing, and it is untouched.
+  // So a quick mission pays for no architect, no design note, and no critic, and its
+  // token count is what it was.
+  const designed = quick
+    ? undefined
+    : await deps.calls.architect(
+        buildArchitectInput(deps.store.state(), research.findings, undefined, deps.scanners),
+      );
+
+  if (designed) recordDesign(deps, base, designed.designNote);
+  if (designed) raiseSecrets(deps, base, designed.envVars);
+
   // One retry, the same allowance every structured return gets. A second would let a
   // model that cannot write a checkable criterion spend the mission's budget on it.
-  let spec = writeOutcomeSpec(research.criteria ?? []);
-  let guesses = research.guesses ?? [];
-  let outOfScope = research.outOfScope ?? [];
+  const authored = designed ?? research;
+  let spec = writeOutcomeSpec(authored.criteria ?? [], deps.scanners);
+  // Merged rather than taken from the architect alone, for the reason memory's guesses
+  // are merged below: research labels what it could not source, the architect labels
+  // what the design leaves open, and neither call can see the other's list. Assigning
+  // one over the other drops exactly the entries the sign-off screen exists to show.
+  let guesses = mergeGuesses(research.guesses ?? [], authored.guesses ?? []);
+  let outOfScope = authored.outOfScope ?? research.outOfScope ?? [];
 
   if (!spec.ok) {
     emit({ ...base, type: "outcome_spec_rejected", rejected: spec.rejected });
 
-    // The retry is the deep call in both cases, and on a quick mission that is the
-    // escalation: the checkbox said the job was small and the outcome spec says
-    // otherwise, so the mission buys back the research it skipped rather than asking
-    // the scan the same question twice. A wrong checkbox costs one call, not a run.
-    const second = await deps.calls.research(
-      buildResearchInput(deps.store.state(), "deep", describeRejections(spec.rejected)),
-    );
-    spec = writeOutcomeSpec(second.criteria ?? []);
-    guesses = second.guesses ?? guesses;
+    // Whoever wrote the refused spec is who gets the retry, quoting the gate's verdict.
+    // On a quick mission that is the deep research call and it is an escalation: the
+    // checkbox said the job was small and the outcome spec says otherwise, so the
+    // mission buys back the research it skipped rather than asking the scan the same
+    // question twice. A wrong checkbox costs one call, not a run.
+    const second = quick
+      ? await deps.calls.research(
+          buildResearchInput(deps.store.state(), "deep", describeRejections(spec.rejected)),
+        )
+      : await deps.calls.architect(
+          buildArchitectInput(
+            deps.store.state(),
+            research.findings,
+            describeRejections(spec.rejected),
+            deps.scanners,
+          ),
+        );
+
+    spec = writeOutcomeSpec(second.criteria ?? [], deps.scanners);
+    guesses = mergeGuesses(guesses, second.guesses ?? []);
     outOfScope = second.outOfScope ?? outOfScope;
+    // A second architect answer carries a second design note, and the mission's note has
+    // to be the one that belongs to the criteria that were accepted.
+    if ("designNote" in second) recordDesign(deps, base, second.designNote);
+    if ("envVars" in second) raiseSecrets(deps, base, second.envVars);
     // The deep answer replaces the scan's for everything downstream — the findings it
     // appends to the ledger below, and the brief the sign-off screen shows.
-    if (quick) research = second;
+    if (quick && "brief" in second) research = second;
 
     if (!spec.ok) {
       emit({ ...base, type: "outcome_spec_rejected", rejected: spec.rejected });
@@ -477,6 +557,126 @@ export async function grantSignoff(
   });
 }
 
+/**
+ * The design note on disk, and the event that says where.
+ *
+ * The write is best-effort and the event follows it rather than preceding it: a
+ * `design_written` naming a file nobody wrote would put a path into a worker's prompt
+ * that the worker cannot open, which is defect 40's shape one layer up. No write, no
+ * event, and the mission plans without a design note exactly as a quick one does.
+ */
+function recordDesign(
+  deps: PrepareDeps,
+  base: { missionId: string; actor: "orchestrator" },
+  raw: string,
+): void {
+  // Scrubbed before the write, not after: the note is a file a code worker's prompt names
+  // by absolute path, so a value quoted into it would be read back into every worker that
+  // opens it — one write site is what keeps the file, the event's summary and the
+  // projection saying the same thing.
+  const note = redact(raw, deps.secrets ?? []);
+  const path = deps.writeDesign?.(note);
+  if (!path) {
+    deps.onWarn?.(
+      "The architect's design note could not be written, so no worker will be given its " +
+        "path. The outcome spec is unaffected.",
+    );
+    return;
+  }
+  deps.store.emit({ ...base, type: "design_written", path, summary: designSummary(note) });
+}
+
+/**
+ * Credentials the design needs that nobody granted (PLAN-NEXT 7.1).
+ *
+ * Three things about this and each is a decision. **The mission does not stop.** A run
+ * that parks at 2am on a key nobody is awake to grant has paid for research and
+ * planning to produce nothing, and the architect has already been told to design
+ * against mocks — so the question is raised and the plan carries on, which is what
+ * "a mission never blocks on a missing API key" means.
+ *
+ * **It goes through `question_asked` and no second inbox.** The fold already parks,
+ * resolves and survives a restart for that event; a private channel here would be a
+ * question that only a running loop could answer, and the answer to this one usually
+ * arrives hours later. `blocks` is empty because there is no task yet to park — the
+ * plan does not exist when the architect answers.
+ *
+ * **Nothing here widens the envelope**, for the reason `synthesize.ts` gives when it
+ * raises the same kind of question: widening is a human decision and there is no code
+ * path that makes it. The human's half is `orchestra run --env NAME`, which the
+ * question names.
+ */
+function raiseSecrets(
+  deps: PrepareDeps,
+  base: { missionId: string; actor: "orchestrator" },
+  requested: readonly string[] | undefined,
+): void {
+  const state = deps.store.state();
+  const granted = new Set(state.mission.capabilityEnvelope.env);
+  const already = new Set(state.secretsRequired);
+  // Deduped against what this mission already raised, so the architect's one retry does
+  // not open a second inbox item for the same variable.
+  const names = [...new Set(requested ?? [])].filter(
+    (name) => !granted.has(name) && !already.has(name),
+  );
+  if (names.length === 0) return;
+
+  deps.store.emit({ ...base, type: "secret_required", names, plannedAs: "mock" });
+  deps.store.emit({
+    ...base,
+    type: "question_asked",
+    questionId: `secret-${names.join("+")}`,
+    question:
+      `The design needs ${names.join(", ")}, which this mission's envelope does not ` +
+      `grant. It is being planned against mocks, so it will finish either way. To run ` +
+      `the real integration, start it again with ${names.map((name) => `--env ${name}`).join(" ")} ` +
+      `— that grants the name and the value is read from this machine's environment, ` +
+      `never from here.`,
+    blocks: [],
+    // Nothing waits on this one, and saying so on the event is what keeps a later resume
+    // from waiting on it anyway (PLAN-NEXT 7.2): `blocks: []` alone cannot be told apart
+    // from a reset-cap escalation whose tasks are all done.
+    advisory: true,
+  });
+}
+
+/**
+ * The plan critic (PLAN-NEXT 5.3): one attack on the breakdown, and at most one replan.
+ *
+ * Capped at one on purpose — a critic that can keep objecting is a budget leak, and the
+ * second objection to a plan is not worth what the third plan costs. Skipped on a quick
+ * mission for the architect's reason: the human said the job was small, and a
+ * one-task plan has no dependency to miss and no lease to collide with.
+ */
+async function critiquedPlan(
+  deps: PrepareDeps,
+  first: Awaited<ReturnType<Calls["plan"]>>,
+  asked: string | undefined,
+): Promise<Awaited<ReturnType<Calls["plan"]>>> {
+  if (deps.store.state().mission.quick) return first;
+
+  const { objections } = await deps.calls.critique(
+    buildCritiqueInput(deps.store.state(), first.tasks),
+  );
+
+  const base = { missionId: deps.store.state().mission.id, actor: "orchestrator" as const };
+  if (objections.length === 0) return first;
+
+  deps.store.emit({ ...base, type: "plan_critiqued", objections, replanned: true });
+
+  const complaint = objections
+    .map((objection) => `${objection.taskId ? `${objection.taskId}: ` : ""}${objection.kind} — ${objection.detail}`)
+    .join("\n");
+
+  return deps.calls.plan(
+    buildPlanInput(
+      deps.store.state(),
+      `${asked ? `${asked}\n\n` : ""}A review of the last plan raised these objections. ` +
+        `Fix each one and return the whole plan:\n${complaint}`,
+    ),
+  );
+}
+
 /** One structured-return retry, quoting the offending edge. A plan that cannot be
  *  scheduled produces a mission that runs to its reset cap having dispatched nothing
  *  (§3), so this is checked before a single agent is synthesized. */
@@ -491,7 +691,11 @@ async function planWithOneRetry(
   // human a plan that could never complete the mission (defect 32).
   const criteria = () => deps.store.state().mission.ledger.criteria;
 
-  const first = await deps.calls.plan(buildPlanInput(deps.store.state(), asked));
+  // The critic runs between the plan and its validation (PLAN-NEXT 5.3), which is the
+  // one place a colliding lease or an ungradeable criterion is still cheap: after
+  // validation the plan is on its way to a human, and after sign-off it is on its way to
+  // a worktree.
+  const first = await critiquedPlan(deps, await deps.calls.plan(buildPlanInput(deps.store.state(), asked)), asked);
   const check = validatePlan(first.tasks, criteria());
   if (check.ok) return first;
 

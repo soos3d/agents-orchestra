@@ -26,6 +26,7 @@ import {
 import { type Calls, type PlanInput, type PlanResult } from "./calls.js";
 import { type DispatchOutcome } from "./dispatch.js";
 import { DecisionPointError } from "./resilience.js";
+import { shouldCheckCriterion } from "./criteria.js";
 import { runLoop, type ExtendRequest, type LoopDeps, type MissionStore } from "./run.js";
 
 /** The log, in memory. `state()` refolds every time, exactly as the real store does,
@@ -48,6 +49,7 @@ interface SeedOptions {
   tasks?: Task[];
   unattended?: boolean;
   budget?: Budget;
+  quick?: boolean;
 }
 
 function seedMission({
@@ -55,9 +57,10 @@ function seedMission({
   tasks = [aCodeTask()],
   unattended = false,
   budget = aBudget(),
+  quick = false,
 }: SeedOptions = {}): EventInput[] {
   return [
-    missionCreated({ unattended, budget }),
+    missionCreated({ unattended, budget, ...(quick ? { quick: true } : {}) }),
     {
       ...orchestrator,
       type: "outcome_spec_written",
@@ -110,7 +113,14 @@ interface Harness {
   deps: LoopDeps;
   store: MissionStore & { inputs: EventInput[] };
   dispatched: string[];
-  calls: { plan: PlanInput[]; synthesize: number; judged: string[] };
+  calls: {
+    plan: PlanInput[];
+    synthesize: number;
+    judged: string[];
+    /** The seats the loop asked for, per check — how a panel's cost is asserted with
+     *  no model behind it. */
+    panels: (readonly (string | undefined)[] | undefined)[];
+  };
 }
 
 function harness(options: {
@@ -126,7 +136,12 @@ function harness(options: {
 }): Harness {
   const store = testStore(options.seed ?? seedMission());
   const fake = fakeDispatch(options.outcomes);
-  const seen = { plan: [] as PlanInput[], synthesize: 0, judged: [] as string[] };
+  const seen = {
+    plan: [] as PlanInput[],
+    synthesize: 0,
+    judged: [] as string[],
+    panels: [] as (readonly (string | undefined)[] | undefined)[],
+  };
 
   let progressIndex = 0;
   let planIndex = 0;
@@ -134,6 +149,12 @@ function harness(options: {
   const calls: Calls = {
     research: async () => {
       throw new Error("the loop does not research");
+    },
+    architect: async () => {
+      throw new Error("the loop does not architect; the spec is frozen at sign-off");
+    },
+    critique: async () => {
+      throw new Error("the loop's replan is not critiqued — the critic runs before dispatch");
     },
     intake: async () => {
       throw new Error("the loop does not run intake; it happens once, before sign-off");
@@ -170,12 +191,27 @@ function harness(options: {
       dispatch: fake.run(store),
       cwd: process.cwd(),
       sleep: async () => {},
-      checkCriterion: async (criterion) => {
+      checkCriterion: async (criterion, context) => {
         seen.judged.push(criterion.id);
+        seen.panels.push(context.panel);
         const met = typeof decide === "function" ? decide(criterion) : (decide ?? true);
+        const evidence = { artifactIds: [], checkOutput: "exit 0", reasoning: "stub", byTask: [] };
+        // Only a judge check convenes a panel; a command exits 0 or it does not, and a
+        // seat on it would be a model asked to second-guess an exit code.
+        const seats = criterion.check.kind === "judge" ? (context.panel ?? [undefined]) : [];
         return {
           met,
-          evidence: { artifactIds: [], checkOutput: "exit 0", reasoning: "stub", byTask: [] },
+          evidence,
+          ...(seats.length > 1
+            ? {
+                votes: seats.map((lens, seat) => ({
+                  seat,
+                  ...(lens ? { lens } : {}),
+                  met,
+                  evidence,
+                })),
+              }
+            : {}),
         };
       },
       ...(options.limits ? { limits: options.limits } : {}),
@@ -946,5 +982,122 @@ describe("runLoop", () => {
     // Dispatched in round 1, requeued, dispatched again in round 2, then no more.
     assert.deepEqual(h.dispatched, ["t1", "t1"]);
     assert.equal(h.store.state().tasks[0]?.status, "failed");
+  });
+});
+
+// PLAN-NEXT 6.1 and 6.2, both assertable against a canned log with no model: what a
+// panel costs, and what a failing deterministic check stops it costing.
+describe("judge panels and the deterministic gate", () => {
+  const judged = (id: string) =>
+    aCriterion({ id, statement: `${id} reads well`, check: { kind: "judge", rubric: "PASS if so" } });
+
+  const seatsOf = (store: { inputs: EventInput[] }, criterionId: string) =>
+    store.inputs
+      .filter(
+        (event): event is Extract<EventInput, { type: "criterion_checked" }> =>
+          event.type === "criterion_checked" && event.criterionId === criterionId,
+      )
+      .map((event) => [event.panelSeat, event.lens] as const);
+
+  test("a standard mission convenes three lensed seats and records each in the log", async () => {
+    const h = harness({
+      seed: seedMission({
+        criteria: [judged("c1")],
+        tasks: [aCodeTask({ id: "t1", satisfies: ["c1"] })],
+      }),
+      progress: [aProgressLedger({ isRequestSatisfied: true, unmetCriteria: [] })],
+      met: true,
+    });
+
+    await runLoop(h.deps);
+
+    assert.deepEqual(h.calls.panels, [["correctness", "spec-compliance", "does-it-run"]]);
+    // Three seats, then the panel's answer — the resolved verdict last and unseated,
+    // which is the one `fold` applies.
+    assert.deepEqual(seatsOf(h.store, "c1"), [
+      [0, "correctness"],
+      [1, "spec-compliance"],
+      [2, "does-it-run"],
+      [undefined, undefined],
+    ]);
+  });
+
+  // The done-when this whole path is measured against: a quick mission's judge spend
+  // is what it was before panels existed, and that is one event and one call.
+  test("a quick mission convenes one unlensed seat and writes one verdict", async () => {
+    const h = harness({
+      seed: seedMission({
+        quick: true,
+        criteria: [judged("c1")],
+        tasks: [aCodeTask({ id: "t1", satisfies: ["c1"] })],
+      }),
+      progress: [aProgressLedger({ isRequestSatisfied: true, unmetCriteria: [] })],
+      met: true,
+    });
+
+    await runLoop(h.deps);
+
+    assert.deepEqual(h.calls.panels, [[undefined]]);
+    assert.deepEqual(seatsOf(h.store, "c1"), [[undefined, undefined]]);
+  });
+
+  test("a failing command criterion stops the panel being convened that round", async () => {
+    const h = harness({
+      seed: seedMission({
+        criteria: [judged("prose"), aCriterion({ id: "tests" })],
+        tasks: [aCodeTask({ id: "t1", satisfies: ["prose", "tests"] })],
+      }),
+      progress: [aProgressLedger({}), aProgressLedger({})],
+      limits: { maxRounds: 1 },
+      met: (criterion) => criterion.id !== "tests",
+    });
+
+    await runLoop(h.deps);
+
+    // The deterministic check ran, the panel did not, and nothing was recorded about a
+    // criterion nobody graded.
+    assert.deepEqual(h.calls.judged, ["tests"]);
+    assert.deepEqual(seatsOf(h.store, "prose"), []);
+  });
+
+  test("with the deterministic check green the panel runs in the same round", async () => {
+    const h = harness({
+      seed: seedMission({
+        criteria: [judged("prose"), aCriterion({ id: "tests" })],
+        tasks: [aCodeTask({ id: "t1", satisfies: ["prose", "tests"] })],
+      }),
+      progress: [aProgressLedger({ isRequestSatisfied: true, unmetCriteria: [] })],
+      met: true,
+    });
+
+    await runLoop(h.deps);
+
+    // Deterministic first, whatever order the outcome spec wrote them in.
+    assert.deepEqual(h.calls.judged, ["tests", "prose"]);
+  });
+
+  // The gate suppresses the panel; it must not suppress the *re-check*. A criterion
+  // whose `lastCheckedRound` had moved while nothing graded it would be gated for the
+  // rest of the mission — defect 32's shape, one layer along.
+  test("a gated criterion is left untouched, so the next round can still convene it", async () => {
+    const h = harness({
+      seed: seedMission({
+        criteria: [judged("prose"), aCriterion({ id: "tests" })],
+        tasks: [aCodeTask({ id: "t1", satisfies: ["prose", "tests"] })],
+      }),
+      progress: [aProgressLedger({}), aProgressLedger({})],
+      limits: { maxRounds: 1 },
+      met: (criterion) => criterion.id !== "tests",
+    });
+
+    await runLoop(h.deps);
+
+    const prose = h.store.state().mission.ledger.criteria.find((c) => c.id === "prose")!;
+    assert.equal(prose.met, undefined);
+    assert.equal(prose.lastCheckedRound, undefined);
+    assert.equal(
+      shouldCheckCriterion({ criterion: prose, allDone: true, landed: [{ completedRound: 1 }], round: 2 }),
+      true,
+    );
   });
 });

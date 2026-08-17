@@ -143,3 +143,43 @@ while the envelope said otherwise.
   `undefined` means "not contained", so returning it would run the mission on the bare machine.
   Synthesis refuses first (`UnavailableContainmentError`, checked once before the first staffing
   call — no answer a model gives installs Docker); this is the resumed-elsewhere case.
+
+
+## Redaction (PLAN-NEXT 7.3)
+
+`workers/redact.ts` is pure and has one rule: **exact value match, no shape matching.** `grantedSecrets`
+pairs each `Envelope.env` name with the value this process holds (skipping anything under
+`MIN_REDACTED_LENGTH`, so a granted `LOG_LEVEL=debug` does not delete the word *debug* from every
+report); `redact` does `split`/`join` per value, longest first, replacing with `[redacted:NAME]`.
+`String.replace` is wrong here twice over — a value is a string and not a pattern, and a value
+containing `$&` would be re-inserted by the replacement syntax.
+
+Four sinks, all wired at `buildLoopDeps`, which is the only place `process.env` is read for this:
+`dispatch` scrubs `run.raw` **before** `parseWorkerReport` (so the report, the reformatter's input and
+every derived event are covered at once), `verify.ts` scrubs `runCommand`'s output and each judge's
+reasoning, `keepEvidence` takes the secrets as a **required** parameter so a new call site cannot skip
+it, and the ACP permission port scrubs the `detail` a request quotes before it is emitted or shown.
+
+Four more sinks came out of the stage's security review, and all four were the same mistake: the scrub
+was on where a text landed and not on what it was written *from*. `verification_run.spec` reached the
+log unscrubbed on every check while `runCommand`'s refusal of the identical string was already covered
+(`loggedSpec` in `dispatch.ts`); `merge_empty.reason` and the conflicted `move`/return were the two
+dispatch outcomes not routed through `fail()`; and the whole prepare phase ran ahead of the scrubber,
+because `buildLoopDeps` derives the list and the loop runs after `prepareMission` — `PrepareDeps.secrets`,
+bound at `runMission`, is that half. `permission_requested.tool` is scrubbed alongside `detail` now:
+OpenCode's later frames rewrite the title to what the tool is *doing*, so `tool` is a command string
+often enough that covering one field and not the other was arbitrary.
+
+**`withoutSecrets` is the scanner's exception and it is a filter, not a construct.** `runScanner`
+inherited `process.env`, which handed every granted value to an AI agent with shell access whose store
+persists in the repository — defect 42 one caller along. A `buildWorkerEnv`-style allowlist is not
+writable for it: it drives `codex` or `claude` and needs the operator's own environment to find their
+credentials, so a name list would be a gate that silently cannot start. What is decidable is what to
+withhold. Its export is read, scrubbed, **written back** at 0600 and then parsed, so the file and the
+summary cannot disagree — the finding likeliest to be quoted verbatim is the hardcoded credential.
+
+The limit is deliberate: a file the worker writes itself is the deliverable, not a report about it, and
+rewriting it would corrupt the work. Containment and `Envelope.env` are the line that decides whether a
+worker sees a value at all; this is the second line behind them. Two known holes, both stated rather
+than closed: a base64 or JSON-escaped rendering of a value is not the value byte for byte and passes
+through, and `MIN_REDACTED_LENGTH` leaves a seven-character granted value alone everywhere.

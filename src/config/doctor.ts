@@ -5,6 +5,7 @@
 // that cannot tell you what to type next has not helped.
 import fs from "node:fs";
 import path from "node:path";
+import { SCANNERS } from "../domain/artifacts.js";
 import {
   type ModelCard,
   loadModelCards,
@@ -168,6 +169,30 @@ export function checkProviders(
  * for one; a machine without it runs exactly as every machine ran before this existed.
  * The refusal that matters happens at synthesis, on the mission that did ask.
  */
+/**
+ * Whether a specialist scanner could run here (PLAN-NEXT 6.3).
+ *
+ * Never a failure, and never a warning either: a scanner is opt-in per mission and no
+ * mission composed today asks for one, so a machine without it runs exactly as every
+ * machine ran before this existed. The line exists so that somebody who *did* grant one
+ * and had the criterion refused can see which half is missing without reading the source.
+ */
+export function checkScanners(config: DiscoveredConfig): Check {
+  const found = config.scanners ?? [];
+  return {
+    name: "scanners",
+    level: "ok",
+    detail:
+      found.length === 0
+        ? `none on PATH — a 'scanner' check would be refused when the outcome spec is written`
+        : `${found.join(", ")} ready; a mission's envelope still has to grant one by name`,
+    fix:
+      found.length === 0
+        ? `npm i -g ${SCANNERS.join(" ")} if you want to compose a mission with a scanner gate`
+        : "grant it in the mission's envelope to use it",
+  };
+}
+
 export function checkContainment(config: DiscoveredConfig): Check {
   const backends = config.containers ?? [];
 
@@ -292,6 +317,7 @@ export function doctor(
     checkAcp(config),
     checkProviders(cards, config.providerKeys ?? {}, staffableCards(config.stateDir)),
     checkContainment(config),
+    checkScanners(config),
     checkStateDir(config),
     checkIgnored(config),
     checkChannel(config.gatewayUrl),

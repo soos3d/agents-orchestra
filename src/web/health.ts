@@ -35,6 +35,11 @@ const ORCHESTRATOR_MODELS = MODELS_BY_VENDOR.anthropic;
 export function healthFrame(
   config: DiscoveredConfig,
   report: { checks: readonly Check[]; ready: boolean },
+  /** The cards `orchestra doctor` has probed on this machine (`staffableCards`), passed
+   *  in rather than loaded here so this stays a pure function of what it is handed —
+   *  reading the disk would make the menu unassertable without one. Absent is a machine
+   *  with no provider configured, which is every machine until one is. */
+  cards: readonly { id: string; tier: string; provider: string }[] = [],
 ): HealthFrame {
   return {
     checks: report.checks,
@@ -47,6 +52,7 @@ export function healthFrame(
     })),
     orchestratorModels: ORCHESTRATOR_MODELS,
     orchestratorModel: config.orchestratorModel,
+    modelCards: cards.map((card) => ({ id: card.id, tier: card.tier, provider: card.provider })),
     fixedModels: [
       { name: "progress", model: PROGRESS_MODEL },
       { name: "reformat", model: REFORMAT_MODEL },

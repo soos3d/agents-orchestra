@@ -20,8 +20,22 @@ export type SpecResult =
   | { ok: true; criteria: Criterion[] }
   | { ok: false; rejected: SpecRejection[] };
 
-/** Proposals arrive from a model, so the input is whatever it returned. */
-export function writeOutcomeSpec(proposed: readonly unknown[]): SpecResult {
+/**
+ * Proposals arrive from a model, so the input is whatever it returned.
+ *
+ * `scanners` is the specialist gates this mission may name (PLAN-NEXT 6.3): the
+ * intersection of what its envelope granted and what this machine answered for, computed
+ * at the composition root. Empty is the default and every mission before 6.3, so a
+ * `scanner` check is refused here unless somebody granted it — which is what makes "opt-in
+ * per mission, never default" a property of the code rather than of a prompt. Refused
+ * *here* and not silently skipped for the reason `kind: "none"` is refused here: a check
+ * that does not run is a criterion the mission can never legitimately report as met, and
+ * skipping it would report one it never looked at as clean.
+ */
+export function writeOutcomeSpec(
+  proposed: readonly unknown[],
+  scanners: readonly string[] = [],
+): SpecResult {
   if (proposed.length === 0) {
     return {
       ok: false,
@@ -60,6 +74,22 @@ export function writeOutcomeSpec(proposed: readonly unknown[]): SpecResult {
         reason:
           `Its check is 'none', so it can never be evaluated and the mission could never ` +
           `legitimately report success. Give it a command to run or a rubric to judge.`,
+      });
+      continue;
+    }
+
+    if (criterion.check.kind === "scanner" && !scanners.includes(criterion.check.scanner)) {
+      rejected.push({
+        criterion: criterion.statement,
+        reason:
+          `Its check runs the '${criterion.check.scanner}' scanner, which this mission ` +
+          `cannot use: ` +
+          (scanners.length === 0
+            ? `no scanner is available. A scan is granted per mission and costs real money ` +
+              `per file, so nothing runs one unless the envelope names it and the binary is ` +
+              `on PATH — check 'orchestra doctor'.`
+            : `only ${scanners.join(", ")} ${scanners.length === 1 ? "is" : "are"} available.`) +
+          ` Give the criterion a command to run or a rubric to judge instead.`,
       });
       continue;
     }

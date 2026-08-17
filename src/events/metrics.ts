@@ -118,6 +118,96 @@ export interface MissionMetrics {
   other: OtherMetrics[];
 }
 
+/**
+ * One decision point's bill, beside what it was staffed to and what its answer cost
+ * downstream (PLAN-NEXT 4.4).
+ *
+ * The downstream columns are the point of the report and the reason it is not just
+ * `MissionMetrics.calls` with a card column added. A cheap model that plans badly is not
+ * cheap: the plan comes back, a human sends it back at sign-off, and the mission pays for
+ * the replan and everything after it. Tokens alone would rank that model first.
+ *
+ * Each count is an existing event attributed to the call whose answer it is a verdict on,
+ * and there are exactly three because there are exactly three such events — nothing here
+ * is inferred, and a decision point with no verdict event of its own reports none rather
+ * than a zero standing in for one.
+ */
+export interface StaffingMetrics extends TokenBreakdown, Priced {
+  call: string;
+  /** The card this mission staffed the call to, from `mission_created`. Absent means the
+   *  Agent SDK, which is every call on every mission before PLAN-NEXT 4. */
+  staffedTo?: string;
+  /** What the transport said actually answered (`modelByPhase`). Absent where it said
+   *  nothing, which is every Agent SDK call — the provider path always says. */
+  ranOn?: string;
+  calls: number;
+  wallMs: number;
+  /** How often this call's own answer was refused or sent back: `outcome_spec_rejected`
+   *  for `research`, `signoff_revised` for `plan`, `envelope_violation` for `synthesize`.
+   *  Absent for the calls that have no such event rather than reported as `0`. */
+  sentBack?: number;
+}
+
+/** Which event is a verdict on which decision point's answer. Three, because three exist:
+ *  the outcome-spec gate refuses `research`'s criteria, a human sends `plan`'s plan back
+ *  at sign-off, and `inspect()` refuses `synthesize`'s spec against the envelope. */
+const VERDICT_EVENTS: Readonly<Record<string, string>> = {
+  research: "outcome_spec_rejected",
+  // The outcome-spec gate refuses the architect's criteria on an ordinary mission and
+  // research's on a quick one (PLAN-NEXT 5.1), so both rows point at the same event and
+  // only one of them ran. `plan_critiqued` is the critic's verdict on the plan, which is
+  // what answers "is the critic paying for itself" — one replan per objection set.
+  architect: "outcome_spec_rejected",
+  plan: "signoff_revised",
+  // How often the critic found something. It is the critic's answer being *acted on*
+  // rather than refused, which is the one honest exception in this table — and it is the
+  // number the stage exists to produce: objections against `call:critique`'s cost and
+  // `call:plan`'s extra dispatch is whether the critic pays for itself.
+  critique: "plan_critiqued",
+  synthesize: "envelope_violation",
+};
+
+/**
+ * Per decision point: what it ran on, what it cost, and how often its answer came back.
+ *
+ * Takes the events as well as the fold because two of the three verdicts leave no trace
+ * in `MissionState` — a rejection is a fact about a moment rather than about the state
+ * that survived it. Counting them here rather than folding them into the mission keeps
+ * `fold` answering only what the loop needs to make its next decision.
+ */
+export function staffingMetrics(
+  state: MissionState,
+  events: readonly { type: string }[],
+  cards: readonly ModelCard[] = [],
+): StaffingMetrics[] {
+  const byPhase = state.mission.spendByPhase;
+  const modelByPhase = state.mission.modelByPhase;
+  const staffing = state.mission.staffing as Readonly<Record<string, string | undefined>>;
+  const byId = new Map(cards.map((card) => [card.id, card]));
+
+  return CALL_NAMES.flatMap((call) => {
+    const phase = spendPhase(call);
+    const spend = byPhase[phase];
+    if (spend === undefined) return [];
+
+    const verdict = VERDICT_EVENTS[call];
+    return [
+      {
+        call,
+        ...(staffing[call] === undefined ? {} : { staffedTo: staffing[call]! }),
+        ...(modelByPhase[phase] === undefined ? {} : { ranOn: modelByPhase[phase]! }),
+        calls: spend.dispatches,
+        wallMs: spend.wallMs,
+        ...breakdown(spend),
+        ...priced(spend, modelByPhase[phase], byId),
+        ...(verdict === undefined
+          ? {}
+          : { sentBack: events.filter((event) => event.type === verdict).length }),
+      },
+    ];
+  });
+}
+
 /** The token half of a `Spend`, as a report line. Written once and spread everywhere,
  *  so a fifth kind is added in one place rather than in four. */
 function breakdown(spend: Spend | undefined): TokenBreakdown {

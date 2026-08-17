@@ -11,7 +11,12 @@ import path from "node:path";
 import { spendPhase, type Budget, type Spend } from "../domain/budget.js";
 import { type Envelope } from "../domain/envelope.js";
 import { type Criterion, type PlannedTask } from "../domain/ledger.js";
-import { type Estimate, type MissionRuntime } from "../domain/mission.js";
+import {
+  staffableCalls,
+  type Estimate,
+  type MissionRuntime,
+  type MissionStaffing,
+} from "../domain/mission.js";
 import { type Calls } from "../loop/calls.js";
 import { anyOf, type HumanPort } from "../loop/human.js";
 import { prepareMission, type PrepareResult } from "../loop/prepare.js";
@@ -19,17 +24,23 @@ import { DecisionPointError } from "../loop/resilience.js";
 import { createFileStore } from "../loop/store.js";
 import { type MissionStore } from "../loop/run.js";
 import {
+  artifactRoot,
   loreDir,
   missionDir,
   withOrchestratorModel,
   type DiscoveredConfig,
 } from "../config/discover.js";
+import { writeDesignNote } from "../config/hygiene.js";
 import { readLore } from "../memory/lore.js";
 import { loadSavedMission, seedFromSaved, type SavedMission } from "../memory/savedMission.js";
 import { staffableCards } from "../providers/modelCard.js";
+import { resolveStaffing } from "../loop/providerCalls.js";
+import { SCANNERS } from "../domain/artifacts.js";
+import { availableScanners } from "../workers/availability.js";
 import { staffingOffer } from "../workers/harness.js";
 import { DEFAULT_TOOL_CLASSES } from "../workers/toolCatalogue.js";
 import { type ClientMessage } from "../web/protocol.js";
+import { grantedSecrets } from "../workers/redact.js";
 import { startWebServer, type RunningServer } from "../web/server.js";
 import { createWebHuman, type WebHuman } from "../web/webHuman.js";
 import { executeMission, staffableRoles } from "./execute.js";
@@ -61,6 +72,78 @@ export interface RunOptions {
    *  `missionRuntimeSchema`). Every field optional: absent is "whatever this machine
    *  offers", which is what every mission did before the choice existed. */
   runtime: MissionRuntime;
+  /** Which decision points run on a model card rather than through the Agent SDK
+   *  (`--staff plan=<card>`). Empty is every mission before PLAN-NEXT 4. */
+  staffing: MissionStaffing;
+  /**
+   * Specialist scanners this mission's outcome spec may use as a check
+   * (`--scan deepsec`) — PLAN-NEXT 6.3.
+   *
+   * A grant, and it goes into the envelope rather than into `runtime`, because that is
+   * where the expensive human decisions live: a deepsec scan is an AI agent with shell
+   * access on this machine and its own documentation puts a large repository at hundreds
+   * of dollars. Empty is every mission that did not type the flag, which is the whole of
+   * "never default".
+   */
+  scanners: string[];
+  /**
+   * Environment variable *names* this mission's workers may be given (`--env STRIPE_KEY`)
+   * — PLAN-NEXT 7.1.
+   *
+   * The human half of the secrets flow, and it is a grant like `--scan`: it goes into
+   * the envelope, because `Envelope.env` is already what `buildWorkerEnv` reads and what
+   * synthesis checks a spec against (defect 42). Names only — a value typed here would
+   * be in the shell history, in `ps`, and one careless log line from the event log, and
+   * the value is read from this machine's environment at dispatch instead. Empty is
+   * every mission that did not type the flag.
+   */
+  env: string[];
+}
+
+/**
+ * `--staff research=<card>,plan=<card>` — a card id per decision point.
+ *
+ * Pure and separate from the flag loop because two of its three refusals are the kind a
+ * human hits at the terminal and the message is the whole of the fix: a decision point
+ * that is not staffable (`judge`, which needs tools a chat completion does not have), and
+ * a pair with no `=` in it. The *third* refusal — a card id nobody probed — is not here,
+ * because this function has no filesystem: `resolveStaffing` owns it, against the cards
+ * this machine actually verified.
+ */
+export function parseStaff(value: string): { ok: true; staffing: MissionStaffing } | { ok: false; message: string } {
+  const staffable = staffableCalls();
+  const staffing: Record<string, string> = {};
+
+  for (const pair of value.split(",")) {
+    const trimmed = pair.trim();
+    if (trimmed === "") continue;
+
+    const at = trimmed.indexOf("=");
+    const call = at === -1 ? "" : trimmed.slice(0, at).trim();
+    const card = at === -1 ? "" : trimmed.slice(at + 1).trim();
+    if (!call || !card) {
+      return {
+        ok: false,
+        message: `--staff takes <decision point>=<card id> pairs, e.g. --staff plan=deepseek-ai/DeepSeek-V3. Got '${trimmed}'.`,
+      };
+    }
+
+    if (!staffable.includes(call as keyof MissionStaffing)) {
+      return {
+        ok: false,
+        message:
+          `'${call}' cannot be staffed to a model card — staffable: ${staffable.join(", ")}.` +
+          (call === "judge"
+            ? ` A judge reads the artifacts it grades with Read, Glob and Grep, and a chat` +
+              ` completion has no tools: it would fail correct work and say so honestly.`
+            : ``),
+      };
+    }
+
+    staffing[call] = card;
+  }
+
+  return { ok: true, staffing: staffing as MissionStaffing };
 }
 
 /** The three flags that take a value and mean one thing each, parsed in one place so
@@ -81,10 +164,23 @@ export function parseRunArgs(argv: readonly string[]): ParsedRun {
   const flags = new Set<string>();
   let budgetMinutes = DEFAULT_BUDGET_MINUTES;
   let saved: string | undefined;
+  let staffing: MissionStaffing = {};
+  const scanners: string[] = [];
+  const env: string[] = [];
   const runtime: Record<string, string> = {};
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
+    if (arg === "--staff") {
+      const value = argv[++i];
+      if (!value || value.startsWith("--")) {
+        return { ok: false, message: "--staff takes pairs, e.g. --staff research=<card>,plan=<card>." };
+      }
+      const parsed = parseStaff(value);
+      if (!parsed.ok) return parsed;
+      staffing = parsed.staffing;
+      continue;
+    }
     const runtimeFlag = RUNTIME_FLAGS[arg];
     if (runtimeFlag) {
       const value = argv[++i];
@@ -92,6 +188,68 @@ export function parseRunArgs(argv: readonly string[]): ParsedRun {
         return { ok: false, message: `${arg} takes a value, e.g. ${runtimeFlag.example}.` };
       }
       runtime[runtimeFlag.field] = value;
+      continue;
+    }
+    if (arg === "--scan") {
+      const value = argv[++i];
+      if (!value || value.startsWith("--")) {
+        return {
+          ok: false,
+          message: `--scan takes a scanner name, e.g. --scan ${SCANNERS[0]}.`,
+        };
+      }
+      // Checked against the names that exist rather than against what is installed: this
+      // is a typo check, and whether the binary answers is `orchestra doctor`'s question
+      // and `writeOutcomeSpec`'s refusal. Granting a scanner on a machine that cannot run
+      // it fails the criterion with a message naming the fix, which is better than a flag
+      // that reads as accepted on one machine and rejected on another.
+      if (!SCANNERS.includes(value as (typeof SCANNERS)[number])) {
+        return {
+          ok: false,
+          message: `--scan does not know '${value}'. Known scanners: ${SCANNERS.join(", ")}.`,
+        };
+      }
+      scanners.push(value);
+      continue;
+    }
+    if (arg === "--env") {
+      const value = argv[++i];
+      if (!value || value.startsWith("--")) {
+        return { ok: false, message: "--env takes a variable name, e.g. --env STRIPE_KEY." };
+      }
+      // The one refusal that matters: a human who types `--env STRIPE_KEY=sk_live_…` has
+      // put a live key on the command line, and accepting it would grant a variable
+      // literally named `STRIPE_KEY=sk_live_…` — nothing, granted, with the key now in
+      // the shell history and in `mission_created`. Refused with the rule named.
+      // A pasted *value* is the other half of the same slip and the more dangerous one:
+      // `--env sk_live_…` has no `=`, so it would be accepted as a variable name, written
+      // into `mission_created.capabilityEnvelope.env` and onto the sign-off screen — and
+      // `grantedSecrets` would find no variable by that name, so nothing could ever scrub
+      // it. A POSIX name is what an environment variable is; anything else is refused,
+      // truncated in the message.
+      if (!value.includes("=") && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
+        return {
+          ok: false,
+          message:
+            `--env takes a variable name like STRIPE_KEY. '${value.slice(0, 8)}…' is not ` +
+            `one — if that is the key itself, export it in your shell and pass the name.`,
+        };
+      }
+      if (value.includes("=")) {
+        // Truncated to the same 8 characters as the branch above, and not to the `=`.
+        // A base64 credential ends in `=`, so `indexOf("=")` is its last character and
+        // the untruncated message would print the whole key to stderr — twice — in the
+        // one error whose entire purpose is that the key was typed where it should not
+        // have been.
+        const head = value.slice(0, Math.min(8, value.indexOf("=")));
+        return {
+          ok: false,
+          message:
+            `--env takes a name, never a value. Got '${head}…=…'. ` +
+            `Export the variable in your shell and pass just the name: --env ${head}….`,
+        };
+      }
+      env.push(value);
       continue;
     }
     if (arg === "--saved") {
@@ -133,6 +291,20 @@ export function parseRunArgs(argv: readonly string[]): ParsedRun {
   );
   if (unknown) return { ok: false, message: `Unknown flag '${unknown}'.` };
 
+  // A quick mission's outcome spec is written by `research`, never by the architect, and
+  // `research` is never offered a scanner — a mission a human called small is the one not
+  // to spend a per-file security scan on. Accepting both would hand back a grant no call
+  // is ever told about, which is a flag that reads as honoured and does nothing.
+  if (flags.has("--quick") && scanners.length > 0) {
+    return {
+      ok: false,
+      message:
+        "--scan and --quick do not go together. A quick mission's criteria are written by " +
+        "the research scan, which is never offered a scanner — the outcome spec would come " +
+        "back without one and the grant would do nothing. Drop --quick to gate on a scan.",
+    };
+  }
+
   const unattended = flags.has("--unattended");
   // §7 couples the two deliberately: the easy path to skipping sign-off is a mission
   // whose criteria a human already approved and has not edited since. `--force` is
@@ -158,6 +330,9 @@ export function parseRunArgs(argv: readonly string[]): ParsedRun {
       web: !flags.has("--no-web"),
       budgetMinutes,
       runtime,
+      staffing,
+      scanners,
+      env,
       ...(saved === undefined ? {} : { saved }),
     },
   };
@@ -179,7 +354,12 @@ export function newMissionId(goal: string, at: Date): string {
 /** The envelope a terminal run declares. The compose screen (§13) is where a human
  *  sets this in Phase 3; until then it is the narrowest thing that can still do code
  *  work — the repo, no network, and no browser. */
-export function defaultEnvelope(config: DiscoveredConfig, budget: Budget): Envelope {
+export function defaultEnvelope(
+  config: DiscoveredConfig,
+  budget: Budget,
+  scanners: readonly string[] = [],
+  env: readonly string[] = [],
+): Envelope {
   return {
     // From the catalogue rather than written out here, because these classes have to
     // resolve to tools synthesis can actually offer — a class this file invents grants
@@ -189,14 +369,18 @@ export function defaultEnvelope(config: DiscoveredConfig, budget: Budget): Envel
     fsRoots: [config.repoRoot ?? config.cwd],
     // No mission variables (defect 42). A worker gets the vars its transport needs to
     // start — those live beside the launch in `workers/` — and nothing else until a
-    // human names one here, which is the same act as widening any other capability.
-    env: [],
+    // human names one here, which is the same act as widening any other capability —
+    // `--env NAME`, which is that act (PLAN-NEXT 7.1). Names, never values.
+    env: [...env],
     network: "none",
     // On this machine, like every mission before containment existed. A terminal run has
     // no screen to choose on and no image configured by default, so promoting it here
     // would fail every mission at validation for a capability nobody asked for
     // (PLAN-NEXT 3.2).
     containment: "none",
+    // Granted by name or not at all (PLAN-NEXT 6.3). A deepsec scan costs real money per
+    // file, so a terminal run that never typed `--scan` never pays for one.
+    scanners: [...scanners],
     maxSpend: budget,
     approval: "local",
   };
@@ -224,7 +408,13 @@ export interface RunDeps {
    *  their own phase rather than folded into task spend (§9.5) — and under *which*
    *  call, since `createAgentCalls` knows and a single `"orchestration"` bucket made
    *  the only question worth asking of the number unanswerable. */
-  createCalls(config: DiscoveredConfig, onSpend: (call: keyof Calls, spend: Spend) => void): Calls;
+  createCalls(
+    config: DiscoveredConfig,
+    onSpend: (call: keyof Calls, spend: Spend, ranOn?: string) => void,
+    /** Which decision points this mission staffed to a model card (PLAN-NEXT 4.2).
+     *  Absent, or absent for a given call, is the Agent SDK exactly as before. */
+    staffing?: MissionStaffing,
+  ): Calls;
   /** Injected so a run is testable without a tty. Absent under `--unattended`, and
    *  absent means nobody is there. */
   human?: HumanPort;
@@ -283,14 +473,33 @@ export async function runMission(
 
   // The mission's own model, not the process's: composed missions in one serve
   // process may each have chosen differently, and `config` is shared between them.
-  const calls = deps.createCalls(withOrchestratorModel(config, options.runtime.orchestratorModel), (call, spend) =>
-    wired.emit({
-      type: "spend_recorded",
-      missionId,
-      actor: "orchestrator",
-      phase: spendPhase(call),
-      spend,
-    }),
+  // Refused before the log opens rather than at the call: a card id nobody probed is a
+  // mission that would run its research on the default model and fail three phases later
+  // with a directory already on disk (PLAN-NEXT 4.2's door).
+  const resolved = resolveStaffing(
+    options.staffing,
+    staffableCards(config.stateDir, (message) => io.err(message)),
+    config.providerKeys ?? {},
+  );
+  if (!resolved.ok) {
+    io.err(resolved.problem);
+    return 1;
+  }
+
+  const calls = deps.createCalls(
+    withOrchestratorModel(config, options.runtime.orchestratorModel),
+    (call, spend, ranOn) =>
+      wired.emit({
+        type: "spend_recorded",
+        missionId,
+        actor: "orchestrator",
+        phase: spendPhase(call),
+        spend,
+        // What actually answered, where the transport says so — the provider path always
+        // does. `metrics` prices off this and never off what was asked for.
+        ...(ranOn ? { model: ranOn } : {}),
+      }),
+    options.staffing,
   );
 
   wired.emit({
@@ -302,12 +511,22 @@ export async function runMission(
     // makes `--unattended --saved` a defensible trade. Its spend ceiling is this run's
     // though: `--budget` is per run, and silently replaying last month's would make
     // the flag a no-op on exactly the missions that use it most.
+    // `--scan` widens either one: a saved mission's envelope was scoped without knowing
+    // this run wants a scanner, and a grant typed now is a human's decision made now.
     envelope: saved
-      ? { ...saved.envelope, maxSpend: budget }
-      : defaultEnvelope(config, budget),
+      ? {
+          ...saved.envelope,
+          maxSpend: budget,
+          scanners: [...new Set([...saved.envelope.scanners, ...options.scanners])],
+          env: [...new Set([...saved.envelope.env, ...options.env])],
+        }
+      : defaultEnvelope(config, budget, options.scanners, options.env),
     budget,
     unattended: options.unattended,
     quick: options.quick,
+    // Recorded for `runtime`'s reason, and omitted the same way when nothing was chosen:
+    // a resumed mission runs its second half on what its first half ran on.
+    ...(Object.keys(options.staffing).length > 0 ? { staffing: options.staffing } : {}),
     // Omitted when nothing was chosen rather than sent empty, so a log reads as "no
     // choice was made" and not as "a choice was made and it was nothing" — the same
     // distinction `roster` draws when it is absent instead of `[]`.
@@ -397,6 +616,18 @@ export async function runMission(
       // approved plan inside `prepareMission` and `resume` staffs it afterwards. One
       // of the two wired is a feature switched off on the commoner path.
       roles: staffableRoles(config, (message: string) => io.err(message)),
+      // Where the architect's design note lands (PLAN-NEXT 5.1), bound here for
+      // `recall`'s reason — prepare never touches disk — and bound unconditionally,
+      // because an optional dependency nothing passes is a feature finished and switched
+      // off at the same time (defects 12b, 23, 24). The mission's own artifact root, so
+      // `orchestra forget` takes the note with everything else the mission wrote.
+      writeDesign: (note: string) => writeDesignNote(artifactRoot(config.stateDir, missionId), note),
+      // The prepare phase's half of the scrub (PLAN-NEXT 7.3). `buildLoopDeps` derives
+      // the same list for the loop, and the loop runs after this — so without it here
+      // the research brief, the design note and its summary were the three surfaces
+      // written in front of the scrubber rather than behind it. Bound unconditionally
+      // for `writeDesign`'s reason, and empty on every mission that granted nothing.
+      secrets: grantedSecrets(process.env, wired.state().mission.capabilityEnvelope.env),
       // What this machine can actually start (§7, defect 21). `run` staffs its
       // approved plan inside `prepareMission`, so the offer has to be here as well as
       // in the loop's replan — one of the two wired is a mission staffed against a
@@ -404,6 +635,15 @@ export async function runMission(
       ...staffingOffer(config, options.runtime, staffableCards(config.stateDir, (message) =>
         io.err(message),
       )),
+      // The specialist gates this mission may name (PLAN-NEXT 6.3): what its envelope
+      // granted, narrowed to what this machine answered for. Bound unconditionally for
+      // `roles`' reason — an optional dependency nothing passes is a feature finished and
+      // switched off at once — and empty on every mission that granted none, which is
+      // every mission until a human writes one into the envelope.
+      scanners: availableScanners(
+        wired.state().mission.capabilityEnvelope,
+        config.scanners ?? [],
+      ),
       onWarn: (message) => io.err(message),
     }));
 

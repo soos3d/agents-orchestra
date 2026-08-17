@@ -24,6 +24,7 @@
 //   Everything else is transport-shaped and has not been tried twice: the call never
 //   reached a model, or reached one that was rate-limited. That is exactly §9.4's
 //   "retry same agent, exponential backoff, maxAttempts 2".
+import { CALL_NAMES } from "../domain/budget.js";
 import { CallFormatError } from "./agentCalls.js";
 import { type Calls } from "./calls.js";
 
@@ -75,24 +76,20 @@ export interface ResilientCallsDeps {
 const DEFAULT_ATTEMPTS = 2;
 const DEFAULT_BACKOFF_MS = 5_000;
 
-const CALL_NAMES: readonly (keyof Calls)[] = [
-  "research",
-  "intake",
-  "plan",
-  "synthesize",
-  "progress",
-  "judge",
-];
-
 /**
  * `Calls`, with §9.4's retry in front of it and a typed failure behind it.
  *
  * Applied at the composition root rather than inside `agentCalls.ts`, so the loop's
  * own tests can script a call that throws and assert the mission parks — the failure
  * mode stays above the seam even though its cause never is. The wrapper is generic
- * over the interface's own keys rather than six hand-written methods, because a
- * seventh decision point added to `Calls` and forgotten here would be a call with no
- * retry and no park, which is the defect this file closes coming back.
+ * over the interface's own keys rather than a method per call, because a decision point
+ * added to `Calls` and forgotten here would be a call with no retry and no park, which is
+ * the defect this file closes coming back.
+ *
+ * The names come from `domain/budget.ts` and this file kept its own copy of them until
+ * PLAN-NEXT 5 — which is how `architect` was wrapped everywhere except here and arrived
+ * at the composition root as `undefined`. One list; `loop/calls.test.ts` pins it to
+ * `keyof Calls`.
  */
 export function resilientCalls(calls: Calls, deps: ResilientCallsDeps = {}): Calls {
   const attempts = Math.max(1, deps.attempts ?? DEFAULT_ATTEMPTS);

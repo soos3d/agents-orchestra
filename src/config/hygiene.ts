@@ -65,6 +65,29 @@ export function ensurePrivateDir(dir: string): string {
   return dir;
 }
 
+/**
+ * The architect's design note, in the mission's artifact directory (PLAN-NEXT 5.1).
+ *
+ * Best-effort, and that is deliberate: it returns the path it wrote and `undefined` when
+ * it could not, so the caller emits `design_written` only for a file that exists. The
+ * alternative — an event naming a path nothing wrote — puts a dead path into every code
+ * worker's prompt, which is defect 40 one layer up.
+ *
+ * One name per mission, overwritten on the architect's retry, because the note that
+ * belongs to a mission is the one that belongs to the criteria it was signed off on.
+ */
+export function writeDesignNote(artifactRoot: string, note: string): string | undefined {
+  const file = path.join(artifactRoot, "design.md");
+  try {
+    ensurePrivateDir(artifactRoot);
+    fs.writeFileSync(file, note.endsWith("\n") ? note : `${note}\n`, { mode: FILE_MODE });
+    fs.chmodSync(file, FILE_MODE);
+    return file;
+  } catch {
+    return undefined;
+  }
+}
+
 export interface ForgetResult {
   missionId: string;
   removed: boolean;

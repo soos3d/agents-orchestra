@@ -78,6 +78,25 @@ export function availableContainment(probe: ProbedAgents): string[] {
 }
 
 /**
+ * The specialist scanners this mission may actually name in its outcome spec
+ * (PLAN-NEXT 6.3) — what the envelope granted, narrowed to what this machine answered
+ * for.
+ *
+ * Both halves, and neither alone. The grant without the probe staffs a criterion against
+ * a binary that is not there, which is defect 21 in the checking layer instead of the
+ * dispatch one; the probe without the grant runs an AI agent with shell access over the
+ * repository because it happened to be installed, and deepsec's own documentation puts a
+ * large repository at hundreds of dollars. An empty answer refuses the variant at
+ * `writeOutcomeSpec`, which is the earliest place a mission can be told.
+ */
+export function availableScanners(
+  envelope: Pick<Envelope, "scanners">,
+  probed: readonly string[] = [],
+): string[] {
+  return envelope.scanners.filter((scanner) => probed.includes(scanner));
+}
+
+/**
  * How a worker on this mission is contained, or `undefined` for the missions that are
  * not — which is every mission whose envelope says `"none"`.
  *

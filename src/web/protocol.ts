@@ -17,6 +17,7 @@
 import { z } from "zod";
 import { type Check } from "../config/doctor.js";
 import { type Workspace, type WorkspaceProbe } from "../config/workspaces.js";
+import { missionStaffingSchema } from "../domain/mission.js";
 
 /**
  * The one frame that is not events and not a mission listing (UI plan U4): the
@@ -68,6 +69,11 @@ export interface HealthFrame {
    *  or its default. Reported because "which model is running this?" had no answer on
    *  the page at all, and the two constants below are the rest of that answer. */
   orchestratorModel: string;
+  /** The model cards this machine has probed, which is the menu a decision point may be
+   *  staffed from (PLAN-NEXT 4.3). Empty on every machine with no provider configured,
+   *  and the compose card then offers no staffing control at all rather than an empty
+   *  dropdown — the same rule as a harness nobody can start. */
+  modelCards: readonly OfferedCard[];
   /** The models a human cannot pick, and what they are for: `progress` is a small
    *  judgment every round and `reformat` restates one JSON object, so both run cheap by
    *  design (§3, §4.1). Shown so the doctor panel does not imply one model runs
@@ -86,6 +92,49 @@ export interface OfferedHarness {
    *  page shows this as a note rather than hiding the control, because the choice is
    *  still recorded and still honoured the moment the same mission runs over `cli`. */
   readonly honoursModel: boolean;
+}
+
+/** One row of the model-card menu, flattened for the page. `tier` and `provider` are what
+ *  the choice is actually made on — how strong it is and whose bill it lands on. */
+export interface OfferedCard {
+  readonly id: string;
+  readonly tier: string;
+  readonly provider: string;
+}
+
+/**
+ * Whether a composed staffing names only cards the server offered — `isOfferedRuntime`'s
+ * rule, one menu along (PLAN-NEXT 4.3).
+ *
+ * The same argument and a stronger version of it. A harness id decides which binary gets
+ * spawned; a card id decides which provider this process posts a prompt and an API key to,
+ * and there is no second gate behind it — `resolveStaffing` would refuse an unknown id, but
+ * a browser must not be able to name one at all. Unlike the model menus, an empty card list
+ * is never permissive: a card exists only because `orchestra doctor` reached it, so "no
+ * cards" means no provider was ever probed here, and there is nothing a mission could
+ * legitimately be staffed with.
+ */
+export function isOfferedStaffing(
+  health: Pick<HealthFrame, "modelCards">,
+  staffing: Readonly<Record<string, string | undefined>>,
+): { ok: true } | { ok: false; problem: string } {
+  const offered = health.modelCards.map((card) => card.id);
+
+  for (const [call, id] of Object.entries(staffing)) {
+    if (id === undefined) continue;
+    if (!offered.includes(id)) {
+      return {
+        ok: false,
+        problem:
+          `no model card '${id}' to staff '${call}' with` +
+          (offered.length > 0
+            ? ` — offered: ${offered.join(", ")}.`
+            : ` — this machine has probed no provider, so nothing can be staffed.`),
+      };
+    }
+  }
+
+  return { ok: true };
 }
 
 /**
@@ -235,6 +284,11 @@ export const clientMessageSchema = z.discriminatedUnion("kind", [
     harness: z.string().trim().min(1).optional(),
     workerModel: z.string().trim().min(1).optional(),
     orchestratorModel: z.string().trim().min(1).optional(),
+    // Which decision points run on a model card (PLAN-NEXT 4.3). The schema bounds the
+    // *shape* — five known keys, no `judge` — and `isOfferedStaffing` bounds the values
+    // against the cards this server probed, because a card id is what decides which
+    // provider gets sent a prompt and a key.
+    staffing: missionStaffingSchema.default({}),
     // Deliberately no `unattended` field: skipping sign-off stays a typed CLI flag
     // (§17 — the habitual-default risk), and the compose screen never offers it.
   }),

@@ -1,4 +1,4 @@
-// The failure mode under test: six decision points billed to one line item.
+// The failure mode under test: eight decision points billed to one line item.
 //
 // `spend_recorded` carries a `phase`, `fold` aggregates it into `spendByPhase`, and
 // dispatch has always written the task's own id there — so the breakdown was real for
@@ -10,7 +10,7 @@
 // That is the whole reason "which call is expensive?" was unanswerable, which is the
 // question any effort or model change has to be judged against.
 //
-// The exhaustiveness check below is the other half. A seventh decision point added to
+// The exhaustiveness check below is the other half. A ninth decision point added to
 // `Calls` must fail to compile here rather than silently going unattributed — the same
 // argument as `fold`'s handler table being a mapped type.
 import assert from "node:assert/strict";
@@ -30,8 +30,10 @@ describe("decision-point spend phases", () => {
     // compile error, and the assertion then catches the constant it was left out of.
     const everyCall: Record<keyof Calls, true> = {
       research: true,
+      architect: true,
       intake: true,
       plan: true,
+      critique: true,
       synthesize: true,
       progress: true,
       judge: true,

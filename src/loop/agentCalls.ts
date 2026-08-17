@@ -1,4 +1,5 @@
-// The five decision points, against a real model (§3).
+// The decision points, against a real model (§3). Eight since PLAN-NEXT 5 added
+// `architect` and `critique`.
 //
 // **This is the one file the fixture harness cannot cover**, because it is the thing
 // the harness substitutes for. That is not a gap to close — everything above the
@@ -35,6 +36,7 @@ import { evidenceSchema } from "../domain/artifacts.js";
 import { tokensFrom, type Spend } from "../domain/budget.js";
 import {
   criterionSchema,
+  criterionSchemaWithoutScanner,
   findingSchema,
   guessSchema,
   plannedTaskSchema,
@@ -43,12 +45,16 @@ import {
 import { agentSpecSchema } from "../domain/task.js";
 import { extractJsonObject, renderSchema } from "../runtime/json.js";
 import {
+  type ArchitectResult,
   type Calls,
+  type CritiqueResult,
   type IntakeResult,
   type JudgeResult,
   type PlanResult,
   type ResearchResult,
 } from "./calls.js";
+import { PANEL_LENSES, type PanelLens } from "./criteria.js";
+import { judgeLens } from "./prompts.js";
 
 /**
  * One model call: a prompt in, text and what it cost out. Injected so the JSON
@@ -65,8 +71,25 @@ export type RunQuery = (input: {
   directories?: readonly string[];
   /** The mission's repository. Absent only when nothing was discovered (P3). */
   cwd?: string;
+  /**
+   * The type this answer is validated against, for a transport that can *constrain* the
+   * answer rather than only ask for it (PLAN-NEXT 4.2).
+   *
+   * The Agent SDK path ignores it — `withSchema` has already rendered the same schema
+   * into the system prompt, which is the only lever that path has. An OpenAI-compatible
+   * provider takes a `response_format`, so `loop/providerCalls.ts` reads it here rather
+   * than re-deriving a second copy from a second source of truth.
+   */
+  schema?: z.ZodType<unknown>;
   signal?: AbortSignal;
-}) => Promise<{ text: string; spend: Spend }>;
+}) => Promise<{
+  text: string;
+  spend: Spend;
+  /** What the transport says actually answered, where it says so. `modelByPhase` is
+   *  priced off this and never off the model that was *asked for* — the distinction has
+   *  already cost a 5× error once (`.claude/notes/spend.md`). */
+  ranOn?: string;
+}>;
 
 export interface AgentCallsDeps {
   // `repoRoot` and `cwd` are here because P3 was a defect a type was hiding: this was
@@ -74,8 +97,9 @@ export interface AgentCallsDeps {
   // config, so every call site read correctly and the mission's own repository was
   // dropped at the boundary. A decision point then ran wherever the terminal was.
   config: Pick<DiscoveredConfig, "orchestratorModel" | "repoRoot" | "cwd">;
-  /** Where the measured portion of the mission's spend is recorded (§9.5). */
-  onSpend?(call: keyof Calls, spend: Spend): void;
+  /** Where the measured portion of the mission's spend is recorded (§9.5). `ranOn` is
+   *  what the transport says answered, absent when it does not say. */
+  onSpend?(call: keyof Calls, spend: Spend, ranOn?: string): void;
   runQuery?: RunQuery;
   signal?: AbortSignal;
 }
@@ -159,11 +183,12 @@ export function createAgentCalls(deps: AgentCallsDeps): Calls {
         model: spec.model ?? model,
         tools: spec.tools ?? [],
         maxTurns: spec.maxTurns ?? MAX_TURNS,
+        schema: spec.schema,
         ...(spec.directories ? { directories: spec.directories } : {}),
         ...(cwd ? { cwd } : {}),
         ...(deps.signal ? { signal: deps.signal } : {}),
       });
-      deps.onSpend?.(call, result.spend);
+      deps.onSpend?.(call, result.spend, result.ranOn);
       // The raw text rides along so a rejection can quote it (P4). Discarded on the
       // happy path by the caller, which only reads `value`.
       return { ...validate(result.text, spec.schema), raw: result.text };
@@ -191,6 +216,13 @@ export function createAgentCalls(deps: AgentCallsDeps): Calls {
         schema: researchSchema,
       }),
 
+    architect: (input) =>
+      ask("architect", {
+        systemPrompt: architectSystemPrompt(input.scanners),
+        prompt: describe("What research found", input),
+        schema: architectSchema,
+      }),
+
     intake: (input) =>
       ask("intake", {
         systemPrompt: INTAKE_PROMPT,
@@ -203,6 +235,13 @@ export function createAgentCalls(deps: AgentCallsDeps): Calls {
         systemPrompt: PLAN_PROMPT,
         prompt: describe("Planning request", input),
         schema: planSchema,
+      }),
+
+    critique: (input) =>
+      ask("critique", {
+        systemPrompt: CRITIQUE_PROMPT,
+        prompt: describe("Plan to attack", input),
+        schema: critiqueSchema,
       }),
 
     synthesize: (input) =>
@@ -222,7 +261,7 @@ export function createAgentCalls(deps: AgentCallsDeps): Calls {
 
     judge: (input) =>
       ask("judge", {
-        systemPrompt: JUDGE_PROMPT,
+        systemPrompt: judgeSystemPrompt(input.lens),
         prompt: describe("Criterion to judge", input),
         schema: judgeSchema,
         tools: JUDGE_TOOLS,
@@ -330,6 +369,36 @@ const researchSchema: z.ZodType<ResearchResult> = z.object({
   outOfScope: z.array(z.string()).optional(),
 });
 
+// `criteria` is open for `researchSchema`'s reason and the same boundary rejects it:
+// the outcome spec moved here from research (PLAN-NEXT 5.1) and `writeOutcomeSpec` did
+// not move with it. `designNote` is required and non-empty — the call exists to produce
+// it, and an architect that returns a spec and no design has answered half the question
+// while the mission carries on as though it answered all of it.
+const architectSchema: z.ZodType<ArchitectResult> = z.object({
+  criteria: z.array(z.unknown()).optional(),
+  designNote: z.string().min(1),
+  // Names, and the schema is where "names only" is enforced rather than hoped for. A
+  // POSIX variable name, not merely "no `=` in it": a model that answers
+  // `STRIPE_KEY=sk_live_…` fails the boundary, and so does one that answers the key on
+  // its own — either would write a live credential into `secret_required` and into the
+  // question raised beside it, where nothing can ever scrub it.
+  envVars: z.array(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/)).optional(),
+  guesses: z.array(guessSchema).optional(),
+  outOfScope: z.array(z.string()).optional(),
+});
+
+// No `min(1)` on `objections`: an empty list is the answer a good plan gets, and a
+// schema that refused it would buy a reformat call to be told the same thing.
+const critiqueSchema: z.ZodType<CritiqueResult> = z.object({
+  objections: z.array(
+    z.object({
+      kind: z.string().min(1),
+      detail: z.string().min(1),
+      taskId: z.string().optional(),
+    }),
+  ),
+});
+
 // No cap here on purpose. §2b's limit of three is enforced in `loop/intake.ts`, where
 // a fourth question is dropped rather than rejected — a schema violation would cost a
 // reformat call and end with the same three questions.
@@ -357,8 +426,65 @@ const judgeSchema: z.ZodType<JudgeResult> = z.object({
 
 const SHAPE = "Answer with a single JSON object and no other text.";
 
-const RESEARCH_PROMPT = `You research a mission before it is planned, and write the
-outcome spec it will be judged against.
+/**
+ * What a call that authors a criterion has to be told about `command` checks.
+ *
+ * One constant rather than a paragraph per prompt, because the outcome spec is now
+ * written by two different calls — `architect` on an ordinary mission, `research` on a
+ * quick one where the scan is the only pass — and the rule they are taught is a fact
+ * about `runtime/command.ts`, not about either call. Defect 44 is what it is for: a
+ * check carrying `r'-?\\d+\\.?\\d*'` ran with the backslashes eaten, matched nothing, and
+ * failed three criteria while quoting the correct output of a correct script.
+ */
+const CHECK_AUTHORING_BASE = `A \`command\` check runs as one program with arguments, not
+through a shell: no pipes, no \`&&\`, no \`$()\`, no redirects, no glob expansion. A
+check that needs any of those is refused when it fires and the criterion can never be
+met, however good the work was. \`node --test test/foo.test.js\` is a check; a grep
+chained to a test run is two checks — write two criteria, or fold the logic into a judge
+rubric.
+
+Nothing in the string is expanded either. A quoted argument reaches the program
+exactly as written, so a \`\\n\` inside one stays a backslash followed by an \`n\`
+rather than becoming a line break — a \`-c\` program written with \`\\n\` between its
+statements is a syntax error, not a multi-line script. Keep a one-liner genuinely one
+line, separating statements with \`;\`, or check something a task has left on disk.`;
+
+/**
+ * The check-authoring rules, plus the specialist gate **only when one was granted**
+ * (PLAN-NEXT 6.3).
+ *
+ * A function rather than a constant, and a real run is why. The scanner paragraph was
+ * first written into the constant, so every criteria-authoring call carried it whether or
+ * not the mission could use it — and the architect on `Qwen/Qwen3-30B-A3B-Instruct-2507`
+ * then returned a design note and **no criteria at all**, twice, on a goal it had handled
+ * before. `writeOutcomeSpec` refused `(empty)` and the mission died in the gate. Deleting
+ * the paragraph restored three criteria and a plan on the same goal and the same card.
+ *
+ * So this is not only "nothing is offered that was not verified" applied to a prompt: it
+ * is a measurement. A mission that granted no scanner gets the byte-identical text it got
+ * before 6.3 existed, which is the only version any model has been observed to answer
+ * correctly. The offer is short, positive and concrete for the same reason — the
+ * paragraph that broke it was long and mostly about what not to do.
+ */
+export function checkAuthoring(scanners: readonly string[] = []): string {
+  if (scanners.length === 0) return CHECK_AUTHORING_BASE;
+  return (
+    `${CHECK_AUTHORING_BASE}\n\n` +
+    `This mission may also use a \`scanner\` check: ` +
+    `\`{"kind":"scanner","scanner":"${scanners[0]}","minSeverity":"HIGH"}\`. It runs ` +
+    `${scanners.join(" or ")} over the files this mission changes and fails the criterion ` +
+    `on findings at \`minSeverity\` or above — one of \`CRITICAL\`, \`HIGH\`, ` +
+    `\`HIGH_BUG\`, \`MEDIUM\`, \`BUG\`, \`LOW\`. Use it for a security criterion and ` +
+    `nothing else; it cannot tell you whether a feature works.`
+  );
+}
+
+const RESEARCH_PROMPT = `You research a mission before it is planned.
+
+An architect reads what you return and writes the outcome spec from it, so findings are
+the deliverable here — **with one exception, and \`solePass\` is how you know you are it**
+(see below). Leave \`criteria\` out otherwise: a spec written twice by two calls is two
+contracts, and the second one wins for no reason anybody chose.
 
 Return findings with a real source each — a URL, a file path, or a memory path. A
 claim you cannot source is a guess, so put it in \`guesses\` rather than \`findings\`.
@@ -396,22 +522,118 @@ schema below types \`criteria\` as an open array on purpose — that is what let
 uncheckable criterion reach the gate that rejects it, rather than being silently
 dropped at the boundary. Getting the shape right is still on you:
 
-${renderSchema(criterionSchema)}
+${renderSchema(criterionSchemaWithoutScanner)}
 
 Note the \`check\` union: \`command\` needs a \`command\` string, \`judge\` needs a
 \`rubric\`, and \`none\` needs a \`reason\` justifying why nothing can check it.
 
-A \`command\` check runs as one program with arguments, not through a shell: no
-pipes, no \`&&\`, no \`$()\`, no redirects, no glob expansion. A check that needs any
-of those is refused when it fires and the criterion can never be met, however good
-the work was. \`node --test test/foo.test.js\` is a check; a grep chained to a test
-run is two checks — write two criteria, or fold the logic into a judge rubric.
+${checkAuthoring()}
 
-Nothing in the string is expanded either. A quoted argument reaches the program
-exactly as written, so a \`\\n\` inside one stays a backslash followed by an \`n\`
-rather than becoming a line break — a \`-c\` program written with \`\\n\` between its
-statements is a syntax error, not a multi-line script. Keep a one-liner genuinely one
-line, separating statements with \`;\`, or check something a task has left on disk.
+${SHAPE}`;
+
+/**
+ * The architect's system prompt, carrying the scanner offer only when the mission has
+ * one (PLAN-NEXT 6.3) — `judgeSystemPrompt`'s shape, and `checkAuthoring`'s reason.
+ *
+ * A function rather than a constant because the offer is a per-mission fact and this is
+ * the only call that ever receives one: the architect writes the outcome spec on every
+ * mission that can afford a scan.
+ */
+const architectSystemPrompt = (scanners: readonly string[] = []) =>
+  `You turn what research found into a design and into the
+outcome spec this mission will be judged against.
+
+You are given a brief, the findings behind it, whatever the human answered at intake
+(\`known\`), and the goal. You write two things and they are not the same thing.
+
+\`designNote\` is markdown, and it is written for the engineers who will do the work —
+each of them sees one task and never the mission around it, so the note is the only
+place the shape of the whole is written down. Say what the pieces are, where they live,
+what talks to what, and which decisions are already made so nobody re-makes them
+differently in two worktrees. Name concrete files and concrete interfaces. Where an
+external dependency is involved, say which one and what it is behind. Keep it to what a
+person would need to start; this is a design note, not a specification, and nobody is
+paying you by the paragraph.
+
+**Design against mocks first.** Every external dependency — an HTTP API, a payment
+provider, a database this environment does not have — gets an interface and a fake
+implementation of it in the design, and the work that talks to the real thing is the
+*last* task in the plan. The engineers run in parallel worktrees with no credentials
+and no network, so a design whose first task calls a live API is a design where nothing
+can be finished or checked. Say in the note which interface stands in for what, and
+write at least one criterion the mocked build satisfies on its own — "the payment
+client runs green against the in-repo fake" is checkable today; "charges a real card"
+is not.
+
+List in \`envVars\` the **names** of the environment variables the real integration
+would need — \`STRIPE_KEY\`, not the key. Never a value: what you return is written to
+an event log a human pastes into bug reports. Naming one does not grant it and does not
+stop the mission; it raises a question for the human and the plan proceeds against the
+mocks either way.
+
+Write it with real line breaks — inside a JSON string those are \`\\n\` escapes, two
+characters that a parser turns back into newlines. A note whose headings and bullets are
+separated by spaces instead arrives on disk as one long line, and the worker who opens it
+is reading a wall of text rather than a document. (Observed on a real run, 2026-08-16.)
+
+\`criteria\` is the contract. Every criterion needs a \`check\` that will actually
+produce an answer: a command to run, or a rubric for a judge to grade artifacts against.
+A criterion nothing can evaluate means the mission can never legitimately report
+success, and it is rejected.
+
+Cover the goal, not the design. A criterion about an internal decision you just made is
+a criterion that fails when the work is done a better way; a criterion about what the
+human asked for survives the design changing under it.
+
+Anything under \`priorCriteria\` is what this job was judged against on a previous run:
+a starting skeleton to converge on, never a contract to copy. Re-validate each statement
+against what the findings say about the environment now.
+
+If the input carries \`rejected\`, this is your one retry and that field is the gate's
+verdict on the criteria you just returned, quoted back. Fix what it names rather than
+starting over: keep every criterion it did not object to, rewrite the ones it did, and
+return the design note again — it is not stored between attempts.
+
+Each entry in \`criteria\` has this shape. It is spelled out here because the return
+schema below types \`criteria\` as an open array on purpose — that is what lets an
+uncheckable criterion reach the gate that rejects it:
+
+${renderSchema(scanners.length === 0 ? criterionSchemaWithoutScanner : criterionSchema)}
+
+Note the \`check\` union: \`command\` needs a \`command\` string, \`judge\` needs a
+\`rubric\`, and \`none\` needs a \`reason\` justifying why nothing can check it.
+
+${checkAuthoring(scanners)}
+
+${SHAPE}`;
+
+const CRITIQUE_PROMPT = `You attack a plan before anything runs on it. You are not
+asked to improve it and you do not return one — you return what is wrong with this one.
+
+The tasks run in *parallel git worktrees*, each with an agent that sees its own goal and
+nothing else, and each merging back when it passes. That is what makes these four the
+objections worth raising:
+
+- **A missing dependency.** Task B needs what task A produces and does not say so in
+  \`dependsOn\`, so the two start together and B works against a tree that has not got
+  A's work in it yet.
+- **A collision.** Two tasks will write the same file. They hold separate leases in
+  separate worktrees, so this is not caught until one of them fails at merge having done
+  its work.
+- **A criterion no judge can check.** A criterion whose check grades a summary, a final
+  message, or "the output" cannot be evaluated: a judge is given files on disk and
+  nothing else. The task then fails however well it was done.
+- **A criterion nothing in the plan satisfies**, or a task that satisfies nothing. Both
+  are ways for a mission to finish every task and still be unable to report success.
+
+Ground each objection in a task id where it is about one task, and say concretely what
+goes wrong rather than what would be nicer — "t2 edits src/api.ts, which t1 also owns"
+is an objection; "the plan could be cleaner" is not.
+
+**Say nothing when there is nothing to say.** An empty \`objections\` list is the answer
+a sound plan gets, and it is the answer you should give most of the time. Every objection
+costs the mission a full replan, so a stylistic complaint is not free — it buys a second
+plan that is no better and one round further from the work.
 
 ${SHAPE}`;
 
@@ -625,7 +847,7 @@ the reports; a criterion whose check has not run is not met.
 
 ${SHAPE}`;
 
-const JUDGE_PROMPT = `You decide whether a mission criterion is met, from the
+const JUDGE_BODY = `You decide whether a mission criterion is met, from the
 artifacts it produced.
 
 You are given artifact paths rather than the worker's own report, because a summary
@@ -637,9 +859,32 @@ criterion's statement. "It looks done" is not evidence.
 
 If a path will not open, or the artifacts cannot settle the criterion either way,
 return \`met: false\` and say exactly that in the evidence. Do not grade what you
-could not read, and do not fill the gap from the goal or the rubric alone.
+could not read, and do not fill the gap from the goal or the rubric alone.`;
 
-${SHAPE}`;
+/**
+ * The judge's system prompt, with its panel seat's lens in it when it has one
+ * (PLAN-NEXT 6.1).
+ *
+ * Composed here rather than concatenated at the call site so the lens lands *before*
+ * `SHAPE`. `SHAPE` is the schema instruction and it is last in every prompt in this
+ * file; a paragraph appended after it reads as commentary on the JSON rather than on
+ * the job, and the one place that was tested was the one place it mattered.
+ *
+ * No lens hands back the exact string a judge was given before panels existed, which is
+ * what makes a quick mission's judge spend unchanged by construction rather than by
+ * measurement — `agentCalls.test.ts` pins the equality.
+ */
+export function judgeSystemPrompt(lens?: string): string {
+  const seat = isPanelLens(lens) ? [judgeLens(lens)] : [];
+  return [JUDGE_BODY, ...seat, SHAPE].join("\n\n");
+}
+
+/** An unknown lens is dropped rather than rejected: it reaches here from the folded log,
+ *  and a log written by a newer build naming a lens this one does not have must still be
+ *  gradeable. What it costs is the narrowing, not the verdict. */
+function isPanelLens(lens: string | undefined): lens is PanelLens {
+  return PANEL_LENSES.includes(lens as PanelLens);
+}
 
 // ── the transport ──────────────────────────────────────────────────────
 

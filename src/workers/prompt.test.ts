@@ -119,4 +119,41 @@ describe("the worker prompt", () => {
       assert.equal(seen.at(-1)!.prompt, workerPrompt(task, dir));
     });
   });
+
+  // PLAN-NEXT 5.2. Each worker sees one task and never the mission around it, so the
+  // design note is the only place the shape of the whole change is written down — and it
+  // arrives as a path the runtime decided, never as text the spec invented.
+  describe("the design note", () => {
+    const note = "/state/missions/m1/artifacts/design.md";
+
+    test("a code task is told where the design is", () => {
+      const prompt = workerPrompt(aCodeTask(), undefined, note);
+
+      assert.ok(prompt.includes(note));
+      assert.match(prompt, /Read it before you start/);
+    });
+
+    // A review or research worker is not writing against the design, so a path it would
+    // open and read costs the mission a file read to inform work it does not do (§4).
+    test("a non-code task is not", () => {
+      const task = aCodeTask({ worker: "review" });
+
+      assert.equal(workerPrompt(task, undefined, note).includes(note), false);
+    });
+
+    // A quick mission has no architect, so there is no note and nothing is said about
+    // one — the same silence an absent artifact directory gets.
+    test("a mission without one says nothing about a design", () => {
+      assert.equal(workerPrompt(aCodeTask()).includes("The design this fits into"), false);
+    });
+
+    test("the cli transport passes it through", async () => {
+      const { runners, seen } = fakeRunners();
+      const task = aCodeTask();
+
+      await createCliTransport({ runners })({ task, cwd: "/worktree", designNote: note });
+
+      assert.equal(seen.at(-1)!.prompt, workerPrompt(task, undefined, note));
+    });
+  });
 });

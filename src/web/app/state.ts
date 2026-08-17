@@ -241,7 +241,13 @@ export function apply(view: View, event: Event): View {
             : view.criteria,
         pendingChange: null,
       };
+    // A panel seat is a record and not a verdict, exactly as in `fold` (PLAN-NEXT 6.1).
+    // Applied here it would paint each judge's own answer onto the criterion as the seats
+    // stream in, so a criterion the panel is about to pass 2-1 shows a red mark for as
+    // long as the dissenting seat is the most recent event. The resolved verdict follows
+    // the seats, carries no `panelSeat`, and is the one the screen renders.
     case "criterion_checked":
+      if (event.panelSeat !== undefined) return view;
       return {
         ...view,
         criteria: view.criteria.map((criterion) =>
@@ -328,6 +334,13 @@ export function line(event: Event): string {
   const detail =
     event.type === "mission_status"
       ? event.to
+      // A panel writes four of these in a row (PLAN-NEXT 6.1). Without the seat they are
+      // four identical lines and the timeline reads as a stutter rather than as a vote.
+      : event.type === "criterion_checked"
+        ? `${event.criterionId} ${event.met ? "✓" : "✗"}` +
+          (event.panelSeat === undefined
+            ? ""
+            : `  seat ${event.panelSeat}${event.lens ? ` — ${event.lens}` : ""}`)
       : event.type === "task_status"
         ? `${event.taskId} → ${event.to}`
         : event.type === "progress_ledger"

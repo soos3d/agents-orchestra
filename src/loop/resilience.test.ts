@@ -9,6 +9,7 @@
 // park on it rather than crash.
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
+import { CALL_NAMES } from "../domain/budget.js";
 import { CallFormatError } from "./agentCalls.js";
 import { type Calls, type ResearchResult } from "./calls.js";
 import { DecisionPointError, isRetriable, resilientCalls } from "./resilience.js";
@@ -135,13 +136,9 @@ describe("resilientCalls", () => {
   test("wraps every call the interface declares", () => {
     const calls = resilientCalls(stubCalls({}));
 
-    assert.deepEqual(Object.keys(calls).sort(), [
-      "intake",
-      "judge",
-      "plan",
-      "progress",
-      "research",
-      "synthesize",
-    ]);
+    // Compared against `CALL_NAMES` rather than a list written out here, because this
+    // file used to hold its own copy of the names and that is exactly how `architect`
+    // reached a composition root unwrapped and undefined (PLAN-NEXT 5.1).
+    assert.deepEqual(Object.keys(calls).sort(), [...CALL_NAMES].sort());
   });
 });

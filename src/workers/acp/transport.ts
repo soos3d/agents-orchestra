@@ -157,7 +157,7 @@ export function createAcpTransport(deps: AcpTransportDeps): WorkerTransport {
   const onWarn = deps.onWarn ?? ((): void => undefined);
   const clientInfo = deps.clientInfo ?? DEFAULT_CLIENT_INFO;
 
-  return async ({ task, cwd, artifactDir, signal }): Promise<WorkerRun> => {
+  return async ({ task, cwd, artifactDir, designNote, signal }): Promise<WorkerRun> => {
     const { transport } = task.agentSpec;
     if (transport.id !== "acp") {
       throw new AcpSessionError(
@@ -212,6 +212,7 @@ export function createAcpTransport(deps: AcpTransportDeps): WorkerTransport {
         task,
         cwd,
         ...(artifactDir ? { artifactDir } : {}),
+        ...(designNote ? { designNote } : {}),
         honoursModel: launch.honoursModel === true,
         clientInfo,
         onWarn,
@@ -237,6 +238,9 @@ interface SessionInput {
   readonly cwd: string;
   /** The task's artifact directory, absolute and already created (P2). */
   readonly artifactDir?: string;
+  /** The architect's design note, absolute (PLAN-NEXT 5.2). Absent on a quick mission
+   *  and on every non-`code` task, where `workerPrompt` drops it anyway. */
+  readonly designNote?: string;
   /** Whether this target's registry row says `AgentSpec.model` reaches it. */
   readonly honoursModel: boolean;
   readonly clientInfo: ClientInfo;
@@ -279,7 +283,7 @@ async function runSession(input: SessionInput): Promise<SessionOutcome> {
     await client.request((id) => sessionSetModelRequest(id, opened.sessionId, asked));
   }
 
-  const prompt = workerPrompt(input.task, input.artifactDir);
+  const prompt = workerPrompt(input.task, input.artifactDir, input.designNote);
   parseSessionPromptResult(
     await client.request((id) => sessionPromptRequest(id, opened.sessionId, prompt)),
   );

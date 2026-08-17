@@ -91,6 +91,70 @@ export interface ResearchResult {
   outOfScope?: string[];
 }
 
+export interface ArchitectInput {
+  goal: string;
+  /** What research concluded, in its own words. */
+  brief: string;
+  /** The evidence the design has to be true of, carried whole — this call is the one
+   *  place the findings are read for *shape* rather than for gaps, and summarizing them
+   *  here would put a second, undeclared reducer between research and the spec. */
+  findings: Finding[];
+  /** Answers a human gave at intake, and anything memory contributed. The architect runs
+   *  after intake for the reason the deep research pass does (§2b): a design settled
+   *  before the answers arrived is a design of the wrong thing. */
+  known?: string[];
+  /** A saved mission's criteria skeleton (§7), statements only — the same shape and the
+   *  same reason as `ResearchInput.priorCriteria`. */
+  priorCriteria?: { statement: string }[];
+  /** Present only on the one retry, quoting what `writeOutcomeSpec` refused. */
+  rejected?: string;
+  /**
+   * The specialist scanners this mission may use as a criterion's check (PLAN-NEXT 6.3),
+   * or absent — which is every mission until a human grants one.
+   *
+   * The architect and not `research`, because a scanner offer belongs to the call that
+   * writes the outcome spec on the mission that can afford one. `research` writes the
+   * spec only on a *quick* mission, which is a human saying the job is small, and a
+   * mission composed as small is precisely the one not to spend a per-file security scan
+   * on. Absent means the `scanner` kind does not exist for this mission; naming one
+   * anyway is refused by `writeOutcomeSpec`, which is the other half of this pair.
+   */
+  scanners?: string[];
+}
+
+export interface ArchitectResult {
+  /**
+   * The outcome spec (§5), which was `research`'s to write until PLAN-NEXT 5.1.
+   *
+   * Deliberately untyped for the reason it was untyped there: this is model output and
+   * `writeOutcomeSpec` is the boundary that rejects a criterion carrying no check. A
+   * `Criterion[]` here would make the rejectable case unrepresentable.
+   */
+  criteria?: readonly unknown[];
+  /**
+   * The design, as markdown, written to the mission's artifacts directory and handed to
+   * code workers as a path.
+   *
+   * Text rather than a structured shape: it is read by another model and by a human, and
+   * a schema over it would be this file guessing which sections a design needs.
+   */
+  designNote: string;
+  /**
+   * Environment variable *names* the design says the work needs (PLAN-NEXT 7.1).
+   *
+   * A field rather than a sentence dug out of the note, because the names are read by
+   * code — `prepareMission` compares them against `Envelope.env` and raises the ones
+   * nobody granted — and reading them back out of markdown would be a scanner over
+   * model output, which this codebase has got wrong four times (defects 34, 37, 38, 44).
+   *
+   * Names only. A model that writes a value here would put a credential in the event
+   * log, so the prompt says so and `secret_required` carries names by schema.
+   */
+  envVars?: string[];
+  guesses?: Guess[];
+  outOfScope?: string[];
+}
+
 export interface IntakeInput {
   goal: string;
   /**
@@ -133,6 +197,40 @@ export interface PlanInput {
    * planner ignoring this.
    */
   scope?: "quick";
+  /**
+   * The architect's design note as a bounded summary, never the note itself
+   * (PLAN-NEXT 5.2).
+   *
+   * A projection rather than an aggregation: the note is written to be read by a worker
+   * with a file open, and pasting it whole into the planning call would grow the one
+   * prompt that already carries the entire ledger. The planner needs to know what shape
+   * the work has, and the worker needs the detail — those are different amounts of text.
+   */
+  design?: string;
+}
+
+export interface CritiqueInput {
+  goal: string;
+  /** The breakdown under attack. */
+  tasks: PlannedTask[];
+  /** What the plan has to satisfy — an objection is only worth raising against the
+   *  contract the mission is actually judged on. */
+  criteria: Criterion[];
+}
+
+export interface Objection {
+  /** What class of mistake this is, in the critic's own words. Free text rather than an
+   *  enum: the prompt names four kinds and a critic that finds a fifth should be able to
+   *  say so, and nothing branches on the value — it is read by the planner and by a
+   *  human. */
+  kind: string;
+  detail: string;
+  /** The task the objection is about, where it is about one. */
+  taskId?: string;
+}
+
+export interface CritiqueResult {
+  objections: Objection[];
 }
 
 export interface PlanResult {
@@ -250,6 +348,15 @@ export interface JudgeInput {
   /** Artifacts, not reports: a judge fed the worker's own summary is grading the
    *  thing it is grading. */
   artifactPaths: string[];
+  /**
+   * Which seat of a panel this call is, by lens (PLAN-NEXT 6.1) — `PANEL_LENSES`.
+   *
+   * Absent is the whole of a quick mission's panel and every task-level check, and it
+   * has to stay absent rather than defaulting to a lens: `judgeSystemPrompt` hands back
+   * the unmodified `JUDGE_PROMPT` for it, which is what makes "quick judge spend
+   * unchanged" a property of the code rather than a hope about token counts.
+   */
+  lens?: string;
 }
 
 export interface JudgeResult {
@@ -259,10 +366,18 @@ export interface JudgeResult {
 
 export interface Calls {
   research(input: ResearchInput): Promise<ResearchResult>;
+  /** Turns findings into the outcome spec and a design note (PLAN-NEXT 5.1). Skipped on
+   *  a quick mission exactly as the deep research pass is — the scan's own criteria are
+   *  the spec there, and `solePass` is what tells it so. */
+  architect(input: ArchitectInput): Promise<ArchitectResult>;
   /** Returns questions; it never asks them. Who does the asking, and the cap on how
    *  many get through, are both above this seam (`loop/intake.ts`). */
   intake(input: IntakeInput): Promise<IntakeResult>;
   plan(input: PlanInput): Promise<PlanResult>;
+  /** Attacks the breakdown before it is validated (PLAN-NEXT 5.3). It returns objections
+   *  and never a plan: what to do about one is the planner's, which is the same division
+   *  `judge` has with the worker it grades. */
+  critique(input: CritiqueInput): Promise<CritiqueResult>;
   synthesize(input: SynthesizeInput): Promise<AgentSpec>;
   progress(input: ProgressInput): Promise<ProgressLedger>;
   judge(input: JudgeInput): Promise<JudgeResult>;

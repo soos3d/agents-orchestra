@@ -2,7 +2,11 @@
 // what makes a replan informed rather than a retry; the progress ledger is
 // recomputed every round and answers whether to continue, replan, or stop.
 import { z } from "zod";
-import { evidenceSchema, verifySpecSchema } from "./artifacts.js";
+import {
+  evidenceSchema,
+  verifySpecSchema,
+  verifySpecWithoutScannerSchema,
+} from "./artifacts.js";
 import { workerKindSchema } from "./task.js";
 
 // Every entry is addressable because a task has to be able to name what produced it.
@@ -49,6 +53,13 @@ export const criterionSchema = z.object({
   met: z.boolean().optional(),
   evidence: evidenceSchema.optional(),
   lastCheckedRound: z.number().int().nonnegative().optional(),
+});
+
+// Shown to a criteria-authoring call on a mission that granted no scanner. Rendered
+// into the prompt only — nothing parses against it, because `writeOutcomeSpec` is
+// still the door and it refuses an ungranted scanner whatever the prompt showed.
+export const criterionSchemaWithoutScanner = criterionSchema.extend({
+  check: verifySpecWithoutScannerSchema,
 });
 
 export const findingSchema = z.object({

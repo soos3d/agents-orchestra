@@ -18,6 +18,7 @@ import { aCodeTask, aCriterion, missionCreated, stamp } from "../testing/fixture
 import { resolveCriteriaChange } from "../loop/criteriaChange.js";
 import { createWebHuman } from "../web/webHuman.js";
 import {
+  defaultEnvelope,
   handleFromDashboard,
   parseRunArgs,
   runMission,
@@ -246,7 +247,7 @@ describe("runMission under a surface", () => {
     // and the finally block still has to release.
     await assert.rejects(() =>
       runMission(
-        { goal: "wired?", planOnly: false, quick: false, unattended: false, force: false, web: true, budgetMinutes: 5, runtime: {} },
+        { goal: "wired?", planOnly: false, quick: false, unattended: false, force: false, web: true, budgetMinutes: 5, runtime: {}, staffing: {}, scanners: [], env: [] },
         config,
         quietIo,
         { createCalls: () => scriptedCalls({}), surface },
@@ -285,7 +286,7 @@ describe("runMission under a surface", () => {
 
     await assert.rejects(() =>
       runMission(
-        { goal: "what would this take?", planOnly: true, quick: false, unattended: false, force: false, web: true, budgetMinutes: 5, runtime: {} },
+        { goal: "what would this take?", planOnly: true, quick: false, unattended: false, force: false, web: true, budgetMinutes: 5, runtime: {}, staffing: {}, scanners: [], env: [] },
         config,
         quietIo,
         { createCalls: () => scriptedCalls({}), surface },
@@ -320,7 +321,7 @@ describe("runMission spend attribution", () => {
 
     await assert.rejects(() =>
       runMission(
-        { goal: "who spent it?", planOnly: true, quick: false, unattended: true, force: true, web: false, budgetMinutes: 5, runtime: {} },
+        { goal: "who spent it?", planOnly: true, quick: false, unattended: true, force: true, web: false, budgetMinutes: 5, runtime: {}, staffing: {}, scanners: [], env: [] },
         config,
         quietIo,
         {
@@ -406,5 +407,314 @@ describe("parseRunArgs and the runtime flags", () => {
 
     assert.equal(parsed.ok, true);
     assert.equal(parsed.ok ? parsed.options.quick : undefined, true);
+  });
+});
+
+// `--staff research=<card>,plan=<card>`. Two of its three refusals live here, and both
+// are the kind a person hits at the terminal: a decision point that cannot be staffed,
+// and a pair with no `=` in it. The third — a card nobody probed — belongs to
+// `resolveStaffing`, which has the filesystem this parser deliberately does not.
+describe("parseRunArgs and --staff", () => {
+  test("a run with no --staff staffs nothing", () => {
+    const parsed = parseRunArgs(["do the thing"]);
+
+    assert.deepEqual(parsed.ok ? parsed.options.staffing : undefined, {});
+  });
+
+  test("carries a card per decision point", () => {
+    const parsed = parseRunArgs([
+      "goal",
+      "--staff",
+      "research=nebius/one, plan=nebius/two",
+    ]);
+
+    assert.deepEqual(parsed.ok ? parsed.options.staffing : undefined, {
+      research: "nebius/one",
+      plan: "nebius/two",
+    });
+  });
+
+  // A judge reads the artifacts it grades, and a chat completion holds no tools: staffing
+  // one to a card would fail correct work and say honestly that it could not open the
+  // files. The refusal says that rather than only listing what is allowed.
+  test("refuses judge, and says why", () => {
+    const parsed = parseRunArgs(["goal", "--staff", "judge=nebius/one"]);
+
+    assert.equal(parsed.ok, false);
+    assert.match(parsed.ok === false ? parsed.message : "", /Read, Glob and Grep/);
+  });
+
+  test("refuses a decision point that does not exist, naming the ones that do", () => {
+    // `architect` used to be the example here and is a decision point since PLAN-NEXT 5,
+    // so the refusal is shown against a name that is still not one.
+    const parsed = parseRunArgs(["goal", "--staff", "deploy=nebius/one"]);
+
+    assert.equal(parsed.ok, false);
+    assert.match(parsed.ok === false ? parsed.message : "", /staffable: research, architect, intake/);
+  });
+
+  test("refuses a pair with no card and shows the shape", () => {
+    for (const value of ["plan", "plan=", "=nebius/one"]) {
+      const parsed = parseRunArgs(["goal", "--staff", value]);
+      assert.equal(parsed.ok, false, `accepted '${value}'`);
+      assert.match(parsed.ok === false ? parsed.message : "", /e\.g\./);
+    }
+  });
+
+  test("--staff with no value is refused rather than eating the next flag", () => {
+    const parsed = parseRunArgs(["goal", "--staff", "--quick"]);
+
+    assert.equal(parsed.ok, false);
+  });
+});
+
+// The optional-`Deps` trap, one field along: `staffing` is threaded through four
+// composition roots, and a feature that is finished and switched off at the same time is
+// what happens when one of them drops it. So the root is what is asserted here — that the
+// mission's own choice reaches the thing that builds its calls, and that a card nobody
+// verified is refused before a mission directory exists rather than at the first call.
+describe("runMission and staffing", () => {
+  const aConfig = (): DiscoveredConfig => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "orchestra-staffing-"));
+    return {
+      cwd: stateDir,
+      stateDir,
+      worktreeRoot: path.join(stateDir, "worktrees"),
+      agents: [],
+      orchestratorModel: "sonnet",
+      maxConcurrency: 4,
+    };
+  };
+
+  const options = (staffing: Record<string, string>) => ({
+    goal: "staffed?",
+    planOnly: true,
+    quick: false,
+    unattended: false,
+    force: false,
+    web: false,
+    budgetMinutes: 5,
+    runtime: {},
+    staffing,
+    scanners: [],
+    env: [],
+  });
+
+  test("hands the mission's staffing to whatever builds its calls", async () => {
+    const seen: unknown[] = [];
+
+    await assert.rejects(() =>
+      runMission(options({}), aConfig(), quietIo, {
+        createCalls: (_config, _onSpend, staffing) => {
+          seen.push(staffing);
+          return scriptedCalls({});
+        },
+      }),
+    );
+
+    assert.deepEqual(seen, [{}]);
+  });
+
+  test("refuses a card this machine never probed, before the log opens", async () => {
+    const config = aConfig();
+    const errors: string[] = [];
+    const io = { out: () => {}, err: (line: string) => errors.push(line) };
+
+    const code = await runMission(options({ plan: "invented/card" }), config, io, {
+      createCalls: () => scriptedCalls({}),
+    });
+
+    assert.equal(code, 1);
+    assert.match(errors.join("\n"), /invented\/card/);
+    // Nothing was written: a refusal that leaves a mission directory behind has already
+    // started the mission it was refusing.
+    assert.equal(fs.existsSync(path.join(config.stateDir, "missions")), false);
+  });
+});
+
+// The optional-`Deps` trap in its 6.3 shape. `PrepareDeps.scanners` can be built,
+// unit-tested and reachable through a parameter no entry point passes — which is
+// `requestExtension`, `owns` and `reformat` three times over. What is asserted here is
+// the wiring: the flag reaches the envelope, and the envelope reaches the architect.
+describe("runMission and the scanner grant", () => {
+  const aResearch = () => ({
+    brief: "there is a script to look at",
+    findings: [
+      {
+        claim: "scripts/deploy.sh shells out",
+        source: "scripts/deploy.sh",
+        sourceKind: "codebase" as const,
+        confidence: "high" as const,
+      },
+    ],
+    confidence: "high" as const,
+  });
+
+  const withScan = (scanners: string[]) => ({
+    goal: "scan it",
+    planOnly: true,
+    quick: false,
+    unattended: true,
+    force: true,
+    web: false,
+    budgetMinutes: 5,
+    runtime: {},
+    staffing: {},
+    scanners,
+    env: [],
+  });
+
+  const scanConfig = (stateDir: string, probed?: string[]): DiscoveredConfig => ({
+    cwd: stateDir,
+    stateDir,
+    worktreeRoot: path.join(stateDir, "worktrees"),
+    agents: [],
+    orchestratorModel: "sonnet",
+    maxConcurrency: 4,
+    ...(probed ? { scanners: probed } : {}),
+  });
+
+  /** What the architect was actually offered, which is the question. */
+  const offeredTo = async (options: ReturnType<typeof withScan>, probed?: string[]) => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "orchestra-scan-"));
+    const seen: (string[] | undefined)[] = [];
+
+    await assert.rejects(() =>
+      runMission(options, scanConfig(stateDir, probed), quietIo, {
+        createCalls: () => ({
+          // Scan, intake and the deep pass all run before the architect, so the shortest
+          // route to the call under test is to script them and stop there.
+          ...scriptedCalls({
+            research: [aResearch(), aResearch()],
+            intake: [{ questions: [] }],
+          }),
+          architect: async (input) => {
+            seen.push(input.scanners);
+            throw new Error("stop here");
+          },
+        }),
+      }),
+    );
+    return seen;
+  };
+
+  test("--scan reaches the architect when this machine answered for the scanner", async () => {
+    assert.deepEqual(await offeredTo(withScan(["deepsec"]), ["deepsec"]), [["deepsec"]]);
+  });
+
+  // Both halves or neither. A grant on a machine with no binary is a criterion staffed
+  // against something that cannot run — defect 21 in the checking layer.
+  test("a grant on a machine without the binary offers nothing", async () => {
+    assert.deepEqual(await offeredTo(withScan(["deepsec"]), []), [undefined]);
+  });
+
+  test("a mission that did not ask is offered nothing, however installed the machine is", async () => {
+    assert.deepEqual(await offeredTo(withScan([]), ["deepsec"]), [undefined]);
+  });
+});
+
+// A flag that takes a value has the failure mode a boolean does not (`--harness --quick`
+// eating the next flag), and this one also grants a capability — so an unknown name is a
+// refusal rather than a grant nothing can honour.
+describe("parseRunArgs and --scan", () => {
+  test("grants a known scanner", () => {
+    const parsed = parseRunArgs(["do it", "--scan", "deepsec"]);
+
+    assert.equal(parsed.ok, true);
+    assert.deepEqual(parsed.ok && parsed.options.scanners, ["deepsec"]);
+  });
+
+  test("a mission that did not type it grants none", () => {
+    const parsed = parseRunArgs(["do it"]);
+
+    assert.deepEqual(parsed.ok && parsed.options.scanners, []);
+  });
+
+  test("an unknown name is refused and the message lists the real ones", () => {
+    const parsed = parseRunArgs(["do it", "--scan", "snyk"]);
+
+    assert.equal(parsed.ok, false);
+    assert.match(!parsed.ok ? parsed.message : "", /Known scanners: deepsec/);
+  });
+
+  test("--scan with no value does not eat the next flag", () => {
+    const parsed = parseRunArgs(["do it", "--scan", "--quick"]);
+
+    assert.equal(parsed.ok, false);
+    assert.match(!parsed.ok ? parsed.message : "", /--scan takes a scanner name/);
+  });
+});
+
+// PLAN-NEXT 7.1: the human's half of the secrets flow. A grant of a *name*, which is
+// what `Envelope.env` has always been (defect 42) — the value is read from this
+// machine's environment at dispatch and never typed, logged or stored.
+describe("--env", () => {
+  test("granting names puts them in the mission's envelope", () => {
+    const parsed = parseRunArgs(["do it", "--env", "STRIPE_KEY", "--env", "SLACK_TOKEN"]);
+
+    assert.equal(parsed.ok, true);
+    assert.deepEqual(parsed.ok && parsed.options.env, ["STRIPE_KEY", "SLACK_TOKEN"]);
+    const envelope = defaultEnvelope(
+      { cwd: "/repo", stateDir: "/state", worktreeRoot: "/w", agents: [], orchestratorModel: "sonnet", maxConcurrency: 4 },
+      { wallMs: 60_000 },
+      [],
+      parsed.ok ? parsed.options.env : [],
+    );
+    assert.deepEqual(envelope.env, ["STRIPE_KEY", "SLACK_TOKEN"]);
+  });
+
+  test("a mission that did not type it grants none", () => {
+    const parsed = parseRunArgs(["do it"]);
+
+    assert.deepEqual(parsed.ok && parsed.options.env, []);
+  });
+
+  // The refusal that matters. Accepting this would grant a variable literally named
+  // `STRIPE_KEY=sk_live_…` — nothing, granted — with a live key now in the shell
+  // history and in `mission_created`.
+  test("a name=value pair is refused, and the message does not echo the value", () => {
+    const parsed = parseRunArgs(["do it", "--env", "STRIPE_KEY=sk_live_9d8f7a6b"]);
+
+    assert.equal(parsed.ok, false);
+    const message = !parsed.ok ? parsed.message : "";
+    assert.match(message, /--env takes a name, never a value/);
+    assert.equal(message.includes("sk_live_9d8f7a6b"), false, "the refusal quoted the key back");
+  });
+
+  // A base64 credential ends in `=`, so the `=` the refusal splits on is its last
+  // character — and truncating to it printed the whole key to stderr, twice, in the one
+  // error whose entire purpose is that the key was typed where it should not have been.
+  test("a base64 value ending in = is truncated like any other", () => {
+    const key = "c2VjcmV0X3ZhbHVlX2xvbmdfZW5vdWdo=";
+    const parsed = parseRunArgs(["do it", "--env", key]);
+
+    assert.equal(parsed.ok, false);
+    const message = !parsed.ok ? parsed.message : "";
+    assert.equal(message.includes(key), false, "the refusal quoted the whole key back");
+    assert.equal(message.includes(key.slice(0, 9)), false, "more than 8 characters survived");
+    assert.match(message, /--env takes a name, never a value/);
+  });
+
+  test("--env with no value does not eat the next flag", () => {
+    const parsed = parseRunArgs(["do it", "--env", "--quick"]);
+
+    assert.equal(parsed.ok, false);
+    assert.match(!parsed.ok ? parsed.message : "", /--env takes a variable name/);
+  });
+});
+
+// A grant nothing is ever told about is a flag that reads as honoured and does nothing.
+// A quick mission's spec is `research`'s, and `research` is never offered a scanner.
+describe("--scan and --quick", () => {
+  test("are refused together, with the reason", () => {
+    const parsed = parseRunArgs(["do it", "--quick", "--scan", "deepsec"]);
+
+    assert.equal(parsed.ok, false);
+    assert.match(!parsed.ok ? parsed.message : "", /criteria are written by the research scan/);
+  });
+
+  test("either one alone is fine", () => {
+    assert.equal(parseRunArgs(["do it", "--quick"]).ok, true);
+    assert.equal(parseRunArgs(["do it", "--scan", "deepsec"]).ok, true);
   });
 });

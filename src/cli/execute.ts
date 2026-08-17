@@ -28,6 +28,7 @@ import { unattendedHuman, type HumanPort } from "../loop/human.js";
 import { presentAndSignOff } from "../loop/prepare.js";
 import { runLoop, type LoopDeps, type LoopResult, type MissionStore } from "../loop/run.js";
 import { createCriterionChecker, createVerifier } from "../loop/verify.js";
+import { grantedSecrets, type Secret } from "../workers/redact.js";
 import { type Lease } from "../scheduler/leases.js";
 import { type Task } from "../domain/task.js";
 import { routeTransport } from "../workers/router.js";
@@ -82,7 +83,29 @@ export function continuationFor(state: MissionState): Continuation {
   // Keyed on the mission rather than on an open inbox item, because the item is how
   // the request is *surfaced* and this is a question about what the mission is. What
   // the change proposes is read from `pendingCriteriaChange` when it is answered.
-  const openItem = state.inbox.find((item) => !item.resolvedAt);
+  // Two questions differ in kind, not in status (PLAN-NEXT 7.2). An escalation demands
+  // an answer before the mission may continue; an **advisory** question — what
+  // `secret_required` raises — says in its own text that the mission finishes either
+  // way, and nothing ever answers it. This gate first read *any* open item as "something
+  // is waiting", which stopped a mission told to plan against mocks with its plan already
+  // paid for; relaxing it to "a question parks nothing" was not enough either, because
+  // `mission.status === "blocked"` is what an API 529, a budget stop and a shutdown also
+  // leave behind, so one advisory question held such a mission hostage forever.
+  //
+  // So `advisory` is read off the question itself, and the other two conditions stay
+  // exactly as they were: a question a task is parked on halts, and so does any
+  // non-advisory question on a mission that is already `blocked`. That last one is
+  // load-bearing rather than redundant — the reset-cap escalation (`loop/run.ts`) blocks
+  // every task that is not `done`, which is `[]` when they all are, so `blockedBy` is
+  // empty and the status is the only thing that catches it. Gates and permissions are
+  // outside the relaxation entirely — a worker is awaiting those.
+  const blocking = new Set(Object.values(state.blockedBy));
+  const openItem = state.inbox.find(
+    (item) =>
+      !item.resolvedAt &&
+      (item.kind !== "question" ||
+        (!item.advisory && (blocking.has(item.id) || mission.status === "blocked"))),
+  );
 
   if (mission.status === "awaiting_signoff") {
     return mission.signedOffAt ? { kind: "criteriaChange" } : { kind: "signoff" };
@@ -357,10 +380,14 @@ export function permissionPortFor(
   store: MissionStore,
   human?: HumanPort,
   onWarn?: (message: string) => void,
+  /** The granted values, scrubbed out of the tool call a request quotes (PLAN-NEXT 7.3).
+   *  Derived by the caller, which is the one place `process.env` is read for this. */
+  secrets: readonly Secret[] = [],
 ): PermissionPort {
   return createPermissionPort({
     emit: store.emit,
     missionId: store.state().mission.id,
+    ...(secrets.length > 0 ? { secrets } : {}),
     ...(human?.askPermission ? { ask: (request) => human.askPermission!(request) } : {}),
     ...(onWarn ? { onWarn } : {}),
   });
@@ -391,7 +418,15 @@ export async function buildLoopDeps(
   // grant does not cover reaches a person through this, and nothing else writes the
   // answer down. Built unconditionally — a port nobody passes is a feature finished and
   // switched off at the same time.
-  const permissions = permissionPortFor(store, human, onWarn);
+  // The one place a granted value is read (PLAN-NEXT 7.3). `Envelope.env` is names, and
+  // the values live in this process's own environment because that is where
+  // `buildWorkerEnv` gets them from — so the scrubber's list is derived here, at the
+  // composition root that already holds both halves, and handed to every path that
+  // writes a worker's words down. Empty on every mission that granted nothing, which
+  // makes `redact` an identity.
+  const secrets = grantedSecrets(process.env, store.state().mission.capabilityEnvelope.env);
+
+  const permissions = permissionPortFor(store, human, onWarn, secrets);
 
   // Containment is the mission's, decided from the folded envelope once and handed to
   // both runtimes (PLAN-NEXT 3.2). Both, and not only `cli`: wiring one of them is a
@@ -412,7 +447,7 @@ export async function buildLoopDeps(
       ...(contained ? { contained } : {}),
     }),
   });
-  const verify = createVerifier({ calls });
+  const verify = createVerifier({ calls, ...(secrets.length > 0 ? { secrets } : {}) });
   // §4.1's one reformat attempt. `dispatch` has always accepted a reformatter and no
   // entry point supplied one, so a worker that answered in prose failed outright
   // instead of being asked once to restate — same shape as the `requestExtension`
@@ -436,7 +471,7 @@ export async function buildLoopDeps(
     // omitted list would fall back to everything the build ships, which is the exact
     // claim this is here to stop making.
     ...staffingOffer(config, store.state().mission.runtime, staffableCards(config.stateDir, onWarn)),
-    checkCriterion: createCriterionChecker({ calls }),
+    checkCriterion: createCriterionChecker({ calls, ...(secrets.length > 0 ? { secrets } : {}) }),
     dispatch: (task: Task, state: MissionState): Promise<DispatchOutcome> =>
       dispatch(
         task,
@@ -446,10 +481,11 @@ export async function buildLoopDeps(
           verify,
           reformat,
           held: heldLeases(state),
+          ...(secrets.length > 0 ? { secrets } : {}),
           ...(code ? { code } : {}),
           artifactRoot: root,
           cwd: repo ?? config.cwd,
-        }, config),
+        }, config, state.design),
       ),
   };
 }
@@ -465,9 +501,18 @@ export async function buildLoopDeps(
 export function dispatchOptionsFor(
   base: DispatchDeps,
   config: Pick<DiscoveredConfig, "verify">,
+  /** The architect's design note as the log records it (PLAN-NEXT 5.2), read off the
+   *  state the round was folded from rather than remembered from the run that planned —
+   *  a mission planned last night and dispatched this morning has to give its workers
+   *  the same path. */
+  design?: { path: string },
 ): DispatchDeps {
   return {
     ...base,
+    // Conditional for `repoVerify`'s reason, one field along: absent means this mission
+    // has no design note — every quick one, and every mission planned before the
+    // architect existed — and a worker is then told nothing about one.
+    ...(design ? { designNote: design.path } : {}),
     // The project's own check as a merge gate (P5). Spread conditionally rather than
     // passed as `undefined`, and only when one was discovered — `dispatch` skips the
     // gate entirely without it, which is the honest behaviour in a project that has no

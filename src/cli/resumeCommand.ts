@@ -142,14 +142,18 @@ export async function resumeMission(
         // mission must not silently change what it runs on (`missionRuntimeSchema`).
         deps.createCalls(
           withOrchestratorModel(config, store.state().mission.runtime.orchestratorModel),
-          (call, spend) =>
+          (call, spend, ranOn) =>
             wired.emit({
               type: "spend_recorded",
               missionId,
               actor: "orchestrator",
               phase: spendPhase(call),
               spend,
+              ...(ranOn ? { model: ranOn } : {}),
             }),
+          // Read back off the mission's own log, like the orchestrator model above: a
+          // mission resumed the next morning finishes on the models it started on.
+          store.state().mission.staffing,
         ),
     });
     return code;

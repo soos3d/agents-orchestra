@@ -12,7 +12,7 @@
 // `loop/agentCalls.ts` is one: anything a model *receives* belongs somewhere a test
 // can read it, since the harness that substitutes for the transport cannot (defect 18).
 import { workerReportSchema } from "../domain/report.js";
-import { type Task } from "../domain/task.js";
+import { isCodeTask, type Task } from "../domain/task.js";
 import { renderSchema } from "../runtime/json.js";
 
 /**
@@ -21,14 +21,34 @@ import { renderSchema } from "../runtime/json.js";
  * Nothing about the mission, the ledger, or the other tasks (§4, context discipline) —
  * the goal is written self-contained at plan time precisely so this can be true.
  */
-export function workerPrompt(task: Task, artifactDir?: string): string {
+export function workerPrompt(task: Task, artifactDir?: string, designNote?: string): string {
   const { systemPrompt } = task.agentSpec;
   return [
     systemPrompt,
     `## Your task\n\n${task.goal}`,
+    ...(designNote && isCodeTask(task) ? [designInstruction(designNote)] : []),
     ...(artifactDir ? [outputInstruction(task, artifactDir)] : []),
     REPORT_INSTRUCTION,
   ].join("\n\n");
+}
+
+/**
+ * Where the architect's design note is (PLAN-NEXT 5.2), by absolute path and never by
+ * value — the `artifactDir` rule, and for the same reason: the runtime decides where a
+ * mission's files live, and a worker resolves a relative path against its own worktree.
+ *
+ * Only for a `code` task. §4's context discipline is not a budget line here: a review or
+ * research worker is not writing against the design, so a path it will open and read
+ * costs the mission a file read to inform work it does not do.
+ */
+function designInstruction(designNote: string): string {
+  return (
+    `## The design this fits into\n\n` +
+    `Another agent designed the whole of this change, and the note is at \`${designNote}\`. ` +
+    `Read it before you start: it says what the other tasks are doing, which decisions ` +
+    `are already made, and which files belong to what. Where it and your task goal ` +
+    `disagree, your task goal wins — it is the more recent word — but say so in your report.`
+  );
 }
 
 /**

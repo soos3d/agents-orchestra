@@ -35,6 +35,21 @@ export const envelopeSchema = z.object({
   // `mission_created`, so every log written before this field existed has to keep
   // folding, and "not contained" is the honest reading of a mission that never said.
   containment: z.enum(["none", "container"]).default("none"),
+  /**
+   * Specialist scanners this mission's outcome spec may use as a check (PLAN-NEXT 6.3).
+   *
+   * Here rather than on `mission_created` because it is the same kind of decision as
+   * `containment`: expensive, blast-radius-shaped, and a human's. A deepsec scan is an
+   * AI agent with shell access on this machine and its own documentation puts a large
+   * repository at hundreds of dollars — so it is granted by name, per mission, and
+   * `defaultEnvelope` grants none. `writeOutcomeSpec` refuses a `scanner` check naming
+   * one that is not here, which is what makes "never default" a property of the code.
+   *
+   * `.default([])` for the reason `env` has one: the envelope is embedded in
+   * `mission_created`, so every log written before this field existed has to keep
+   * folding, and "granted nothing" is the honest reading of a mission that never said.
+   */
+  scanners: z.array(z.string().min(1)).default([]),
   maxSpend: budgetSchema,
   // "This mission's gates never leave this machine" is a blast-radius property and
   // belongs next to the rest of them (§17).

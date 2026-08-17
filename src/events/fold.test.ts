@@ -51,6 +51,20 @@ describe("fold", () => {
     assert.deepEqual(state.mission.capabilityEnvelope, anEnvelope());
   });
 
+  // PLAN-NEXT 4.1. The failure mode is a mission that runs its first half on a staffed
+  // card and its second on the default model, because the choice lived in process memory
+  // and `orchestra resume` folds the log — and the mirror of it, an older log gaining a
+  // staffing nobody chose.
+  test("carries the staffing a mission was composed with", () => {
+    const state = foldOf([missionCreated({ staffing: { plan: "some/card-1" } } as Partial<EventInput>)]);
+
+    assert.deepEqual(state.mission.staffing, { plan: "some/card-1" });
+  });
+
+  test("a log written before staffing existed folds to no staffing, not to undefined", () => {
+    assert.deepEqual(foldOf([missionCreated()]).mission.staffing, {});
+  });
+
   test("an empty log raises rather than producing an empty mission", () => {
     assert.throws(() => fold([]), LogCorruptionError);
   });
@@ -556,6 +570,61 @@ describe("fold", () => {
       assert.equal(criterion.lastCheckedRound, 4);
     });
 
+    // A seat is one voice. Applied, `met` would read whichever judge answered last —
+    // wrong on a third of 2-1 splits — and `lastCheckedRound` would move mid-panel, so
+    // `shouldCheckCriterion` would refuse to re-convene the panel that was still voting.
+    test("a panel seat is recorded and never applied", () => {
+      const seat = (panelSeat: number, met: boolean) => ({
+        ...orchestrator,
+        type: "criterion_checked" as const,
+        criterionId: "c1",
+        met,
+        panelSeat,
+        lens: "correctness",
+        evidence: { artifactIds: [], checkOutput: "", reasoning: `seat ${panelSeat}`, byTask: [] },
+      });
+
+      const state = foldOf([
+        ...signedOff(),
+        { ...orchestrator, type: "round_started", round: 4 },
+        seat(0, true),
+        seat(1, true),
+        seat(2, false),
+      ]);
+
+      const criterion = state.mission.ledger.criteria[0];
+      assert.equal(criterion.met, undefined);
+      assert.equal(criterion.lastCheckedRound, undefined);
+    });
+
+    test("the resolved verdict after the seats is what the criterion holds", () => {
+      const state = foldOf([
+        ...signedOff(),
+        { ...orchestrator, type: "round_started", round: 4 },
+        {
+          ...orchestrator,
+          type: "criterion_checked",
+          criterionId: "c1",
+          met: false,
+          panelSeat: 2,
+          lens: "does-it-run",
+          evidence: { artifactIds: [], checkOutput: "", reasoning: "the dissent", byTask: [] },
+        },
+        {
+          ...orchestrator,
+          type: "criterion_checked",
+          criterionId: "c1",
+          met: true,
+          evidence: { artifactIds: [], checkOutput: "", reasoning: "2 for, 1 against", byTask: [] },
+        },
+      ]);
+
+      const criterion = state.mission.ledger.criteria[0];
+      assert.equal(criterion.met, true);
+      assert.equal(criterion.evidence?.reasoning, "2 for, 1 against");
+      assert.equal(criterion.lastCheckedRound, 4);
+    });
+
     test("spend accumulates per phase and in total", () => {
       const state = foldOf([
         missionCreated(),
@@ -568,6 +637,88 @@ describe("fold", () => {
       assert.equal(state.mission.spend.tokens.measured, 1050);
       assert.equal(state.mission.spendByPhase.orchestration.wallMs, 500);
       assert.equal(state.mission.spendByPhase.scan.tokens.measured, 100);
+    });
+  });
+
+  // PLAN-NEXT 5.1. The note is a file and the fold keeps where it is, because a mission
+  // planned last night and dispatched this morning has to give its workers the same path
+  // — and only the log survives that gap.
+  describe("the design note", () => {
+    test("folds the path and the planner's summary", () => {
+      const state = foldOf([
+        missionCreated(),
+        {
+          ...orchestrator,
+          type: "design_written",
+          path: "/tmp/mission/artifacts/design.md",
+          summary: "# Design\n\nOne module.",
+        },
+      ]);
+
+      assert.deepEqual(state.design, {
+        path: "/tmp/mission/artifacts/design.md",
+        summary: "# Design\n\nOne module.",
+      });
+    });
+
+    // A quick mission has no architect, and every log written before PLAN-NEXT 5 has no
+    // such event — both have to fold to a mission whose workers are told nothing.
+    test("a mission that never had one folds without it", () => {
+      assert.equal(foldOf([missionCreated()]).design, undefined);
+    });
+
+    // The architect's retry writes a second note, and the mission's note is the one that
+    // belongs to the criteria that were accepted.
+    test("a second note replaces the first", () => {
+      const state = foldOf([
+        missionCreated(),
+        { ...orchestrator, type: "design_written", path: "/a/design.md", summary: "first" },
+        { ...orchestrator, type: "design_written", path: "/b/design.md", summary: "second" },
+      ]);
+
+      assert.equal(state.design?.summary, "second");
+    });
+
+    // The critic's objections drive the replan inside the call that raised them, so
+    // nothing downstream reads them from state — the event is for the reader and for
+    // `metrics`. It must still fold without disturbing anything.
+    test("a critique changes no state and breaks no replay", () => {
+      const state = foldOf([
+        missionCreated(),
+        {
+          ...orchestrator,
+          type: "plan_critiqued",
+          objections: [{ kind: "colliding-lease", detail: "t1 and t2 both own src/api.ts", taskId: "t2" }],
+          replanned: true,
+        },
+      ]);
+
+      assert.equal(state.mission.status, "scanning");
+      assert.equal(state.lastSeq, 2);
+    });
+  });
+
+  // PLAN-NEXT 7.1. The names are folded because the question raised beside them may be
+  // answered when no loop is running, and whoever resumes has to be able to say which
+  // credentials this mission is mocking without re-reading the design note.
+  describe("secrets the design asked for", () => {
+    test("names accumulate across the architect's retry rather than being replaced", () => {
+      const state = foldOf([
+        missionCreated(),
+        { ...orchestrator, type: "secret_required", names: ["STRIPE_KEY"], plannedAs: "mock" },
+        {
+          ...orchestrator,
+          type: "secret_required",
+          names: ["STRIPE_KEY", "SLACK_TOKEN"],
+          plannedAs: "mock",
+        },
+      ]);
+
+      assert.deepEqual(state.secretsRequired, ["STRIPE_KEY", "SLACK_TOKEN"]);
+    });
+
+    test("a mission that never asked has an empty list rather than an absent one", () => {
+      assert.deepEqual(foldOf([missionCreated()]).secretsRequired, []);
     });
   });
 
@@ -703,6 +854,20 @@ describe("fold", () => {
       ]);
 
       assert.equal(state.tasks.find((t) => t.id === "t1")?.status, "waiting");
+    });
+
+    // PLAN-NEXT 7.1's question is raised for information and nothing ever answers it, so
+    // the flag has to survive a refold: a resume reads it off the folded inbox, and a
+    // question whose `advisory` did not reach state gates the mission it was told not to.
+    test("an advisory question reaches the inbox as advisory, and an ordinary one does not", () => {
+      const state = foldOf([
+        ...twoTasks(),
+        { ...orchestrator, type: "question_asked", questionId: "s1", question: "needs KEY?", blocks: [], advisory: true },
+        asked(["t1"]),
+      ]);
+
+      assert.equal(state.inbox.find((item) => item.id === "s1")?.advisory, true);
+      assert.equal(state.inbox.find((item) => item.id === "q1")?.advisory, undefined);
     });
 
     test("a second answer to the same question is a no-op", () => {

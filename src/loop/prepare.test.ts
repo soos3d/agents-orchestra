@@ -7,6 +7,7 @@ import { fold } from "../events/fold.js";
 import { type LoreEntry } from "../memory/lore.js";
 import { type EventInput } from "../events/schema.js";
 import {
+  anEnvelope,
   aCriterion,
   aPlannedTask,
   anAgentSpec,
@@ -16,7 +17,10 @@ import {
   stamp,
 } from "../testing/fixtures.js";
 import {
+  type ArchitectInput,
+  type ArchitectResult,
   type Calls,
+  type CritiqueResult,
   type IntakeQuestion,
   type PlanInput,
   type PlanResult,
@@ -62,11 +66,21 @@ const aScanResult = (patch: Partial<ResearchResult> = {}): ResearchResult => ({
 function callsFor(options: {
   scan?: ResearchResult;
   research?: ResearchResult[];
+  architect?: ArchitectResult[];
+  critique?: CritiqueResult[];
   plan?: PlanResult[];
   intake?: IntakeQuestion[];
-}): Calls & { synthesized: number; planInputs: PlanInput[]; depths: string[] } {
+}): Calls & {
+  synthesized: number;
+  planInputs: PlanInput[];
+  depths: string[];
+  architectInputs: ArchitectInput[];
+} {
   let researchIndex = 0;
+  let architectIndex = 0;
+  let critiqueIndex = 0;
   let planIndex = 0;
+  const architectInputs: ArchitectInput[] = [];
   const counters = { synthesized: 0 };
   const planInputs: PlanInput[] = [];
   const depths: string[] = [];
@@ -74,6 +88,7 @@ function callsFor(options: {
   return {
     planInputs,
     depths,
+    architectInputs,
     get synthesized() {
       return counters.synthesized;
     },
@@ -86,7 +101,20 @@ function callsFor(options: {
       if (input.depth === "scan") return options.scan ?? aScanResult();
       return options.research?.[researchIndex++] ?? aResearchResult();
     },
+    // The architect writes the outcome spec on an ordinary mission (PLAN-NEXT 5.1).
+    // Unscripted, it hands back whatever criteria the research answer carried, which is
+    // what keeps every test written before it existed asserting about its own script.
+    architect: async (input) => {
+      architectInputs.push(input);
+      return (
+        options.architect?.[architectIndex++] ?? {
+          criteria: (options.research?.[researchIndex - 1] ?? aResearchResult()).criteria,
+          designNote: "# Design\n\nOne module, one test.",
+        }
+      );
+    },
     intake: async () => ({ questions: options.intake ?? [] }),
+    critique: async () => options.critique?.[critiqueIndex++] ?? { objections: [] },
     plan: async (input) => {
       planInputs.push(input);
       const answer = options.plan?.[planIndex++] ?? { tasks: [aPlannedTask()] };
@@ -166,59 +194,46 @@ describe("prepareMission", () => {
   // can ever report success was the one asked to guess again. Context the system
   // already paid for, discarded and re-derived.
   describe("the outcome spec retry", () => {
-    test("tells research what was wrong with the criteria it just returned", async () => {
+    // The spec moved from `research` to `architect` in PLAN-NEXT 5.1, and the retry moved
+    // with it: whoever wrote the criteria the gate refused is who is told why.
+    test("tells the architect what was wrong with the criteria it just returned", async () => {
       const store = testStore();
-      const inputs: unknown[] = [];
       const calls = callsFor({
-        research: [
-          aResearchResult({ criteria: [{ id: "c1", statement: "it is good" }] }),
-          aResearchResult(),
+        architect: [
+          { criteria: [{ id: "c1", statement: "it is good" }], designNote: "# Design" },
+          { criteria: [aCriterion()], designNote: "# Design" },
         ],
       });
-      const recording: Calls = {
-        ...calls,
-        research: async (input) => {
-          inputs.push(input);
-          return calls.research(input);
-        },
-      };
 
-      const result = await prepareMission({ store, calls: recording, planOnly: true });
+      const result = await prepareMission({ store, calls, planOnly: true });
 
       assert.equal(result.ok, true);
-      const retry = inputs.at(-1) as { rejected?: string };
-      assert.ok(retry.rejected, "the retry was asked the same question with no idea what failed");
+      const retry = calls.architectInputs.at(-1);
+      assert.ok(retry?.rejected, "the retry was asked the same question with no idea what failed");
       assert.match(retry.rejected, /it is good/);
     });
 
     test("the first call is not told about a rejection that has not happened", async () => {
       const store = testStore();
-      const inputs: unknown[] = [];
       const calls = callsFor({});
-      const recording: Calls = {
-        ...calls,
-        research: async (input) => {
-          inputs.push(input);
-          return calls.research(input);
-        },
-      };
 
-      await prepareMission({ store, calls: recording, planOnly: true });
+      await prepareMission({ store, calls, planOnly: true });
 
-      assert.equal((inputs.at(-1) as { rejected?: string }).rejected, undefined);
+      assert.equal(calls.architectInputs.at(-1)?.rejected, undefined);
     });
   });
 
   describe("the outcome spec gate", () => {
-    test("rejects an uncheckable criterion and retries research once", async () => {
+    test("rejects an uncheckable criterion and retries the architect once", async () => {
       const store = testStore();
-      const vague = aResearchResult({
+      const vague = {
         criteria: [{ id: "c1", statement: "the checkout flow is less janky" }],
-      });
+        designNote: "# Design",
+      };
 
       const result = await prepareMission({
         store,
-        calls: callsFor({ research: [vague, aResearchResult()] }),
+        calls: callsFor({ architect: [vague, { criteria: [aCriterion()], designNote: "# D" }] }),
       });
 
       assert.equal(result.ok, true);
@@ -227,11 +242,14 @@ describe("prepareMission", () => {
 
     test("gives up after the second rejection rather than planning against nothing", async () => {
       const store = testStore();
-      const vague = aResearchResult({ criteria: [{ id: "c1", statement: "make it nicer" }] });
+      const vague = {
+        criteria: [{ id: "c1", statement: "make it nicer" }],
+        designNote: "# Design",
+      };
 
       const result = await prepareMission({
         store,
-        calls: callsFor({ research: [vague, vague] }),
+        calls: callsFor({ architect: [vague, vague] }),
       });
 
       assert.equal(result.ok, false);
@@ -767,6 +785,234 @@ describe("prepareMission", () => {
 
       assert.deepEqual(calls.depths, ["scan", "deep"]);
       assert.equal(calls.planInputs[0]?.scope, undefined);
+    });
+
+    // The whole of what PLAN-NEXT 5 adds to a quick mission is nothing. Its spec is the
+    // scan's own criteria, it gets no design note, and its one-task plan has no
+    // dependency to miss and no lease to collide with — so neither new call is paid for
+    // and the token count a quick mission had before this stage is the one it has now.
+    test("pays for neither the architect nor the critic", async () => {
+      const store = quickStore();
+      const calls = callsFor({ scan: aScanResult({ brief: "small", criteria: [aCriterion()] }) });
+
+      await prepareMission({ store, calls, planOnly: true, writeDesign: () => "/tmp/design.md" });
+
+      assert.equal(calls.architectInputs.length, 0);
+      assert.equal(types(store).includes("design_written"), false);
+      assert.equal(types(store).includes("plan_critiqued"), false);
+      assert.equal(calls.planInputs.length, 1, "a quick mission paid for a replan");
+    });
+  });
+
+  // PLAN-NEXT 7.1. The failure this guards against is a mission that stops dead at 2am
+  // because the design mentioned an API key: research and planning are already paid for,
+  // and nobody is awake to grant anything.
+  describe("credentials the design asks for", () => {
+    const architectWanting = (envVars: string[]) => ({
+      criteria: [aCriterion()],
+      designNote: "# Design\n\nA payment client behind an interface.",
+      envVars,
+    });
+
+    test("an ungranted variable raises a question and the mission plans anyway", async () => {
+      const store = testStore();
+      const calls = callsFor({ architect: [architectWanting(["STRIPE_KEY"])] });
+
+      const result = await prepareMission({ store, calls, planOnly: true });
+
+      assert.equal(result.ok, true, "the mission stopped for a key it was told to mock");
+      const raised = store.inputs.find((event) => event.type === "secret_required");
+      assert.deepEqual(
+        raised && "names" in raised ? raised.names : [],
+        ["STRIPE_KEY"],
+      );
+      assert.equal(raised && "plannedAs" in raised ? raised.plannedAs : "", "mock");
+      const asked = store.inputs.find((event) => event.type === "question_asked");
+      assert.match(asked && "question" in asked ? asked.question : "", /--env STRIPE_KEY/);
+      // Nothing exists to park: the plan is written after this call answers.
+      assert.deepEqual(asked && "blocks" in asked ? asked.blocks : ["x"], []);
+      // And the event says so itself (PLAN-NEXT 7.2). Without the flag at the emit site,
+      // a mission that later parks on a 529 never resumes past a question nobody answers
+      // — `blocks: []` reads the same as a reset-cap escalation with every task done.
+      assert.equal(asked && "advisory" in asked ? asked.advisory : undefined, true);
+    });
+
+    test("a variable the envelope already grants raises nothing", async () => {
+      const store = testStore([
+        missionCreated({ envelope: anEnvelope({ env: ["STRIPE_KEY"] }) } as Partial<EventInput>),
+      ]);
+      const calls = callsFor({ architect: [architectWanting(["STRIPE_KEY"])] });
+
+      await prepareMission({ store, calls, planOnly: true });
+
+      assert.equal(types(store).includes("secret_required"), false);
+      assert.equal(types(store).includes("question_asked"), false);
+    });
+
+    // The architect gets one retry and answers `envVars` again. A second inbox item for
+    // the same variable is a human answering the same question twice.
+    test("the architect's retry does not re-ask for a name already raised", async () => {
+      const store = testStore();
+      const calls = callsFor({
+        architect: [
+          { ...architectWanting(["STRIPE_KEY"]), criteria: [{ statement: "no check" }] },
+          architectWanting(["STRIPE_KEY", "SLACK_TOKEN"]),
+        ],
+      });
+
+      await prepareMission({ store, calls, planOnly: true });
+
+      const raised = store.inputs
+        .filter((event) => event.type === "secret_required")
+        .flatMap((event) => ("names" in event ? event.names : []));
+      assert.deepEqual(raised, ["STRIPE_KEY", "SLACK_TOKEN"]);
+      assert.deepEqual(store.state().secretsRequired, ["STRIPE_KEY", "SLACK_TOKEN"]);
+    });
+
+    test("an architect that names no variable leaves the log byte-identical", async () => {
+      const store = testStore();
+
+      await prepareMission({ store, calls: callsFor({}), planOnly: true });
+
+      assert.equal(types(store).includes("secret_required"), false);
+    });
+  });
+
+  // PLAN-NEXT 5.1. The note is what a code worker is handed a path to, so the event has
+  // to name a file that exists — an event written ahead of the write would put a dead
+  // path into every worker's prompt, which is defect 40 one layer up.
+  describe("the design note", () => {
+    test("is written and its path folded, with the planner getting a summary", async () => {
+      const store = testStore();
+      const written: string[] = [];
+      const calls = callsFor({
+        architect: [{ criteria: [aCriterion()], designNote: "# Design\n\nOne module, one test." }],
+      });
+
+      await prepareMission({
+        store,
+        calls,
+        planOnly: true,
+        writeDesign: (note) => {
+          written.push(note);
+          return "/state/missions/m1/artifacts/design.md";
+        },
+      });
+
+      assert.deepEqual(written, ["# Design\n\nOne module, one test."]);
+      assert.equal(store.state().design?.path, "/state/missions/m1/artifacts/design.md");
+      assert.match(calls.planInputs[0]?.design ?? "", /One module, one test/);
+    });
+
+    // The prepare phase runs before `buildLoopDeps` derives the scrubber's list, which
+    // left the note, its summary and the research brief as the three surfaces written in
+    // front of the scrubber rather than behind it (PLAN-NEXT 7.3, from the stage's
+    // security review). Research and the architect are calls with tools against the
+    // repository, so a granted value sitting in a file there can be quoted into a note
+    // whose absolute path every code worker's prompt then names.
+    test("a granted value the architect quoted never reaches the file or the event", async () => {
+      const store = testStore();
+      const written: string[] = [];
+      const key = "sk_live_9d8f7a6b5c4d";
+      const calls = callsFor({
+        architect: [
+          { criteria: [aCriterion()], designNote: `# Design\n\nUse ${key} from the .env.` },
+        ],
+      });
+
+      await prepareMission({
+        store,
+        calls,
+        planOnly: true,
+        secrets: [{ name: "STRIPE_KEY", value: key }],
+        writeDesign: (note) => {
+          written.push(note);
+          return "/state/missions/m1/artifacts/design.md";
+        },
+      });
+
+      assert.equal(written.join("").includes(key), false, "the key was written to disk");
+      assert.match(written.join(""), /\[redacted:STRIPE_KEY\]/);
+      assert.equal(JSON.stringify(store.inputs).includes(key), false, "the key is on the log");
+    });
+
+    // Best-effort, like `keepEvidence`: what is lost when a disk is full is the note, not
+    // the criteria — those went through `writeOutcomeSpec` and are on the log either way.
+    test("a write that fails costs the note and not the mission", async () => {
+      const store = testStore();
+      const warnings: string[] = [];
+
+      const result = await prepareMission({
+        store,
+        calls: callsFor({}),
+        planOnly: true,
+        writeDesign: () => undefined,
+        onWarn: (message) => warnings.push(message),
+      });
+
+      assert.equal(result.ok, true);
+      assert.equal(types(store).includes("design_written"), false);
+      assert.match(warnings.join("\n"), /design note could not be written/);
+    });
+
+    // A composition root that builds `prepareMission` without this is a feature finished
+    // and switched off at once (defects 12b, 23, 24), so the absence has to be survivable
+    // rather than silent.
+    test("no writer at all plans exactly as before", async () => {
+      const store = testStore();
+
+      const result = await prepareMission({ store, calls: callsFor({}), planOnly: true });
+
+      assert.equal(result.ok, true);
+      assert.equal(store.state().design, undefined);
+    });
+  });
+
+  // PLAN-NEXT 5.3. The critic runs between the plan and its validation — the last point
+  // where a colliding lease is still cheap. After sign-off it is a worktree.
+  describe("the plan critic", () => {
+    const objection = {
+      objections: [
+        { kind: "colliding-lease", detail: "t1 and t2 both write src/api.ts", taskId: "t2" },
+      ],
+    };
+
+    test("an objection buys exactly one replan, and lands on the log", async () => {
+      const store = testStore();
+      const calls = callsFor({ critique: [objection] });
+
+      const result = await prepareMission({ store, calls, planOnly: true });
+
+      assert.equal(result.ok, true);
+      assert.equal(calls.planInputs.length, 2, "the objection did not buy a replan");
+      assert.match(calls.planInputs[1]?.reason ?? "", /both write src\/api\.ts/);
+      assert.ok(types(store).includes("plan_critiqued"));
+    });
+
+    // A critic that can keep objecting is a budget leak: the second objection to a plan
+    // is not worth what the third plan costs. The cap is one replan per critique, and it
+    // is not re-run against the plan it asked for.
+    test("the replan is not itself critiqued", async () => {
+      const store = testStore();
+      const calls = callsFor({ critique: [objection, objection] });
+
+      await prepareMission({ store, calls, planOnly: true });
+
+      assert.equal(calls.planInputs.length, 2);
+      assert.equal(
+        store.inputs.filter((event) => event.type === "plan_critiqued").length,
+        1,
+      );
+    });
+
+    test("a sound plan costs nothing beyond the one call", async () => {
+      const store = testStore();
+      const calls = callsFor({});
+
+      await prepareMission({ store, calls, planOnly: true });
+
+      assert.equal(calls.planInputs.length, 1);
+      assert.equal(types(store).includes("plan_critiqued"), false);
     });
   });
 });

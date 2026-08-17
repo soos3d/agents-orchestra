@@ -12,6 +12,7 @@
 // its dependencies. Every section is rows now — mark, statement, then how it is
 // checked; goal, then who runs it and why it exists. The order is unchanged and still
 // load-bearing, stated where it is decided, in `Contract`.
+import { DEFAULT_MIN_SEVERITY } from "../../domain/artifacts.js";
 import { type Criterion, type Guess, type PlannedTask } from "../../domain/ledger.js";
 import { type ComponentChildren } from "preact";
 import { type View } from "./state.js";
@@ -24,7 +25,12 @@ export const checkParts = (criterion: Criterion): { kind: string; detail: string
     ? { kind: "command", detail: criterion.check.command }
     : criterion.check.kind === "judge"
       ? { kind: "judge", detail: criterion.check.rubric }
-      : { kind: "unchecked", detail: criterion.check.reason };
+      : criterion.check.kind === "scanner"
+        ? {
+            kind: "scanner",
+            detail: `${criterion.check.scanner}, ${criterion.check.minSeverity ?? DEFAULT_MIN_SEVERITY} or above`,
+          }
+        : { kind: "unchecked", detail: criterion.check.reason };
 
 export const mark = (met: boolean | undefined): ComponentChildren =>
   met === true ? (

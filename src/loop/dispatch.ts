@@ -27,7 +27,7 @@
 // worktree, where the commits are and the integration branch is not.
 import { taskArtifactDir } from "../config/discover.js";
 import { ensurePrivateDir } from "../config/hygiene.js";
-import { type Artifact } from "../domain/artifacts.js";
+import { type Artifact, type VerifySpec } from "../domain/artifacts.js";
 import { tokensFrom, type Spend, type TokenUsage } from "../domain/budget.js";
 import { isCodeTask, type Task, type TaskStatus } from "../domain/task.js";
 import { type Event, type EventInput } from "../events/schema.js";
@@ -37,6 +37,7 @@ import { createWorktree, removeWorktree } from "../git/worktree.js";
 import { type MergeQueue } from "../git/mergeQueue.js";
 import { detectEscape, requestLease, type Lease } from "../scheduler/leases.js";
 import { detectRepoEscape } from "../scheduler/repoEscape.js";
+import { redact, type Secret } from "../workers/redact.js";
 import { parseWorkerReport, type Reformatter } from "../workers/report.js";
 import { type FailureKind } from "./retry.js";
 import { type Verifier } from "./verify.js";
@@ -66,6 +67,10 @@ export type WorkerTransport = (input: {
   /** The one directory this task may write outputs to, absolute and already created
    *  (P2). Absent when the dispatch was built without an artifact root. */
   artifactDir?: string;
+  /** The architect's design note, absolute (PLAN-NEXT 5.2). Absent on a quick mission,
+   *  on a mission planned before the architect existed, and when the note could not be
+   *  written — `workerPrompt` names it only for a `code` task. */
+  designNote?: string;
   signal?: AbortSignal;
 }) => Promise<WorkerRun>;
 
@@ -99,6 +104,15 @@ export interface DispatchDeps {
    */
   artifactRoot?: string;
   /**
+   * The architect's design note, absolute (PLAN-NEXT 5.2).
+   *
+   * Read off the folded log by the composition root rather than passed down from prepare,
+   * for `artifactRoot`'s reason: a mission planned last night and dispatched this morning
+   * has to give its workers the same path, and only the log survives that gap. Absent is a
+   * mission with no note, which is every quick one.
+   */
+  designNote?: string;
+  /**
    * The project's own check — `npm test`, `make check` — as a merge gate (P5).
    *
    * `discoverVerifyCommand` has found it since Phase 1 and `doctor` has reported it,
@@ -110,6 +124,17 @@ export interface DispatchDeps {
    */
   repoVerify?: { command: string; source: string };
   reformat?: Reformatter;
+  /**
+   * The values of the variables this mission granted, scrubbed out of everything the
+   * worker says before any of it is written down (PLAN-NEXT 7.3).
+   *
+   * Applied to the raw message rather than to the parsed report, and that is the point:
+   * the summary, every claim, every artifact path and the text handed to the reformatter
+   * are all derived from this one string, so one substitution covers all of them and
+   * there is no field somebody forgets to add later. Absent is a mission that granted no
+   * variable, which is every mission before `--env`.
+   */
+  secrets?: readonly Secret[];
   signal?: AbortSignal;
 }
 
@@ -147,6 +172,21 @@ interface Session {
   fail(failure: FailureKind, message: string): DispatchOutcome;
 }
 
+/**
+ * The spec as it goes on the log (PLAN-NEXT 7.3).
+ *
+ * `runCommand` already scrubs the message it builds when it *refuses* a command, for a
+ * stated reason: a criterion whose command was written with a value in it would put that
+ * value on the log through the one path that never runs anything. The identical string
+ * reached `events.jsonl` on the ordinary path through `verification_run.spec`, every
+ * check, run or refused — the scrub was on the output and not on what produced it.
+ * Only `command` carries free text a model wrote; the other variants are ids and rubrics.
+ */
+function loggedSpec(spec: VerifySpec, secrets: readonly Secret[]): VerifySpec {
+  if (spec.kind !== "command") return spec;
+  return { ...spec, command: redact(spec.command, secrets) };
+}
+
 function createSession(task: Task, deps: DispatchDeps): Session {
   let status: TaskStatus = task.status;
   let worktree: string | undefined;
@@ -177,10 +217,24 @@ function createSession(task: Task, deps: DispatchDeps): Session {
     emit({ type: "worktree_removed", path });
   };
 
+  // Every failure message goes through one scrub (PLAN-NEXT 7.3). The mainline report is
+  // redacted at `run.raw`, and the *exception* path around it was not: a transport error
+  // is built from the agent's stderr tail (`acp/transport.ts`), a credentialed CLI that
+  // crashes prints what it was holding — a `curl -v` 401 dump quotes the Authorization
+  // header — and that message becomes a `task_status`, a `question_asked` and progress
+  // evidence. Here rather than at each `fail()` call site, because the next caller added
+  // would be the one that forgets.
   const fail = (failure: FailureKind, message: string): DispatchOutcome => {
-    move("failed", message);
-    return { status: "failed", failure, message };
+    const clean = redact(message, deps.secrets ?? []);
+    move("failed", clean);
+    return { status: "failed", failure, message: clean };
   };
+
+  // The two outcomes that do not go through `fail()`. A merge queue's message is git's
+  // own stderr about a tree a credentialed worker just wrote, and it reaches
+  // `merge_empty.reason`, a `task_status`, and from `run.ts` a `question_asked` and the
+  // progress evidence — every one of them a file a human pastes into a bug report.
+  const clean = (message: string): string => redact(message, deps.secrets ?? []);
 
   const prepare = async (): Promise<DispatchOutcome | undefined> => {
     const owns = isCodeTask(task) ? task.owns : [];
@@ -277,7 +331,12 @@ function createSession(task: Task, deps: DispatchDeps): Session {
       artifacts,
       ...(evidenceDir ? { evidenceDir } : {}),
     });
-    emit({ type: "verification_run", spec, passed: result.passed, output: result.output });
+    emit({
+      type: "verification_run",
+      spec: loggedSpec(spec, deps.secrets ?? []),
+      passed: result.passed,
+      output: result.output,
+    });
     if (result.passed) return undefined;
 
     // The worktree goes and the branch stays: a fix task needs those commits, and
@@ -341,7 +400,7 @@ function createSession(task: Task, deps: DispatchDeps): Session {
     // is deliberately *not* removed, because whatever the worker left there is now
     // the only record of what it did.
     if (outcome.status === "empty") {
-      emit({ type: "merge_empty", branch: outcome.branch, reason: outcome.message });
+      emit({ type: "merge_empty", branch: outcome.branch, reason: clean(outcome.message) });
       return fail("empty_merge", outcome.message);
     }
 
@@ -354,8 +413,8 @@ function createSession(task: Task, deps: DispatchDeps): Session {
       files: outcome.status === "conflicted" ? outcome.files : [],
     });
     await cleanup();
-    move("conflicted", outcome.message);
-    return { status: "conflicted", failure: "merge_conflict", message: outcome.message };
+    move("conflicted", clean(outcome.message));
+    return { status: "conflicted", failure: "merge_conflict", message: clean(outcome.message) };
   };
 
   const work = async (): Promise<DispatchOutcome> => {
@@ -397,9 +456,15 @@ function createSession(task: Task, deps: DispatchDeps): Session {
       task,
       cwd,
       ...(artifactDir ? { artifactDir } : {}),
+      ...(deps.designNote ? { designNote: deps.designNote } : {}),
       signal: deps.signal,
     });
-    const report = await parseWorkerReport(run.raw, { reformat: deps.reformat });
+    // Before the parse, before the reformatter, before the event: a granted value in a
+    // worker's own message is one `echo` away and this is the last point at which the
+    // string is only in memory.
+    const report = await parseWorkerReport(redact(run.raw, deps.secrets ?? []), {
+      ...(deps.reformat ? { reformat: deps.reformat } : {}),
+    });
 
     emit({ type: "worker_report", report });
     for (const artifact of report.artifacts) emit({ type: "artifact_written", artifact });

@@ -4,9 +4,15 @@ Read before touching `src/loop/**` or `src/agents/**`. Cited from `CLAUDE.md`.
 
 ## The seams
 
-**`loop/calls.ts`** is the model-call interface (`research`, `intake`, `plan`, `synthesize`,
-`progress`, `judge`) — real in `loop/agentCalls.ts`, scripted in `testing/fixtures.ts`. Everything
-above it is tested with no model and no spend.
+**`loop/calls.ts`** is the model-call interface (`research`, `architect`, `intake`, `plan`,
+`critique`, `synthesize`, `progress`, `judge`) — real in `loop/agentCalls.ts`, scripted in
+`testing/fixtures.ts`. Everything above it is tested with no model and no spend.
+
+**The names live once, in `CALL_NAMES` (`domain/budget.ts`)**, and `loop/calls.test.ts` pins that
+constant to `keyof Calls`. `resilience.ts` kept a second copy behind a header claiming it enumerated
+the interface's keys, which is how `architect` was wrapped everywhere except the retry wrapper and
+arrived at the composition root as `undefined` with the whole suite green. Two lists may legitimately
+be shorter and only by `judge`: `missionStaffingSchema` and the compose card's `STAFFABLE`.
 
 **`agentCalls.ts` is the one file the fixture harness cannot cover**, since it is the thing the
 harness substitutes for. Five defects hid there behind 331 green tests until the first real-model
@@ -40,6 +46,15 @@ arrive when no loop is running and resume can only lift what the fold recorded. 
 `waiting`, where the scheduler owns the promotion. Pause works the same way: a folded flag the loop
 parks on, lifted by `orchestra resume`.
 
+**A missing credential parks nothing** (PLAN-NEXT 7.1). `raiseSecrets` in `prepare.ts` compares the
+architect's `envVars` against `Envelope.env` and emits `secret_required` plus a `question_asked` whose
+`blocks` list is **empty** — there is no task to park, because the plan is written after the architect
+answers, and the goal of the stage is that a mission never stops for a key. The inbox item is real and
+survives a restart on the ordinary fold path; the human's answer is either "mock it" (nothing changes)
+or `orchestra run --env NAME` on a fresh mission, since no code path widens an envelope. The names
+already raised are deduped against folded `state.secretsRequired`, which is what stops the architect's
+one retry opening a second item for the same variable.
+
 `cli/resumeCommand.ts` is the reconciliation and the continuation, extracted from `main.ts` so the
 terminal and the browser reach them by one path — the difference is the optional `RunSurface`,
 exactly as in `runMission` (which never closes a server it did not open).
@@ -49,7 +64,8 @@ no separate dispatch event, and the retry cap reads it.
 
 ## Criteria
 
-The outcome spec is written by the `research` call, and its `criteria` are deliberately typed
+The outcome spec is written by the `architect` call — by `research` only on a quick mission, where
+the scan is the sole pass and `solePass` says so — and its `criteria` are deliberately typed
 `unknown[]`. That is what keeps a criterion with no check *representable*, so `writeOutcomeSpec` can
 reject it — typing it as `Criterion[]` would make the system's most important validation untestable.
 **The cost is that `withSchema` renders it as an unconstrained array**, so the model is told nothing
@@ -62,6 +78,39 @@ and it is pure, because its two possible mistakes are opposite: never firing aga
 whose fix already merged (observed on run 8), and firing every round buys a judge call per criterion
 per round. `Task.completedRound` is folded from `task_status` the way `attempts` is —
 `task_replanned` spells it out rather than leaving it to the spread, since `patchTask` merges.
+
+**The gate is unchanged wherever the criteria came from.** `writeOutcomeSpec` did not move with the
+spec, and the one retry goes back to whichever call wrote the criteria it refused: the architect on
+an ordinary mission, the deep research pass on a quick one, which is that mission's escalation.
+
+**A judge-checked criterion is graded by a panel, and the fold applies only its answer**
+(PLAN-NEXT 6.1). `panelSeats(quick)` is one unlensed seat on a quick mission and three lensed ones
+otherwise; `criterion_checked` gained optional `panelSeat` and `lens`, and `fold` returns early on a
+seated event. Applying one would leave `met` reading whichever judge answered last — wrong on a third
+of 2-1 splits — and would move `lastCheckedRound` mid-panel, so `shouldCheckCriterion` would refuse
+to re-convene the panel that was still voting. **`web/app/state.ts` `apply` carries the same guard**
+— it is the log's second reader, and without it the dashboard paints each seat's own answer onto the
+criterion as the events stream. Quorum is `panelVerdict`: a strict majority of the
+votes actually cast, so 2-of-3 and 1-of-1 both fall out of one rule and there is no threshold beside
+the seat count to drift from it. The seats vote sequentially rather than in parallel: three calls in
+flight are three ways to be mid-spend when the first throws, and a `DecisionPointError` parks the
+mission with two verdicts nobody will read still being billed. Each seat's own evidence rides on its
+own event; the resolved verdict quotes the split, because a 2-1 resolved `true` with the dissent
+deleted reads as unanimous to anyone opening the mission later.
+
+**Deterministic checks run first and a failing one closes the round to panels** (6.2,
+`deterministicFirst`). The gated criteria are left untouched rather than marked unmet, so the panel
+convenes on its own next round once the command criterion is green — marking them would move
+`lastCheckedRound` and gate them for the rest of the mission, which is defect 32's shape.
+
+**A `scanner` check is a fourth kind and it is refused unless granted** (6.3). `Envelope.scanners`
+is the grant, `probeScanners` is the machine's half, `availableScanners` is the intersection, and
+`writeOutcomeSpec` refuses anything outside it — the criterion is refused when the spec is written
+rather than skipped when it fires, because a check that does not run is a criterion the mission can
+never legitimately report as met. The prompt half is `checkAuthoring(scanners)`, a function rather
+than a constant: a mission with no grant gets the text it got before scanners existed. Only the
+architect is ever offered one — `research` writes the spec on a quick mission, and a mission composed
+as small is the one not to spend a per-file security scan on.
 
 **A judge reads files, and a rubric has to be about them.** The judge gets `artifactPaths` and
 nothing else. Defect 22 was the judge having no tools to open them; defect 25 was synthesis writing
@@ -131,6 +180,11 @@ checkbox, and replanning over scan-depth findings would answer that with the sam
 
 Measured on the same goal (2026-08-15, `--plan-only`): 8,194 tokens / 1m53s quick against 15,921 /
 3m35s standard.
+
+**A quick mission also skips the architect and the plan critic** (PLAN-NEXT 5), which is what keeps
+that first number true. Neither skip relaxes anything: the outcome-spec gate is the same, and a
+one-task plan has no dependency to miss and no lease to collide with — the two objections the critic
+exists to raise.
 
 **The scan has to be told when it is the only research pass** — `ResearchInput.solePass`, derived in
 `buildResearchInput` from `depth === "scan" && mission.quick`. Without it the scan returns findings

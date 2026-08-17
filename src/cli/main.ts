@@ -8,9 +8,10 @@ import { doctor, formatReport } from "../config/doctor.js";
 import { ensureGitignored, ensurePrivateDir, forgetMission } from "../config/hygiene.js";
 import { createEventLog } from "../events/log.js";
 import { fold } from "../events/fold.js";
-import { missionMetrics } from "../events/metrics.js";
-import { renderMetrics } from "./render.js";
+import { missionMetrics, staffingMetrics } from "../events/metrics.js";
+import { renderMetrics, renderStaffing } from "./render.js";
 import { createAgentCalls } from "../loop/agentCalls.js";
+import { createProviderCalls, resolveStaffing, staffedCalls } from "../loop/providerCalls.js";
 import { type HumanPort } from "../loop/human.js";
 import { resilientCalls, type ResilientCallsDeps } from "../loop/resilience.js";
 import { saveProfile } from "../memory/profiles.js";
@@ -65,9 +66,21 @@ const USAGE = `orchestra — a looping orchestrator for any kind of task
                        own and ignore this; acp/opencode honours it.
     --orchestrator-model <m>
                        the model the decision points run on, for this mission only
+    --staff <pairs>    run named decision points on a verified model card, e.g.
+                       --staff research=<card>,plan=<card>. 'orchestra doctor' is what
+                       makes a card offerable; judge is not staffable.
+    --scan <name>      let this mission's outcome spec gate on a security scanner
+                       (deepsec). Off by default: a scan runs an AI agent over the
+                       changed files and costs real money per file.
+    --env <NAME>       let this mission's workers read one environment variable, by
+                       name (repeatable). Without it a mission plans against mocks and
+                       asks. The value is read from your shell, never typed here and
+                       never written to the log.
 
   metrics flags
-    --json             the same figures as JSON, for diffing two runs`;
+    --json             the same figures as JSON, for diffing two runs
+    --staffing         per decision point: the card it ran on, tokens, cost, wall time,
+                       and how often its answer was sent back`;
 
 /** Applied on every run, never once at init: the line somebody deleted is the case
  *  this exists for (§17). */
@@ -98,17 +111,39 @@ function assertHygiene(config: DiscoveredConfig, io: Io): void {
  * the mission is over. `--json` is the form that matters while developing — the point
  * of collecting any of this is diffing two runs of the same goal.
  */
-function metrics(missionId: string, asJson: boolean, config: DiscoveredConfig, io: Io): number {
+function metrics(
+  missionId: string,
+  options: { json: boolean; staffing: boolean },
+  config: DiscoveredConfig,
+  io: Io,
+): number {
   const events = createEventLog(missionDir(config.stateDir, missionId)).read();
   if (events.length === 0) {
     io.err(`No mission '${missionId}' under ${config.stateDir}.`);
     return 1;
   }
 
+  const state = fold(events);
   // Priced against the cards this machine has verified: a task that ran on a carded
   // model gets a dollar figure, everything else stays unpriced rather than zero (§9.5).
-  const figures = missionMetrics(fold(events), staffableCards(config.stateDir));
-  io.out(asJson ? JSON.stringify(figures, null, 2) : renderMetrics(figures).join("\n"));
+  const cards = staffableCards(config.stateDir);
+
+  // The evidence half of PLAN-NEXT 4: which decision point ran on which card, what it
+  // cost, and how often its answer came back. A separate report rather than four columns
+  // added to the mission summary, because it is read while tuning and the summary is read
+  // once at the end.
+  if (options.staffing) {
+    const figures = staffingMetrics(state, events, cards);
+    io.out(
+      options.json
+        ? JSON.stringify(figures, null, 2)
+        : renderStaffing(missionId, figures).join("\n"),
+    );
+    return 0;
+  }
+
+  const figures = missionMetrics(state, cards);
+  io.out(options.json ? JSON.stringify(figures, null, 2) : renderMetrics(figures).join("\n"));
   return 0;
 }
 
@@ -211,13 +246,40 @@ export async function main(
   // above the seam is what lets a test script a throwing decision point and assert the
   // mission parks. An injected `createCalls` is wrapped too: a test that substitutes
   // the model should still exercise the wiring a real run has.
-  const createCalls: RunDeps["createCalls"] = (discovered, onSpend) =>
-    resilientCalls(
-      deps.createCalls
-        ? deps.createCalls(discovered, onSpend)
-        : createAgentCalls({ config: discovered, onSpend }),
+  //
+  // Staffing is resolved here rather than inside either implementation, because this is
+  // the one place that holds both halves: the cards this machine probed and the keys
+  // `discoverConfig` read. An unresolvable card cannot reach here — `runMission` refuses
+  // it before the log opens — so a failure at this point means the two disagree, and
+  // falling back to the default model silently is exactly the "finished and switched off
+  // at once" shape the optional-`Deps` trap describes. It warns and runs unstaffed
+  // instead, which is visible.
+  const createCalls: RunDeps["createCalls"] = (discovered, onSpend, staffing) => {
+    const base = deps.createCalls
+      ? deps.createCalls(discovered, onSpend, staffing)
+      : createAgentCalls({ config: discovered, onSpend });
+
+    const resolved = resolveStaffing(
+      staffing ?? {},
+      staffableCards(config.stateDir, (message) => io.err(message)),
+      config.providerKeys ?? {},
+    );
+    if (!resolved.ok) io.err(`${resolved.problem} Running every decision point on the orchestrator model.`);
+
+    return resilientCalls(
+      resolved.ok
+        ? staffedCalls(base, resolved.byCall, (card) =>
+            createProviderCalls({
+              card,
+              apiKey: config.providerKeys?.[card.provider] ?? "",
+              config: discovered,
+              onSpend,
+            }),
+          )
+        : base,
       { onWarn: (message) => io.err(message), ...deps.resilience },
     );
+  };
 
   // Built for both `run` and `resume`, because a resumed mission may be sitting at
   // its own sign-off. The prompter opens stdin only if something actually asks, so
@@ -290,7 +352,12 @@ export async function main(
         io.err("Usage: orchestra metrics <missionId> [--json]");
         return 1;
       }
-      return metrics(missionId, rest.includes("--json"), config, io);
+      return metrics(
+        missionId,
+        { json: rest.includes("--json"), staffing: rest.includes("--staffing") },
+        config,
+        io,
+      );
     }
 
     case "resume": {

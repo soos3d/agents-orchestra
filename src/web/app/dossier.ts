@@ -37,7 +37,9 @@ const describeVerify = (verify: VerifySpec): string =>
     ? `command: ${verify.command}${verify.cwd ? ` (in the ${verify.cwd})` : ""}`
     : verify.kind === "judge"
       ? `judge: ${verify.rubric}`
-      : `none: ${verify.reason}`;
+      : verify.kind === "scanner"
+        ? `scanner: ${verify.scanner}`
+        : `none: ${verify.reason}`;
 
 /** Minutes, from the millisecond lease the runtime enforces. Rounded, because nobody
  *  is timing this to the second and "1800000 ms" is not a budget anybody reads. */

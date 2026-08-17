@@ -83,3 +83,99 @@ describe("writeOutcomeSpec", () => {
     assert.equal(result.ok, false);
   });
 });
+
+// PLAN-NEXT 6.3's "opt-in per mission, never default", as a property of the code. A
+// deepsec scan is an AI agent with shell access and hundreds of dollars of billing on a
+// large repository, so the criterion that names one is refused before anything runs
+// unless a human granted it and the machine answered for it.
+describe("writeOutcomeSpec and specialist scanners", () => {
+  const scanned = {
+    id: "c1",
+    statement: "the changed files carry no high-severity vulnerability",
+    check: { kind: "scanner", scanner: "deepsec" },
+  };
+
+  test("refuses a scanner nobody granted, which is every mission by default", () => {
+    const result = writeOutcomeSpec([scanned]);
+
+    assert.equal(result.ok, false);
+    assert.match(!result.ok ? result.rejected[0]!.reason : "", /no scanner is available/);
+    // Every message in this file names the fix.
+    assert.match(!result.ok ? result.rejected[0]!.reason : "", /command to run or a rubric/);
+  });
+
+  test("accepts it when the mission was granted that scanner", () => {
+    const result = writeOutcomeSpec([scanned], ["deepsec"]);
+
+    assert.equal(result.ok, true);
+    assert.equal(result.ok && result.criteria[0]!.check.kind, "scanner");
+  });
+
+  test("a granted scanner does not grant a different one", () => {
+    const result = writeOutcomeSpec([scanned], ["something-else"]);
+
+    assert.equal(result.ok, false);
+    assert.match(!result.ok ? result.rejected[0]!.reason : "", /only something-else is available/);
+  });
+
+  // The threshold is the criterion's to set and the schema's to constrain — an invented
+  // rung would be a filter that matches nothing.
+  test("an invented severity is refused by the schema", () => {
+    const result = writeOutcomeSpec(
+      [{ ...scanned, check: { kind: "scanner", scanner: "deepsec", minSeverity: "SPICY" } }],
+      ["deepsec"],
+    );
+
+    assert.equal(result.ok, false);
+  });
+});
+
+// PLAN-NEXT 7.2's validation half. Mock-first is a prompt convention and needs no new
+// machinery — but a convention whose output this gate refused would be a rule the system
+// teaches and then punishes, which is the P2 collision (defects 27, 41, 43) in its fourth
+// shape. This pins that a mocked build is judgeable exactly like anything else: the
+// criterion carries a check that runs, so it is accepted, and being *about* mocks is not
+// something this gate has an opinion on.
+describe("a mock-first criterion", () => {
+  test("is accepted when it carries a command that runs against the fake", () => {
+    const result = writeOutcomeSpec([
+      {
+        id: "mocked",
+        statement: "The payment client runs green against the in-repo fake",
+        check: { kind: "command", command: "node --test test/payments.test.js" },
+      },
+    ]);
+
+    assert.equal(result.ok, true);
+    assert.equal(result.ok && result.criteria[0]!.statement.includes("fake"), true);
+  });
+
+  test("is accepted when a judge grades the mocked build's artifacts", () => {
+    const result = writeOutcomeSpec([
+      {
+        id: "mocked-judge",
+        statement: "Every external dependency is behind an interface with a mock",
+        check: {
+          kind: "judge",
+          rubric: "src/payments/ defines an interface and a fake implementing it",
+        },
+      },
+    ]);
+
+    assert.equal(result.ok, true);
+  });
+
+  // The other half of the pair, and the one that keeps the convention honest: naming
+  // mocks does not buy a criterion out of carrying a check.
+  test("is refused like any other when it has no check", () => {
+    const result = writeOutcomeSpec([
+      {
+        id: "mocked-none",
+        statement: "Runs against mocks",
+        check: { kind: "none", reason: "we will look at it" },
+      },
+    ]);
+
+    assert.equal(result.ok, false);
+  });
+});

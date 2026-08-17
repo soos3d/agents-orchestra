@@ -62,6 +62,50 @@ export const missionRuntimeSchema = z.object({
   orchestratorModel: z.string().min(1).optional(),
 });
 
+/**
+ * Which model card runs which decision point (PLAN-NEXT 4.1).
+ *
+ * A card id per call, and absent everywhere is today's behaviour byte for byte: every
+ * decision point goes through `loop/agentCalls.ts` and the Agent SDK, exactly as it did
+ * before this field existed. A staffed one goes through `loop/providerCalls.ts` instead,
+ * on the provider the card names.
+ *
+ * It lives on the mission for `runtime`'s reason: `orchestra resume` rebuilds everything
+ * it knows by folding the log, so a routing choice held only in process memory would
+ * silently move a mission back onto the default model when it is carried on the next
+ * morning — and `metrics --staffing`, which exists to tell one staffing from another,
+ * would be comparing runs whose staffing it could not see.
+ *
+ * **`judge` is deliberately not staffable.** §3's one exception to the no-tools rule is
+ * the judge, which reads the artifacts it grades with `Read`/`Glob`/`Grep`; the provider
+ * path has no tools at all and cannot grow them from a chat completion. A judge there
+ * would answer `met: false` on work that was done correctly and say honestly that it
+ * could not open the files — defects 22 and 40, rebuilt one layer along. So the field
+ * is absent rather than accepted-and-ignored, and `staffableCalls` is the list every
+ * door checks against.
+ */
+export const missionStaffingSchema = z.object({
+  research: z.string().min(1).optional(),
+  /** The architect writes the outcome spec and a design note over what research found
+   *  (PLAN-NEXT 5.1). Staffable because it reasons over the prompt and reads nothing —
+   *  the judge test applied to a new call, and it passes. */
+  architect: z.string().min(1).optional(),
+  intake: z.string().min(1).optional(),
+  plan: z.string().min(1).optional(),
+  /** The plan critic (PLAN-NEXT 5.3), staffable for `architect`'s reason: it is handed
+   *  the breakdown and argues with it, and opens no file to do so. */
+  critique: z.string().min(1).optional(),
+  synthesize: z.string().min(1).optional(),
+  progress: z.string().min(1).optional(),
+});
+
+export type MissionStaffing = z.infer<typeof missionStaffingSchema>;
+
+/** The decision points a card may be staffed to, in `CALL_NAMES` order. Derived from the
+ *  schema rather than written out again, so the two cannot drift. */
+export const staffableCalls = (): (keyof MissionStaffing)[] =>
+  Object.keys(missionStaffingSchema.shape) as (keyof MissionStaffing)[];
+
 export const missionSchema = z.object({
   id: z.string().min(1),
   goal: z.string().min(1), // the human's original words, verbatim
@@ -91,6 +135,10 @@ export const missionSchema = z.object({
   /** How this mission runs, as chosen at compose time. Defaulted rather than optional
    *  so every reader gets an object and nothing has to ask whether it was recorded. */
   runtime: missionRuntimeSchema.default({}),
+  /** Which decision points run on a model card rather than through the Agent SDK.
+   *  Defaulted rather than optional for `runtime`'s reason: every reader gets an object
+   *  and nothing has to ask whether the choice was recorded. */
+  staffing: missionStaffingSchema.default({}),
   createdAt: z.string(),
   updatedAt: z.string(),
 });

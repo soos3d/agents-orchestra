@@ -338,6 +338,11 @@ describe("orchestra", () => {
         outOfScope: [],
         guesses: [],
       }),
+      architect: async () => ({
+        criteria: [aCriterion()],
+        designNote: "# Design\n\nAdd the route beside the others.",
+      }),
+      critique: async () => ({ objections: [] }),
       plan: async () => ({ tasks: [aPlannedTask({ id: "t1" })] }),
       synthesize: async () => anAgentSpec(),
       progress: async () => aProgressLedger(),
@@ -457,6 +462,13 @@ describe("orchestra", () => {
             intakeKnown.push(input.known);
             return { questions: [] };
           },
+          // The spec is the architect's since PLAN-NEXT 5.1; it carries this run's
+          // criteria so the assertion below is still about the saved skeleton not being
+          // a shortcut past either research call.
+          architect: async () => ({
+            criteria: [aCriterion({ id: "c1", statement: "researched afresh" })],
+            designNote: "# Design",
+          }),
         };
         return { calls, research, intakeKnown };
       }
@@ -642,6 +654,27 @@ describe("orchestra", () => {
         assert.ok(fs.existsSync(path.join(stateDir, "missions", missions[0]!, "events.jsonl")));
       });
 
+      // PLAN-NEXT 5.1, at the composition root. `writeDesign` is an optional dependency
+      // and prepare never touches disk, so the note exists only if `run` bound it — and a
+      // `design_written` event naming a file nothing wrote would put a dead path into
+      // every code worker's prompt.
+      test("writes the architect's design note where a worker can read it", async () => {
+        const io = capture();
+
+        await main(["run", "add a /health endpoint", "--plan-only"], io, { createCalls });
+
+        const missionId = fs.readdirSync(path.join(stateDir, "missions"))[0]!;
+        const written = loggedEvents().find((event) => event.type === "design_written") as
+          | { path: string; summary: string }
+          | undefined;
+
+        assert.ok(written, "no design note was written");
+        assert.equal(written.path, path.join(stateDir, "missions", missionId, "artifacts", "design.md"));
+        assert.match(fs.readFileSync(written.path, "utf8"), /Add the route beside the others/);
+        // §17: a mission's artifacts are not world-readable.
+        assert.equal(fs.statSync(written.path).mode & 0o777, 0o600);
+      });
+
       // An optional dependency is a place a feature can be finished and switched off
       // at once (defects 12b, 23, 24), and `recall` is one. So this asserts the
       // composition root that binds it, not the mechanism — which has its own tests.
@@ -701,13 +734,13 @@ describe("orchestra", () => {
       // A usable CI gate: `does this mission still plan sensibly?`
       test("exits non-zero when a criterion is rejected", async () => {
         const io = capture();
+        // The architect writes the outcome spec since PLAN-NEXT 5.1, so the uncheckable
+        // criterion has to come from there for the gate to be the thing under test.
         const vague: Calls = {
           ...createCalls(),
-          research: async () => ({
-            brief: "",
-            findings: [],
-            confidence: "low",
+          architect: async () => ({
             criteria: [{ id: "c1", statement: "make the checkout flow less janky" }],
+            designNote: "# Design",
           }),
         };
 

@@ -460,6 +460,7 @@ const aHealth = (patch: Partial<HealthFrame> = {}): HealthFrame => ({
   harnesses: [{ id: "cli/claude", models: ["opus", "sonnet", "haiku"], honoursModel: true }],
   orchestratorModels: ["opus", "sonnet", "haiku"],
   orchestratorModel: "opus",
+  modelCards: [],
   fixedModels: [{ name: "progress", model: "sonnet" }],
   ...patch,
 });
@@ -673,5 +674,28 @@ describe("the harness and model controls", () => {
     const html = drawCompose(aHealth());
 
     assert.ok(html.includes("Claude Agent SDK"));
+  });
+
+  // PLAN-NEXT 4.3. A machine with no probed provider gets no staffing rows at all rather
+  // than five dropdowns whose only entry is the default — an empty menu reads as a broken
+  // one, and every value the server would accept is in this frame or nowhere.
+  test("offers a staffing row per decision point once a card has been probed", () => {
+    const html = drawCompose(
+      aHealth({ modelCards: [{ id: "nebius/one", tier: "fast", provider: "nebius" }] }),
+    );
+
+    assert.ok(html.includes('id="compose-staff-plan"'), "plan cannot be staffed from the page");
+    assert.ok(html.includes('id="compose-staff-research"'));
+    // PLAN-NEXT 5's two decision points get a control for the same reason the others do:
+    // they reason over the prompt and open no file, so a chat completion can hold them.
+    assert.ok(html.includes('id="compose-staff-architect"'));
+    assert.ok(html.includes('id="compose-staff-critique"'));
+    assert.ok(html.includes("nebius/one"));
+    // A judge reads the artifacts it grades and a chat completion has no tools.
+    assert.ok(!html.includes('id="compose-staff-judge"'), "offered to staff the judge");
+  });
+
+  test("offers no staffing control at all on a machine with no cards", () => {
+    assert.ok(!drawCompose(aHealth()).includes("compose-staff-"));
   });
 });

@@ -47,6 +47,15 @@ const END = "# orchestra: end";
  * `.DS_Store` is not produced by a command at all — it is written by the Finder while
  * somebody watches a mission run, which makes it the one entry here that fails a task for
  * something the worker did not do.
+ *
+ * **A scanner criterion's leftovers are deliberately not here** (PLAN-NEXT 6.3). Running
+ * `deepsec process` in direct mode auto-creates its project store as a bare `data/` at
+ * the repository root — observed, not guessed — and `data/` is exactly the kind of
+ * plausible source-directory name the paragraph above refuses to un-count. `.deepsec/` is
+ * what its `init` flow creates, which this gate never runs, so excluding that would be a
+ * guess about a path nothing here produces. The scan runs between rounds in the
+ * operator's own checkout rather than inside a worktree, so what it leaves is untracked
+ * clutter a person can see and delete, not a file a worker stages.
  */
 export const DERIVED_PATHS: readonly string[] = [
   "__pycache__/",

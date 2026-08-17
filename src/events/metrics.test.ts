@@ -21,7 +21,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { spendPhase, zeroSpend, type Spend } from "../domain/budget.js";
 import { aCodeTask, aMission, aMissionState, anAgentSpec } from "../testing/fixtures.js";
-import { missionMetrics } from "./metrics.js";
+import { missionMetrics, staffingMetrics } from "./metrics.js";
 
 const spend = (wallMs: number, measured = 0, unmeasured = 0, dispatches = 1): Spend => ({
   ...zeroSpend(),
@@ -247,5 +247,96 @@ describe("missionMetrics pricing", () => {
 
   test("with no cards a mission reports exactly what it reported before", () => {
     assert.equal(missionMetrics(stateWith()).totals.costUsd, undefined);
+  });
+});
+
+// PLAN-NEXT 4.4. The report exists to answer "was the cheap model cheap?", and the two
+// ways it can lie are opposite: attributing a bill to the model that was *asked for*
+// rather than the one that answered, and showing tokens with no downstream column — a
+// planner whose plan is sent back twice costs the replans as well as its own tokens.
+describe("staffingMetrics", () => {
+  const card = {
+    id: "deepseek-ai/DeepSeek-V3",
+    provider: "nebius",
+    access: "api-key" as const,
+    tier: "worker" as const,
+    contextK: 128,
+    costInPer1M: 1,
+    costOutPer1M: 2,
+    verifiedBy: "probes/v3.json",
+  };
+
+  const stateWith = (staffing: Record<string, string> = {}, ranOn = card.id) =>
+    aMissionState({
+      mission: aMission({
+        staffing,
+        spendByPhase: {
+          [spendPhase("plan")]: {
+            ...zeroSpend(),
+            wallMs: 2_000,
+            dispatches: 1,
+            tokens: { measured: 3_000_000, estimated: 0, unmeasured: 0, input: 1_000_000, output: 1_000_000 },
+          },
+        },
+        modelByPhase: { [spendPhase("plan")]: ranOn },
+      }),
+    });
+
+  test("names both what a call was staffed to and what actually answered", () => {
+    const [row] = staffingMetrics(stateWith({ plan: card.id }), [], [card]);
+
+    assert.equal(row?.call, "plan");
+    assert.equal(row?.staffedTo, card.id);
+    assert.equal(row?.ranOn, card.id);
+    assert.equal(row?.costUsd, 3);
+  });
+
+  test("an unstaffed call is reported with no card rather than dropped", () => {
+    const [row] = staffingMetrics(stateWith(), [], [card]);
+
+    assert.equal(row?.staffedTo, undefined);
+    assert.equal(row?.measuredTokens, 3_000_000);
+  });
+
+  test("counts the send-backs a call's own answer drew", () => {
+    const events = [
+      { type: "signoff_revised" },
+      { type: "signoff_revised" },
+      { type: "outcome_spec_rejected" },
+    ];
+
+    assert.equal(staffingMetrics(stateWith({ plan: card.id }), events)[0]?.sentBack, 2);
+  });
+
+  // PLAN-NEXT 5.3: what the critic found is the number the stage exists to produce.
+  // Against `call:critique`'s own cost and the extra `call:plan` dispatch an objection
+  // buys, it is the whole of "is the critic paying for itself".
+  test("counts what the critic objected to", () => {
+    const state = aMissionState({
+      mission: aMission({
+        spendByPhase: { [spendPhase("critique")]: { ...zeroSpend(), dispatches: 1 } },
+      }),
+    });
+
+    const row = staffingMetrics(state, [{ type: "plan_critiqued" }])[0];
+
+    assert.equal(row?.call, "critique");
+    assert.equal(row?.sentBack, 1);
+  });
+
+  // A decision point with no verdict event of its own reports none rather than a `0`
+  // standing in for one — the same absent-is-not-zero rule the rest of this file follows.
+  test("a call with no verdict event of its own reports no count at all", () => {
+    const state = aMissionState({
+      mission: aMission({
+        spendByPhase: { [spendPhase("progress")]: { ...zeroSpend(), dispatches: 1 } },
+      }),
+    });
+
+    assert.equal(staffingMetrics(state, [])[0]?.sentBack, undefined);
+  });
+
+  test("a mission that recorded nothing reports nothing", () => {
+    assert.deepEqual(staffingMetrics(aMissionState(), []), []);
   });
 });

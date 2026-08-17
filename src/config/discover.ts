@@ -6,6 +6,7 @@
 // required environment variables on the happy path; env vars only ever override.
 import fs from "node:fs";
 import path from "node:path";
+import { SCANNERS } from "../domain/artifacts.js";
 import { repoRoot } from "../git/repo.js";
 import { PROVIDERS } from "../providers/openaiCompatible.js";
 import { CONTAINER_BACKENDS } from "../runtime/contained.js";
@@ -30,6 +31,14 @@ export interface DiscoveredConfig {
   /** `ORCHESTRA_CONTAINER_IMAGE`. Absent means containment is unavailable however many
    *  backends answered — there is no default image and there must not be one. */
   containerImage?: string;
+  /**
+   * Specialist scanners on PATH (PLAN-NEXT 6.3), by name.
+   *
+   * Optional for `containers`' reason: one producer, always set, and absent reads as
+   * none. A scanner missing here is a `scanner` check refused when the outcome spec is
+   * written, never a check that quietly passes.
+   */
+  scanners?: string[];
   orchestratorModel: string;
   maxConcurrency: number;
   /** An OpenClaw Gateway to mirror the inbox to, if the user runs one (§2). Never
@@ -138,6 +147,31 @@ export async function probeContainers(): Promise<string[]> {
 }
 
 /**
+ * Which specialist scanners this machine can actually start (PLAN-NEXT 6.3).
+ *
+ * `--version` and not `which`, for `probeContainers`' reason one notch weaker: the
+ * binary being on PATH is the cheap question and running is the real one, and deepsec is
+ * distributed as an `npx`-first tool whose shim can exist without the package resolving.
+ * `--version` prints a bare version and exits 0 offline with no credentials, which makes
+ * it the one thing about deepsec that can be probed for free — a scan is an AI agent run
+ * that costs real money, so nothing here ever starts one.
+ *
+ * A scanner that does not answer is simply not offered: the `scanner` variant is refused
+ * when the outcome spec is written, and a mission that never asked for one is unchanged.
+ */
+export async function probeScanners(): Promise<string[]> {
+  const found = await Promise.all(
+    SCANNERS.map(async (scanner): Promise<string | undefined> => {
+      const result = await run(scanner, ["--version"], { timeoutMs: 30_000 }).catch(
+        () => undefined,
+      );
+      return result?.code === 0 && result.stdout.trim() !== "" ? scanner : undefined;
+    }),
+  );
+  return found.filter((scanner): scanner is string => scanner !== undefined);
+}
+
+/**
  * Which model providers this machine has a key for, by provider name (PLAN-NEXT 2.2).
  *
  * Pure over an environment rather than reading `process.env` itself, so what a machine
@@ -183,6 +217,7 @@ export async function discoverConfig(cwd = process.cwd()): Promise<DiscoveredCon
     verify: root ? discoverVerifyCommand(root) : undefined,
     agents: await probeAgents(),
     containers: await probeContainers(),
+    scanners: await probeScanners(),
     // No default, deliberately: an image has to contain the agent CLI and none has been
     // verified for this project, so inventing a name here would be a menu entry nobody
     // probed (`runtime/contained.ts`, and the `MODELS_BY_VENDOR.openai` discipline).

@@ -29,6 +29,7 @@
 // ACP session's own timeout is what bounds the wait. A second timer would race the
 // first, and the one that fired would leave the other's promise unsettled.
 import { type EventInput } from "../../events/schema.js";
+import { redact, type Secret } from "../redact.js";
 import { type PermissionRequest } from "./permissions.js";
 
 /** What a surface is shown. `requestId` rides along because the answer comes back by
@@ -47,6 +48,17 @@ export interface PermissionPortDeps {
    * amounts to, and an absent asker denies rather than waits.
    */
   ask?: (request: PermissionAsk) => Promise<boolean>;
+  /**
+   * The values of the variables this mission granted (PLAN-NEXT 7.3).
+   *
+   * A permission request quotes the tool call it is asking about, and an agent holding a
+   * credential writes it into the call — `curl -H "Authorization: Bearer …"` is the
+   * ordinary shape of the request this channel exists for. `detail` is emitted as
+   * `permission_requested` and rendered on whatever surface answers, so it is scrubbed
+   * once here, before either. The human loses nothing: `[redacted:STRIPE_KEY]` says
+   * exactly what is in the call, which is what they are deciding about.
+   */
+  secrets?: readonly Secret[];
   onWarn?: (message: string) => void;
 }
 
@@ -96,8 +108,17 @@ export function createPermissionPort(deps: PermissionPortDeps): PermissionPort {
     resolve,
     pending: () => [...waiting.keys()],
 
-    requestPermission(taskId: string, request: PermissionRequest): Promise<boolean> {
+    requestPermission(taskId: string, incoming: PermissionRequest): Promise<boolean> {
       const requestId = `perm-${taskId}-${++issued}`;
+      const request: PermissionRequest = {
+        ...incoming,
+        // Both fields, not just the detail. OpenCode's permission frame carries no tool
+        // name and its later updates rewrite the title to *what the tool is doing* —
+        // `bash` became `ls -la` in the capture — so `tool` is a command string often
+        // enough that scrubbing one of the two would be arbitrary.
+        tool: redact(incoming.tool, deps.secrets ?? []),
+        detail: redact(incoming.detail, deps.secrets ?? []),
+      };
 
       deps.emit({
         type: "permission_requested",

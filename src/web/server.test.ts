@@ -12,7 +12,7 @@ import { WebSocket } from "ws";
 import { missionCreated, stamp } from "../testing/fixtures.js";
 import { BUNDLE_ROUTE } from "./assets.js";
 import { type Event, type EventInput } from "../events/schema.js";
-import { isOfferedRuntime, parseClientMessage } from "./protocol.js";
+import { isOfferedRuntime, isOfferedStaffing, parseClientMessage } from "./protocol.js";
 import { eventsSince, HOST, isAllowedOrigin, startWebServer, type RunningServer } from "./server.js";
 import { createWebHuman } from "./webHuman.js";
 
@@ -639,5 +639,43 @@ describe("isOfferedRuntime", () => {
 
     assert.equal(result.ok, false);
     assert.match(result.ok === false ? result.problem : "", /no agent CLI is installed/);
+  });
+});
+
+// The same rule for the card menu (PLAN-NEXT 4.3), and the stronger case for it: a card
+// id decides which provider this process posts a prompt and an API key to. Unlike the
+// model menus, empty is never permissive here — a card exists only because
+// `orchestra doctor` reached it, so "no cards" means nothing can legitimately be staffed.
+describe("isOfferedStaffing", () => {
+  const health = {
+    modelCards: [
+      { id: "deepseek-ai/DeepSeek-V3", tier: "worker", provider: "nebius" },
+      { id: "Qwen/Qwen3-4B-fast", tier: "fast", provider: "nebius" },
+    ],
+  };
+
+  test("staffing nothing is always allowed", () => {
+    assert.deepEqual(isOfferedStaffing(health, {}), { ok: true });
+  });
+
+  test("accepts cards the server itself sent", () => {
+    assert.equal(
+      isOfferedStaffing(health, { plan: "deepseek-ai/DeepSeek-V3", progress: "Qwen/Qwen3-4B-fast" }).ok,
+      true,
+    );
+  });
+
+  test("refuses a card that was never offered, and names the ones that were", () => {
+    const result = isOfferedStaffing(health, { plan: "gpt-9-turbo" });
+
+    assert.equal(result.ok, false);
+    assert.match(result.ok === false ? result.problem : "", /deepseek-ai\/DeepSeek-V3/);
+  });
+
+  test("with no cards probed, nothing may be staffed at all", () => {
+    const result = isOfferedStaffing({ modelCards: [] }, { plan: "deepseek-ai/DeepSeek-V3" });
+
+    assert.equal(result.ok, false);
+    assert.match(result.ok === false ? result.problem : "", /probed no provider/);
   });
 });

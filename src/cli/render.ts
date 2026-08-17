@@ -18,8 +18,9 @@ import {
   type Guess,
   type PlannedTask,
 } from "../domain/ledger.js";
+import { DEFAULT_MIN_SEVERITY } from "../domain/artifacts.js";
 import { type Estimate } from "../domain/mission.js";
-import { type MissionMetrics, type TokenBreakdown } from "../events/metrics.js";
+import { type MissionMetrics, type StaffingMetrics, type TokenBreakdown } from "../events/metrics.js";
 import { type SignoffPresentation } from "../loop/human.js";
 
 /**
@@ -105,6 +106,38 @@ export function renderMetrics(metrics: MissionMetrics): string[] {
   return lines;
 }
 
+/**
+ * `orchestra metrics <id> --staffing`: which decision point ran on what, and what came of
+ * it (PLAN-NEXT 4.4).
+ *
+ * Every row says what it was *staffed to* as well as what *ran*, because the two differ
+ * whenever a transport picks its own model, and a report that showed only one of them
+ * would be the 5× pricing error again in a table. `sent back` is printed even at zero
+ * where the event exists for that call — this is a comparison report, and a blank cell
+ * would read as "not applicable" beside a row where it is not.
+ */
+export function renderStaffing(missionId: string, rows: readonly StaffingMetrics[]): string[] {
+  if (rows.length === 0) {
+    return [`STAFFING ${missionId}`, "", "  no decision point recorded any spend."];
+  }
+
+  return [
+    `STAFFING ${missionId}`,
+    "",
+    ...rows.map((row) => {
+      const on = row.staffedTo ?? "orchestrator model";
+      const ran = row.ranOn && row.ranOn !== row.staffedTo ? `  ran on ${row.ranOn}` : "";
+      const cost = row.costUsd === undefined ? "" : `  $${row.costUsd.toFixed(4)}`;
+      const back = row.sentBack === undefined ? "" : `  ${count(row.sentBack, "send-back", "send-backs")}`;
+      return (
+        `  ${row.call.padEnd(11)} ${on.padEnd(34)} ` +
+        `${count(row.calls, "call", "calls").padEnd(9)} ${duration(row.wallMs).padStart(8)}  ` +
+        `${group(row.measuredTokens).padStart(9)} tokens${kinds(row)}${cost}${back}${ran}`
+      );
+    }),
+  ];
+}
+
 /** The kinds as a trailing clause, or nothing at all when the transport did not report
  *  them. Absent is not zero (§9.5), and an "in 0 / out 0" suffix would say otherwise. */
 function kinds(row: TokenBreakdown): string {
@@ -171,7 +204,9 @@ const describeCheck = (criterion: Criterion): string =>
     ? `command: ${criterion.check.command}`
     : criterion.check.kind === "judge"
       ? `judge: ${criterion.check.rubric}`
-      : `none: ${criterion.check.reason}`;
+      : criterion.check.kind === "scanner"
+        ? `scanner: ${criterion.check.scanner} at ${criterion.check.minSeverity ?? DEFAULT_MIN_SEVERITY} or above`
+        : `none: ${criterion.check.reason}`;
 
 /** Guesses lead, because they are where a plausible-looking plan goes wrong quietly
  *  (§13) and the human is the only one who can catch it. */

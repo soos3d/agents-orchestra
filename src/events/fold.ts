@@ -29,6 +29,9 @@ export interface InboxItem {
   openedAt: string;
   resolvedAt?: string;
   approved?: boolean;
+  /** Questions only: raised for information and never waited on, so nothing gates on
+   *  it (`question_asked.advisory`). Absent is the ordinary question, which does. */
+  advisory?: boolean;
 }
 
 export interface Note {
@@ -80,6 +83,18 @@ export interface MissionState {
   brief: string;
   outOfScope: string[];
   /**
+   * The architect's design note: where it is, and the bounded projection of it that the
+   * planner sees (PLAN-NEXT 5.1, 5.2).
+   *
+   * Folded rather than passed along for `brief`'s reason — a mission can be planned on
+   * one run and dispatched on another, and a worker whose prompt names the note has to
+   * get the path from the log rather than from a variable that died with the process.
+   *
+   * Absent on a quick mission and on every mission planned before the architect existed,
+   * which is what keeps both of those unchanged: no note, no line in anyone's prompt.
+   */
+  design?: { path: string; summary: string };
+  /**
    * What a replan has asked to change about the frozen criteria, until a human
    * answers (§3).
    *
@@ -90,6 +105,16 @@ export interface MissionState {
    * since (§4.0).
    */
   pendingCriteriaChange?: { diff: CriterionDiff[]; reasoning: string; requestedAt: string };
+  /**
+   * Environment variable *names* the design said the work needs and the envelope does
+   * not grant (PLAN-NEXT 7.1). Never values: the log is a file a human copies into a
+   * bug report.
+   *
+   * Folded rather than passed along for `brief`'s reason — the question raised beside
+   * it may be answered when no loop is running, and whoever resumes has to be able to
+   * say which credentials this mission is mocking without re-reading the design note.
+   */
+  secretsRequired: string[];
   lastSeq: number;
 }
 
@@ -208,6 +233,9 @@ const handlers: Handlers = {
     state.brief = event.brief;
     recordSpend(state, "research", event.spend);
   },
+  design_written: (state, event) => {
+    state.design = { path: event.path, summary: event.summary };
+  },
 
   // ── the contract ───────────────────────────────────────────────────
   outcome_spec_written: (state, event) => {
@@ -219,6 +247,17 @@ const handlers: Handlers = {
     };
   },
   outcome_spec_rejected: noop, // the rejection drives the retry; no state to change
+  // The critic's objections drive the one replan inside the call that raised them, so
+  // nothing after it reads them from state. Recorded for the reader and for `metrics`,
+  // which is what the event is for.
+  plan_critiqued: noop,
+  // Union rather than assignment (PLAN-NEXT 7.1): the architect names what it needs on
+  // the first pass and the retry names it again, and a mission that asked for
+  // STRIPE_KEY and later for SLACK_TOKEN needs both on the screen. Names only — the
+  // event carries no value, so neither does this.
+  secret_required: (state, event) => {
+    state.secretsRequired = [...new Set([...state.secretsRequired, ...event.names])];
+  },
   signoff_requested: noop,
   signoff_granted: (state, event) => {
     state.mission = { ...state.mission, signedOffAt: event.at, unattended: event.unattended };
@@ -403,12 +442,19 @@ const handlers: Handlers = {
       [requireTaskId(event)]: { passed: event.passed, output: event.output },
     };
   },
-  criterion_checked: (state, event) =>
+  // A seat is one voice and the criterion's state is the panel's answer, so a seated
+  // event is a record and not a patch (PLAN-NEXT 6.1). Applying it would leave `met`
+  // reading whichever judge happened to answer last, which on a 2-1 split is the wrong
+  // one a third of the time — and would set `lastCheckedRound` mid-panel, so
+  // `shouldCheckCriterion` would refuse to re-convene the panel that was still voting.
+  criterion_checked: (state, event) => {
+    if (event.panelSeat !== undefined) return;
     patchCriterion(state, event.criterionId, {
       met: event.met,
       evidence: event.evidence,
       lastCheckedRound: state.mission.round,
-    }),
+    });
+  },
 
   // ── git ────────────────────────────────────────────────────────────
   worktree_created: (state, event) => patchTask(state, requireTaskId(event), {
@@ -451,6 +497,7 @@ const handlers: Handlers = {
       taskId: event.taskId,
       summary: event.question,
       openedAt: event.at,
+      ...(event.advisory ? { advisory: true } : {}),
     });
     for (const id of event.blocks) {
       const task = state.tasks.find((t) => t.id === id);
@@ -553,6 +600,10 @@ function seed(event: Extract<Event, { type: "mission_created" }>): MissionState 
       // Absent on any log written before the choice existed, and an empty object is the
       // honest reading: those missions ran on whatever the machine offered.
       runtime: event.runtime ?? {},
+      // Absent on every log written before per-decision-point staffing existed, and an
+      // empty object is the honest reading: those missions ran every decision point
+      // through the Agent SDK, which is exactly what an empty staffing means here.
+      staffing: event.staffing ?? {},
       createdAt: event.at,
       updatedAt: event.at,
     },
@@ -569,6 +620,7 @@ function seed(event: Extract<Event, { type: "mission_created" }>): MissionState 
     paused: false,
     brief: "",
     outOfScope: [],
+    secretsRequired: [],
     lastSeq: event.seq,
   };
 }

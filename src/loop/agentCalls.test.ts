@@ -14,7 +14,11 @@ import {
   queryOptions,
   readableDirectories,
   type RunQuery,
+  checkAuthoring,
+  judgeSystemPrompt,
 } from "./agentCalls.js";
+import { PANEL_LENSES } from "./criteria.js";
+import { judgeLens } from "./prompts.js";
 import { type ProgressInput } from "./calls.js";
 
 const config = { orchestratorModel: "fable", cwd: "/work/repo" };
@@ -505,18 +509,21 @@ describe("createAgentCalls", () => {
     // Defect 44's other half. The tokenizer now behaves exactly like a shell, which
     // means a check written with `\n` between statements fails to parse — correctly,
     // and just as loudly as before. The only way that stops costing missions is if the
-    // three calls that author a `command` check are told the argument is passed
-    // verbatim. A real mission wrote `python3 -c "import sys;\nfor a in ...:"`, which
+    // calls that author a `command` check are told the argument is passed verbatim.
+    // Four of them since PLAN-NEXT 5.1 — the outcome spec moved to `architect`, and a
+    // call that writes criteria writes checks. A real mission wrote `python3 -c "import sys;\nfor a in ...:"`, which
     // no shell would have run either, and the criterion could never be met.
     test("tells every call that authors a check that arguments are passed verbatim", async () => {
       const { run, seen } = transport([
         JSON.stringify({ brief: "b", confidence: "low", findings: [], criteria: [] }),
+        JSON.stringify({ criteria: [], designNote: "# Design" }),
         JSON.stringify({ tasks: [aPlannedTask()] }),
         JSON.stringify(anAgentSpec()),
       ]);
       const calls = createAgentCalls({ config, runQuery: run });
 
       await calls.research({ question: "q", sources: ["web"], depth: "deep" });
+      await calls.architect({ goal: "g", brief: "b", findings: [] });
       await calls.plan({ goal: "g", ledger: aProgressInput() as never, envelope: {} as never });
       await calls.synthesize({
         task: aPlannedTask(),
@@ -527,13 +534,142 @@ describe("createAgentCalls", () => {
         models: [],
       });
 
-      assert.equal(seen.systemPrompts.length, 3);
+      assert.equal(seen.systemPrompts.length, 4);
       for (const prompt of seen.systemPrompts) {
         assert.match(prompt, /exactly\s+as written/, "a check-authoring call was not told");
         // The concrete consequence, not just the rule — a model that is told "no shell"
         // still reads `\n` as a line break, because in most contexts it is one.
         assert.match(prompt, /line\s+break/);
       }
+    });
+
+    // PLAN-NEXT 5.1. The architect writes two things and only one of them is validated by
+    // a later gate: an answer with criteria and no design note passes `writeOutcomeSpec`
+    // and leaves every worker without the one document that says what the whole change
+    // is. So the schema requires it, here, where the reformat attempt can still fix it.
+    test("architect returns the outcome spec and a design note, and refuses to skip the note", async () => {
+      const { run } = transport([
+        JSON.stringify({ criteria: [aCriterion()], designNote: "# Design\n\nOne module." }),
+      ]);
+      const calls = createAgentCalls({ config, runQuery: run });
+
+      const result = await calls.architect({ goal: "g", brief: "b", findings: [] });
+
+      assert.equal(result.criteria?.length, 1);
+      assert.match(result.designNote, /One module/);
+    });
+
+    // A real run on 2026-08-16 returned a design note whose headings and bullets were
+    // separated by spaces: 1,696 characters on one line, which is a document nobody can
+    // read. Nothing about it is invalid, so there is nothing to reject — the fix is that
+    // the call is told what a line break is inside a JSON string.
+    test("the architect is told its note needs real line breaks", async () => {
+      const { run, seen } = transport([JSON.stringify({ criteria: [], designNote: "# D" })]);
+      const calls = createAgentCalls({ config, runQuery: run });
+
+      await calls.architect({ goal: "g", brief: "b", findings: [] });
+
+      assert.match(seen.systemPrompts[0]!, /real line breaks/);
+    });
+
+    // PLAN-NEXT 7.2. Mock-first is a convention and its whole enforcement is this
+    // paragraph, so a prompt that lost it would be a stage silently undone — the plan
+    // would go back to putting the live integration first and every worker would be
+    // asked to do it with no credentials and no network.
+    test("the architect is told to design against mocks and to name env vars", async () => {
+      const { run, seen } = transport([JSON.stringify({ criteria: [], designNote: "# D" })]);
+      const calls = createAgentCalls({ config, runQuery: run });
+
+      await calls.architect({ goal: "g", brief: "b", findings: [] });
+
+      const prompt = seen.systemPrompts[0]!;
+      assert.match(prompt, /mocks first/i);
+      assert.match(prompt, /last\* task/, "the real integration was not put last");
+      assert.match(prompt, /envVars/);
+      // The half a leak would come through: a model that reads this as "list what the
+      // integration needs" and writes the key itself.
+      assert.match(prompt, /Never a value/);
+    });
+
+    // The schema is the second half of that pair (PLAN-NEXT 7.1). A model that answers
+    // `STRIPE_KEY=sk_live_…` would put a live key into `secret_required` and into the
+    // question raised beside it, so the boundary refuses it rather than trusting the
+    // sentence above.
+    test("an envVars entry carrying a value is refused at the boundary", async () => {
+      const { run, seen } = transport([
+        JSON.stringify({ criteria: [], designNote: "# D", envVars: ["STRIPE_KEY=sk_live_9d8"] }),
+        JSON.stringify({ criteria: [], designNote: "# D", envVars: ["STRIPE_KEY"] }),
+      ]);
+      const calls = createAgentCalls({ config, runQuery: run });
+
+      const result = await calls.architect({ goal: "g", brief: "b", findings: [] });
+
+      assert.equal(seen.prompts.length, 2, "a name=value pair was accepted");
+      assert.deepEqual(result.envVars, ["STRIPE_KEY"]);
+    });
+
+    test("an architect answer with no design note is sent back once", async () => {
+      const { run, seen } = transport([
+        JSON.stringify({ criteria: [aCriterion()] }),
+        JSON.stringify({ criteria: [aCriterion()], designNote: "# Design" }),
+      ]);
+      const calls = createAgentCalls({ config, runQuery: run });
+
+      const result = await calls.architect({ goal: "g", brief: "b", findings: [] });
+
+      assert.equal(seen.prompts.length, 2, "the missing design note was accepted");
+      assert.match(seen.prompts[1]!, /rejected/);
+      assert.equal(result.designNote, "# Design");
+    });
+
+    // The criteria stay an open array here for the reason they were open on `research`:
+    // an uncheckable criterion has to *reach* `writeOutcomeSpec` to be refused by it, and
+    // a schema that dropped it at the boundary would make the system's most important
+    // validation untestable.
+    test("architect criteria are not typed shut at the boundary", async () => {
+      const { run } = transport([
+        JSON.stringify({ criteria: [{ id: "c1", statement: "make it nicer" }], designNote: "# D" }),
+      ]);
+      const calls = createAgentCalls({ config, runQuery: run });
+
+      const result = await calls.architect({ goal: "g", brief: "b", findings: [] });
+
+      assert.equal(result.criteria?.length, 1);
+    });
+
+    // PLAN-NEXT 5.3. An empty list is the answer a sound plan gets and the answer the
+    // critic should give most of the time — a schema that refused it would buy a reformat
+    // call to be told the same thing.
+    test("critique may object to nothing", async () => {
+      const { run } = transport([JSON.stringify({ objections: [] })]);
+      const calls = createAgentCalls({ config, runQuery: run });
+
+      const result = await calls.critique({ goal: "g", tasks: [aPlannedTask()], criteria: [] });
+
+      assert.deepEqual(result.objections, []);
+    });
+
+    test("critique returns objections against a task, and no plan of its own", async () => {
+      const { run, seen } = transport([
+        JSON.stringify({
+          objections: [
+            { kind: "colliding-lease", detail: "t1 and t2 both write src/api.ts", taskId: "t2" },
+          ],
+        }),
+      ]);
+      const calls = createAgentCalls({ config, runQuery: run });
+
+      const result = await calls.critique({
+        goal: "g",
+        tasks: [aPlannedTask({ id: "t1" }), aPlannedTask({ id: "t2" })],
+        criteria: [aCriterion()],
+      });
+
+      assert.equal(result.objections[0]?.taskId, "t2");
+      assert.equal("tasks" in result, false, "the critic returned a plan; that is the planner's job");
+      // No tools, like every decision point but `judge` — the critic argues with what the
+      // prompt carries, which is what makes it staffable to a chat completion at all.
+      assert.deepEqual(seen.tools[0], []);
     });
 
     test("plan returns tasks, and may carry a proposed criteria change", async () => {
@@ -736,5 +872,128 @@ describe("createAgentCalls", () => {
     assert.match(seen.prompts[0] ?? "", /"round": 1/);
     assert.match(seen.prompts[0] ?? "", /GET \/health/);
     assert.match(seen.systemPrompts[0] ?? "", /isInLoop/);
+  });
+});
+
+// The failure mode: a panel silently changing what a *quick* mission pays for. The
+// lens is what makes a seat's prompt different, so "quick judge spend unchanged" is
+// either an equality the suite holds or a number somebody remembers measuring once.
+describe("judgeSystemPrompt", () => {
+  test("no lens is the judge prompt a mission got before panels existed", () => {
+    const base = judgeSystemPrompt();
+
+    assert.equal(judgeSystemPrompt(undefined), base);
+    assert.match(base, /You decide whether a mission criterion is met/);
+    assert.doesNotMatch(base, /Your seat on this panel/);
+  });
+
+  test("a lens lands before the schema, which is last in every prompt in this file", () => {
+    for (const lens of PANEL_LENSES) {
+      const prompt = judgeSystemPrompt(lens);
+
+      assert.ok(prompt.includes(judgeLens(lens)), `${lens} is not in its own seat's prompt`);
+      assert.ok(
+        prompt.indexOf(judgeLens(lens)) < prompt.indexOf("Answer with"),
+        `${lens} lands after the schema instruction, where it reads as a note about JSON`,
+      );
+    }
+  });
+
+  // It arrives from the folded log. A log written by a newer build naming a lens this
+  // one does not have must still be gradeable — the narrowing is what is lost, not the
+  // verdict.
+  test("an unknown lens is dropped rather than pasted in raw", () => {
+    assert.equal(judgeSystemPrompt("vibes"), judgeSystemPrompt());
+  });
+});
+
+// A prompt and its validation move together — and a real run proved that half of the
+// pairing is a cost as well as a rule. The scanner paragraph first lived in the shared
+// check-authoring constant, so every criteria-authoring call carried it; the architect on
+// `Qwen/Qwen3-30B-A3B-Instruct-2507` then returned a design note and no criteria at all,
+// twice, and the mission ended in `writeOutcomeSpec`. What is asserted here is that a
+// mission granted no scanner sees the text it saw before 6.3 existed.
+describe("the scanner offer in the criteria-authoring prompts", () => {
+  const authoring = () => {
+    const seen: string[] = [];
+    const calls = createAgentCalls({
+      config,
+      runQuery: async ({ systemPrompt }) => {
+        seen.push(systemPrompt);
+        return {
+          text: JSON.stringify({
+            criteria: [],
+            designNote: "x",
+            findings: [],
+            brief: "",
+            confidence: "high",
+          }),
+          spend: { tokens: { measured: 0, estimated: 0, unmeasured: 0 }, wallMs: 0, dispatches: 0 },
+        };
+      },
+    });
+    return { seen, calls };
+  };
+
+  // The prose *and* the shape are conditional, and the second half is a correction.
+  //
+  // It was prose alone at first, on the reasoning that a narrowed schema is a second
+  // criterion type to keep in step with the first and `writeOutcomeSpec` already refuses
+  // what the prose does not offer. A real mission disproved the premise: granted no
+  // scanner, the architect read `scanner` off the rendered union — where it was still a
+  // legal-looking variant — wrote a deepsec check anyway, and seq 18 is the
+  // `outcome_spec_rejected` that cost its one retry. The guard held and the offer was
+  // wrong. Withholding the paragraph while still rendering the shape is half a refusal.
+  //
+  // The maintenance objection is answered by derivation rather than dismissed:
+  // `criterionSchemaWithoutScanner` is `criterionSchema.extend`ed over shared union
+  // members, so the two cannot drift. And the fix is a *removal* — the scanner paragraph
+  // written unconditionally is what made Qwen return no criteria at all, so a prompt that
+  // offers too much is corrected with less text, never with a sentence forbidding
+  // something.
+  test("a mission with no grant is shown no scanner, in prose or in shape", async () => {
+    const { seen, calls } = authoring();
+
+    await calls.research({ question: "q", sources: ["codebase"], depth: "deep" });
+    await calls.architect({ goal: "g", brief: "b", findings: [] });
+
+    assert.equal(seen.length, 2);
+    for (const prompt of seen) {
+      assert.doesNotMatch(prompt, /may also use a `scanner` check/);
+      assert.doesNotMatch(prompt, /security criterion/);
+      // The half that was missing: the rendered union must not name the variant either.
+      assert.doesNotMatch(prompt, /scanner/i);
+    }
+  });
+
+  // The other direction, or the narrowing is unpinned: a granted mission still gets the
+  // variant in the shape it is being invited to use, not only in the paragraph.
+  test("a granted mission is shown the scanner variant in the rendered union", async () => {
+    const { seen, calls } = authoring();
+
+    await calls.architect({ goal: "g", brief: "b", findings: [], scanners: ["deepsec"] });
+
+    assert.match(seen[0]!, /"kind":\s*"scanner"|kind: "scanner"|scanner/);
+    assert.match(seen[0]!, /minSeverity/);
+  });
+
+  // `research` writes the outcome spec only on a quick mission, which is the mission not
+  // to spend a per-file security scan on. It is never offered one, grant or no grant.
+  test("the offer reaches the architect and only the architect", async () => {
+    const { seen, calls } = authoring();
+
+    await calls.architect({ goal: "g", brief: "b", findings: [], scanners: ["deepsec"] });
+
+    assert.match(seen[0]!, /may also use a `scanner` check/);
+    assert.match(seen[0]!, /"scanner":"deepsec"/);
+    assert.match(seen[0]!, /CRITICAL.*HIGH_BUG.*LOW/s);
+    // Short, positive and concrete: the version that broke the model was none of those.
+    assert.match(seen[0]!, /security criterion and nothing else/);
+  });
+
+  test("checkAuthoring is unchanged when nothing was granted", () => {
+    assert.equal(checkAuthoring(), checkAuthoring([]));
+    assert.doesNotMatch(checkAuthoring(), /scanner/i);
+    assert.match(checkAuthoring(["deepsec"]), /deepsec/);
   });
 });

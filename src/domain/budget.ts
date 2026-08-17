@@ -46,7 +46,9 @@ export type Budget = z.infer<typeof budgetSchema>;
 export type Spend = z.infer<typeof spendSchema>;
 
 /**
- * The decision points by name, at runtime (§3).
+ * The decision points by name, at runtime (§3). Eight since PLAN-NEXT 5: `architect`
+ * writes the outcome spec the deep research pass used to, and `critique` attacks the
+ * plan before it is validated.
  *
  * They live here rather than beside the `Calls` interface for a layering reason:
  * `spend_recorded.phase` is read by a breakdown in `events/`, and `events/` never
@@ -57,8 +59,10 @@ export type Spend = z.infer<typeof spendSchema>;
  */
 export const CALL_NAMES = [
   "research",
+  "architect",
   "intake",
   "plan",
+  "critique",
   "synthesize",
   "progress",
   "judge",

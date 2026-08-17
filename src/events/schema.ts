@@ -20,7 +20,12 @@ import {
   progressLedgerSchema,
   taskLedgerSchema,
 } from "../domain/ledger.js";
-import { estimateSchema, missionRuntimeSchema, missionStatusSchema } from "../domain/mission.js";
+import {
+  estimateSchema,
+  missionRuntimeSchema,
+  missionStaffingSchema,
+  missionStatusSchema,
+} from "../domain/mission.js";
 import {
   agentSpecSchema,
   taskSchema,
@@ -69,6 +74,14 @@ const missionLifecycle = [
     // Optional so a log written before it replays unchanged, which is what the
     // committed receipt in `src/testing/receipts/` asserts.
     runtime: missionRuntimeSchema.optional(),
+    // Which decision points run on a model card instead of through the Agent SDK
+    // (PLAN-NEXT 4.1). Here for `runtime`'s reason — a resume rebuilds what it knows by
+    // folding the log, and a routing choice held only in process memory would put the
+    // second half of a mission on a different model than the first.
+    //
+    // Optional so a log written before it replays unchanged, which is what the committed
+    // receipt in `src/testing/receipts/` asserts.
+    staffing: missionStaffingSchema.optional(),
   }),
   withBase({
     type: z.literal("mission_status"),
@@ -99,6 +112,20 @@ const missionLifecycle = [
     depth: z.enum(["scan", "deep"]).optional(),
     spend: spendSchema,
   }),
+  // The architect's design note, on disk (PLAN-NEXT 5.1). The note itself is a file
+  // rather than an event payload because a worker is told a *path* — it reads the note
+  // with the tools it already has, and a design long enough to be worth writing is long
+  // enough that carrying it in every fold would put it in the planner's prompt whole.
+  //
+  // `summary` is the bounded projection the planner actually receives, and it rides here
+  // rather than being re-derived at read time for the reason every event carries values:
+  // the note is a file a human may edit or delete, and §9.1 rule 2 forbids an event that
+  // depends on one still being there.
+  withBase({
+    type: z.literal("design_written"),
+    path: z.string().min(1),
+    summary: z.string(),
+  }),
 ] as const;
 
 const contract = [
@@ -112,6 +139,39 @@ const contract = [
   withBase({
     type: z.literal("outcome_spec_rejected"),
     rejected: z.array(z.object({ criterion: z.string(), reason: z.string() })),
+  }),
+  // What the critic said about the breakdown, before anything was dispatched
+  // (PLAN-NEXT 5.3). Recorded even though the replan it triggers is already visible as a
+  // second `call:plan` spend, because the two questions a reader has are "did the critic
+  // find anything" and "did that cost a replan" — and a spend figure answers neither.
+  // `replanned` is on the event rather than inferred from a later plan call for the same
+  // reason: the cap is one, and a log that has to be counted to see whether it held is a
+  // cap nobody can audit.
+  withBase({
+    type: z.literal("plan_critiqued"),
+    objections: z.array(
+      z.object({
+        kind: z.string().min(1),
+        detail: z.string().min(1),
+        taskId: z.string().optional(),
+      }),
+    ),
+    replanned: z.boolean(),
+  }),
+  // Credentials the design says the work needs, that this mission's envelope does not
+  // grant (PLAN-NEXT 7.1). **Names only, never values** — the whole point of the flow is
+  // that a key reaches a worker's environment and never the log, and a schema that could
+  // carry a value is a schema somebody eventually puts one in. The mission does not stop
+  // for this: it plans against mocks and the question sits in the inbox, because a run
+  // that blocks at 2am on a key nobody is awake to grant has spent its research budget
+  // to produce nothing.
+  withBase({
+    type: z.literal("secret_required"),
+    names: z.array(z.string().min(1)).min(1),
+    /** What the mission did anyway. `mock` is the only value today and is written out
+     *  rather than implied, so a later run that genuinely parks reads differently in the
+     *  log instead of looking like this one. */
+    plannedAs: z.literal("mock"),
   }),
   withBase({ type: z.literal("signoff_requested"), estimate: estimateSchema }),
   withBase({ type: z.literal("signoff_granted"), unattended: z.boolean() }),
@@ -216,6 +276,23 @@ const tasks = [
     criterionId: z.string(),
     met: z.boolean(),
     evidence: evidenceSchema,
+    /**
+     * One seat's vote on a judge panel, when there was a panel (PLAN-NEXT 6.1).
+     *
+     * Absent is the criterion's *resolved* verdict — the quorum's answer on a panel, and
+     * the single judge's own answer everywhere else, which is why every log written
+     * before panels existed folds unchanged. `fold` applies the resolved event and
+     * records a seat without applying it: a seat is one voice, and a criterion whose
+     * `met` moved to whichever judge answered last would make the quorum decorative.
+     *
+     * The seats are in the log rather than summarized into the resolved event because a
+     * 2-1 split is the most informative thing a panel produces, and a mission re-argued
+     * weeks later cannot recover it from a merged paragraph.
+     */
+    panelSeat: z.number().int().nonnegative().optional(),
+    /** Which lens this seat judged through (`PANEL_LENSES`). Absent on the resolved
+     *  verdict, and on the single unlensed seat a quick mission convenes. */
+    lens: z.string().optional(),
   }),
 ] as const;
 
@@ -257,6 +334,12 @@ const humanChannel = [
     questionId: z.string(),
     question: z.string(),
     blocks: z.array(z.string()),
+    // Raised for information, never waited on. `blocks: []` cannot say this on its own:
+    // the reset-cap escalation blocks every task that is not `done`, which is also `[]`
+    // once they all are, and that one must stop the mission. Optional, so every log
+    // written before PLAN-NEXT 7.2 still folds — absent means the question gates, which
+    // is what every question before this one did.
+    advisory: z.boolean().optional(),
   }),
   withBase({
     type: z.literal("question_answered"),

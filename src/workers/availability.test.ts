@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import {
   availableContainment,
+  availableScanners,
   availableTransports,
   containmentFor,
   runnableAcpTargets,
@@ -105,5 +106,20 @@ describe("containmentFor", () => {
       () => containmentFor({ containment: "container" }, { agents: [], containers: ["podman"] }, {}),
       /ORCHESTRA_CONTAINER_IMAGE/,
     );
+  });
+});
+
+// The failure mode either half alone produces: a grant with no binary staffs a criterion
+// against a scanner that is not there (defect 21 in the checking layer), and a binary
+// with no grant runs an AI agent over the repository because it happened to be installed.
+describe("availableScanners", () => {
+  test("needs both the envelope's grant and the machine's answer", () => {
+    assert.deepEqual(availableScanners({ scanners: ["deepsec"] }, ["deepsec"]), ["deepsec"]);
+    assert.deepEqual(availableScanners({ scanners: ["deepsec"] }, []), []);
+    assert.deepEqual(availableScanners({ scanners: [] }, ["deepsec"]), []);
+  });
+
+  test("a machine that was never probed offers nothing", () => {
+    assert.deepEqual(availableScanners({ scanners: ["deepsec"] }), []);
   });
 });

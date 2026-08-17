@@ -528,6 +528,29 @@ describe("dispatch", () => {
       });
     };
 
+    // PLAN-NEXT 5.2: what the dispatch was handed reaches the thing that spawns a worker.
+    // The transport is where the prompt is assembled, so a note that stops here is a
+    // design nobody reads.
+    test("passes the design note through to the transport", async () => {
+      let told: string | undefined;
+      events = [];
+      artifactRoot = fs.mkdtempSync(path.join(os.tmpdir(), "orchestra-artifacts-"));
+
+      await dispatch(nonCode("t-design", "research"), {
+        emit: (event) => events.push(event),
+        transport: async ({ designNote }) => {
+          told = designNote;
+          return { raw: JSON.stringify(aReport()), elapsedMs: 20 };
+        },
+        verify: passes,
+        cwd: repo.path,
+        artifactRoot,
+        designNote: "/state/missions/m1/artifacts/design.md",
+      });
+
+      assert.equal(told, "/state/missions/m1/artifacts/design.md");
+    });
+
     test("is told an absolute directory that already exists", async () => {
       let told: string | undefined;
       const outcome = await runWith(async ({ artifactDir }) => {
@@ -681,6 +704,109 @@ describe("dispatch", () => {
 
       assert.deepEqual(outcome, { status: "done" });
       assert.equal(events.filter((event) => event.type === "verification_run").length, 1);
+    });
+  });
+
+  // PLAN-NEXT 7.3. A worker granted a variable holds the value, and the shortest path
+  // from there into a file a human pastes into a bug report is its own report: the
+  // summary lands in `worker_report`, in a failure message, and in the artifacts. The
+  // scrub happens on the raw message, before the parse, so every one of those is covered
+  // by one substitution rather than by a list somebody keeps up to date.
+  describe("a granted secret in what the worker says", () => {
+    const KEY = "sk_live_9d8f7a6b5c4d";
+
+    test("never reaches the worker_report event", async () => {
+      events = [];
+      const outcome = await dispatch(nonCode("t-secret", "research"), {
+        emit: (event) => events.push(event),
+        transport: async () => ({
+          raw: JSON.stringify(
+            aReport({ summary: `called the API with ${KEY} and it worked` }),
+          ),
+          elapsedMs: 20,
+        }),
+        verify: passes,
+        cwd: repo.path,
+        secrets: [{ name: "STRIPE_KEY", value: KEY }],
+      });
+
+      assert.deepEqual(outcome, { status: "done" });
+      assert.equal(JSON.stringify(events).includes(KEY), false, "the key is on the log");
+      const reported = events.find((event) => event.type === "worker_report");
+      assert.match(
+        reported && "report" in reported ? reported.report.summary : "",
+        /\[redacted:STRIPE_KEY\]/,
+      );
+    });
+
+    // The blocked path is the one that carries the summary out of dispatch as a message,
+    // and `run.ts` puts that message straight into a `question_asked` a human reads.
+    test("never reaches the message a blocked task parks with", async () => {
+      events = [];
+      const outcome = await dispatch(nonCode("t-secret-blocked", "research"), {
+        emit: (event) => events.push(event),
+        transport: async () => ({
+          raw: JSON.stringify(
+            aReport({ outcome: "blocked", summary: `403 for ${KEY} — which account?` }),
+          ),
+          elapsedMs: 20,
+        }),
+        verify: passes,
+        cwd: repo.path,
+        secrets: [{ name: "STRIPE_KEY", value: KEY }],
+      });
+
+      assert.equal(outcome.status, "blocked");
+      assert.equal(
+        outcome.status === "blocked" ? outcome.message.includes(KEY) : true,
+        false,
+      );
+    });
+
+    // `runCommand` scrubs the message it builds when it *refuses* a command, and the
+    // identical string reached the log unscrubbed on the ordinary path: the scrub was on
+    // the check's output and not on the spec that produced it. Every check emits this
+    // event, run or refused, so it is the commoner half of the same leak.
+    test("a command a model wrote with the value in it does not reach the log", async () => {
+      events = [];
+      const task = {
+        ...nonCode("t-secret-spec", "research"),
+        verify: { kind: "command" as const, command: `curl -H "Authorization: ${KEY}" x` },
+      } as unknown as Task;
+
+      await dispatch(task, {
+        emit: (event) => events.push(event),
+        transport: async () => ({ raw: JSON.stringify(aReport({})), elapsedMs: 20 }),
+        verify: passes,
+        cwd: repo.path,
+        secrets: [{ name: "STRIPE_KEY", value: KEY }],
+      });
+
+      assert.equal(JSON.stringify(events).includes(KEY), false, "the key is on the log");
+      const ran = events.find((event) => event.type === "verification_run");
+      assert.match(
+        ran && "spec" in ran && ran.spec.kind === "command" ? ran.spec.command : "",
+        /\[redacted:STRIPE_KEY\]/,
+      );
+    });
+
+    test("a mission that granted nothing has its report passed through untouched", async () => {
+      events = [];
+      await dispatch(nonCode("t-nosecret", "research"), {
+        emit: (event) => events.push(event),
+        transport: async () => ({
+          raw: JSON.stringify(aReport({ summary: `mentions ${KEY} verbatim` })),
+          elapsedMs: 20,
+        }),
+        verify: passes,
+        cwd: repo.path,
+      });
+
+      const reported = events.find((event) => event.type === "worker_report");
+      assert.match(
+        reported && "report" in reported ? reported.report.summary : "",
+        /mentions sk_live_9d8f7a6b5c4d verbatim/,
+      );
     });
   });
 });
