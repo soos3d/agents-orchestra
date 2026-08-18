@@ -1,0 +1,65 @@
+{
+  "name": "@soos3d/orchestra",
+  "version": "0.1.0",
+  "description": "A looping orchestrator: give it a goal in any domain, it researches, specs, plans, waits for your sign-off, then synthesizes an agent per task and runs them to a verified outcome.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "orchestra": "dist/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/soos3d/agents-orchestra.git"
+  },
+  "bugs": {
+    "url": "https://github.com/soos3d/agents-orchestra/issues"
+  },
+  "homepage": "https://github.com/soos3d/agents-orchestra#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "agents",
+    "providers",
+    "assets",
+    "NOTICE"
+  ],
+  "keywords": [
+    "agent",
+    "orchestrator",
+    "claude",
+    "codex",
+    "acp",
+    "automation",
+    "cli"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && npm run build:web",
+    "build:web": "esbuild src/web/app/main.tsx --bundle --minify --format=esm --target=es2022 --outfile=dist/web/app.js",
+    "prepack": "npm run build",
+    "dev": "node --import tsx --no-warnings src/index.ts",
+    "start": "node dist/index.js",
+    "test": "node --import tsx --no-warnings --test \"src/**/*.test.ts\" \"src/**/*.test.tsx\"",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.0",
+    "picomatch": "^4.0.5",
+    "preact": "^10.29.8",
+    "ws": "^8.21.2",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/picomatch": "^4.0.3",
+    "@types/ws": "^8.18.1",
+    "esbuild": "^0.28.2",
+    "preact-render-to-string": "^6.7.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

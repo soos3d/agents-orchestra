@@ -1,0 +1,377 @@
+// The page's own fold — the second reducer, contained.
+//
+// Ported from `web/page/projection.ts`, which carried this same switch as client
+// JavaScript inside a TypeScript template literal. The behaviour is unchanged and the
+// containment is unchanged. What changed is that the union it switches on is now the
+// real one: `Event` is imported as a *type*, so the bundler erases it entirely and no
+// zod reaches the browser, while `tsc` checks every `case` against the schema the
+// server actually appends. A projection that reads a field an event does not carry
+// used to be a blank panel found by a human; it is now a compile error.
+//
+// The containment rule is the one that matters and it did not move: the projection
+// covers only what is *displayed*, and **no decision is taken from it**. The page
+// sends intents and the loop decides, so a divergence here shows a stale screen and
+// can never approve the wrong thing. Keep every `case` one-liner small — review is
+// the only net under this file, exactly as it is under `agentCalls.ts`.
+import { type Workspace, type WorkspaceProbe } from "../../config/workspaces.js";
+import { type Event } from "../../events/schema.js";
+import { type Artifact } from "../../domain/artifacts.js";
+import {
+  type Criterion,
+  type CriterionDiff,
+  type Guess,
+  type PlannedTask,
+  type TaskLedger,
+} from "../../domain/ledger.js";
+import { type Estimate } from "../../domain/mission.js";
+import { type Task } from "../../domain/task.js";
+import { type HealthFrame } from "../protocol.js";
+import { emptyWork, foldWork, type Shown, type WorkView } from "../work.js";
+
+/** An inbox card. `id` is present only where the card can be answered — a gate has
+ *  no reply box here, and an intake question is answered on its own screen. */
+export interface InboxItem {
+  kind: "intake" | "question" | "gate" | "permission";
+  text: string;
+  id?: string;
+}
+
+export interface IntakeQuestion {
+  id: string;
+  question: string;
+  options?: readonly string[];
+}
+
+export interface PendingChange {
+  diff: readonly CriterionDiff[];
+  reasoning: string;
+}
+
+/** A mission in the serve-mode listing. */
+export interface MissionSummary {
+  id: string;
+  goal: string;
+  status: string;
+}
+
+/** A task as the board draws it: the record, plus when it started running, which is
+ *  what the live timer counts from and is not a field of `Task`. */
+export type BoardTask = Task & { startedAt?: string };
+
+/** The workspace half of the view (UI plan U4). All four fields are the server's, so
+ *  they survive a mission stream resetting — except `chosen`, which is this tab's own
+ *  selection and is the workspace half of what `selected` is for tasks. */
+export interface WorkspaceView {
+  /** `null` on a per-run server, which has one directory and nothing to choose. */
+  list: readonly Workspace[] | null;
+  /** The directory the server last resolved, awaiting confirmation. */
+  probe: WorkspaceProbe | null;
+  /** workspace id → the mission holding it. The per-directory cap, as data. */
+  live: Readonly<Record<string, string>>;
+  /** Where serve was launched: what `compose` targets when it names no workspace. */
+  defaultId: string | null;
+  /** This tab's pick. Page state, never sent as anything but the id that was clicked. */
+  chosen: string | null;
+}
+
+export interface View {
+  /** `null` on a per-run server; a listing under `orchestra serve`. */
+  missions: readonly MissionSummary[] | null;
+  /** Which mission this tab is streaming, under serve. */
+  watching: string | null;
+  workspaces: WorkspaceView;
+  /** What `doctor` found (UI plan U6). `null` until the frame arrives, and forever on
+   *  a per-run server — the machine was already checked before that mission started. */
+  health: HealthFrame | null;
+
+  goal: string;
+  /** When `mission_created` was appended. The HUD's elapsed clock counts from here,
+   *  and it is the log's own timestamp rather than the page's — a tab opened four hours
+   *  into a run replays from seq 0 and must read four hours, not four seconds. */
+  startedAt: string;
+  status: string;
+  /** The scan reported, whatever it found. Separate from `findings > 0` because a
+   *  scan that turned up nothing is a finished stage, not a missing one (U5). */
+  scanned: boolean;
+  findings: number;
+  /** Counted rather than derived from `questions`, which empties as answers land —
+   *  the briefing has to be able to say "3 asked, 3 answered" after the fact. */
+  intakeAsked: number;
+  intakeAnswered: number;
+  brief: string;
+  outOfScope: readonly string[];
+  criteria: readonly Criterion[];
+  guesses: readonly Guess[];
+  plan: readonly PlannedTask[];
+  estimate: Estimate | null;
+  round: number;
+  stalls: number;
+  resets: number;
+  paused: boolean;
+  inbox: ReadonlyMap<string, InboxItem>;
+  questions: readonly IntakeQuestion[];
+  pendingChange: PendingChange | null;
+  tasks: ReadonlyMap<string, BoardTask>;
+  artifacts: readonly { taskId?: string; artifact: Artifact }[];
+  ledger: TaskLedger | null;
+  selected: string | null;
+  /** What this mission produced and can be opened (PLAN-NEXT 9.3), folded from the same
+   *  log by the same reducer the server runs — `web/work.ts` says why that matters. */
+  work: WorkView;
+  /** The one thing that is opened at a time, as the server rendered it. Read like
+   *  `note` in `main.tsx`: it arrives on a frame, nothing folds it, and it decides
+   *  nothing. `null` until something is clicked. */
+  shown: Shown | null;
+}
+
+/** Everything that belongs to one mission's stream.
+ *
+ *  Separate from the listing on purpose: a reconnect replays from seq 0, and applying
+ *  a replay on top of a stale view would double every count. `missions` and
+ *  `watching` survive that reset because they are the server's, not the mission's. */
+export const emptyWorkspaces = (): WorkspaceView => ({
+  list: null,
+  probe: null,
+  live: {},
+  defaultId: null,
+  chosen: null,
+});
+
+export const emptyMission = (): Omit<
+  View,
+  "missions" | "watching" | "workspaces" | "health"
+> => ({
+  goal: "",
+  startedAt: "",
+  status: "",
+  scanned: false,
+  findings: 0,
+  intakeAsked: 0,
+  intakeAnswered: 0,
+  brief: "",
+  outOfScope: [],
+  criteria: [],
+  guesses: [],
+  plan: [],
+  estimate: null,
+  round: 0,
+  stalls: 0,
+  resets: 0,
+  paused: false,
+  inbox: new Map(),
+  questions: [],
+  pendingChange: null,
+  tasks: new Map(),
+  artifacts: [],
+  ledger: null,
+  selected: null,
+  work: emptyWork(),
+  shown: null,
+});
+
+export const emptyView = (): View => ({
+  missions: null,
+  watching: null,
+  workspaces: emptyWorkspaces(),
+  health: null,
+  ...emptyMission(),
+});
+
+/**
+ * An approved change is the one thing that moves a signed-off criterion (§3), and the
+ * criteria the page draws come from `outcome_spec_written`, which is never re-emitted
+ * for one. So the display follows the diff — an ordinary projection update, taking no
+ * decision: the server's fold is what the loop is judged against.
+ */
+function applyChange(criteria: readonly Criterion[], diff: readonly CriterionDiff[]): Criterion[] {
+  return diff.reduce<Criterion[]>((all, op) => {
+    if (op.op === "add") return all.concat([op.criterion]);
+    if (op.op === "remove") return all.filter((criterion) => criterion.id !== op.criterionId);
+    return all.map((criterion) => (criterion.id === op.criterionId ? op.to : criterion));
+  }, [...criteria]);
+}
+
+const withEntry = <T>(map: ReadonlyMap<string, T>, key: string, value: T): Map<string, T> =>
+  new Map(map).set(key, value);
+
+const without = <T>(map: ReadonlyMap<string, T>, key: string): Map<string, T> => {
+  const next = new Map(map);
+  next.delete(key);
+  return next;
+};
+
+/**
+ * One event onto the view. Returns a new view rather than mutating, so a render is a
+ * pure function of what came back and Preact can tell that something changed.
+ *
+ * The work listing is folded *around* the switch below rather than as cases inside it,
+ * because every case returns early and a case that also had to remember to carry the
+ * listing forward is a case that will one day forget. The reducer itself is
+ * `web/work.ts`'s, shared with the server for the reason its header gives.
+ */
+export function apply(view: View, event: Event): View {
+  const next = project(view, event);
+  const work = foldWork(next.work, event);
+  return work === next.work ? next : { ...next, work };
+}
+
+function project(view: View, event: Event): View {
+  switch (event.type) {
+    case "mission_created":
+      return { ...view, goal: event.goal, startedAt: event.at };
+    case "mission_status":
+      return { ...view, status: event.to };
+    // Kept as a count and a flag rather than the findings themselves: the briefing
+    // reports that the step happened and how much it turned up, and the claims
+    // themselves belong to the brief the research call writes (U5).
+    case "scan_completed":
+      return { ...view, scanned: true, findings: event.findings.length };
+    case "round_started":
+      return { ...view, round: event.round };
+    case "stall_detected":
+      return { ...view, stalls: event.stalls };
+    case "replan_started":
+      return { ...view, resets: event.resets, stalls: 0 };
+    case "pause_requested":
+      return { ...view, paused: true };
+    case "pause_lifted":
+      return { ...view, paused: false };
+    case "research_completed":
+      return { ...view, brief: event.brief };
+    case "ledger_revised":
+      return { ...view, ledger: event.ledger, plan: event.ledger.plan, guesses: event.ledger.guesses };
+    case "outcome_spec_written":
+      return {
+        ...view,
+        criteria: event.criteria,
+        guesses: event.guesses,
+        outOfScope: event.outOfScope,
+        estimate: event.estimate,
+      };
+    // The mid-mission return (§3): the mission is back at `awaiting_signoff` and the
+    // screen must show what a replan wants to change, not the plan it already
+    // approved. The diff carries `from` as well as `to` (§4.0), so this needs no
+    // ledger lookup — and the resolution only clears it, because the authoritative
+    // criteria arrive as they always do, from the server's own fold.
+    case "criteria_change_requested":
+      return { ...view, pendingChange: { diff: event.diff, reasoning: event.reasoning } };
+    case "criteria_change_resolved":
+      return {
+        ...view,
+        criteria:
+          event.approved && view.pendingChange
+            ? applyChange(view.criteria, view.pendingChange.diff)
+            : view.criteria,
+        pendingChange: null,
+      };
+    // A panel seat is a record and not a verdict, exactly as in `fold` (PLAN-NEXT 6.1).
+    // Applied here it would paint each judge's own answer onto the criterion as the seats
+    // stream in, so a criterion the panel is about to pass 2-1 shows a red mark for as
+    // long as the dissenting seat is the most recent event. The resolved verdict follows
+    // the seats, carries no `panelSeat`, and is the one the screen renders.
+    case "criterion_checked":
+      if (event.panelSeat !== undefined) return view;
+      return {
+        ...view,
+        criteria: view.criteria.map((criterion) =>
+          criterion.id === event.criterionId ? { ...criterion, met: event.met } : criterion,
+        ),
+      };
+    case "task_planned":
+    case "task_replanned":
+      return { ...view, tasks: withEntry(view.tasks, event.task.id, event.task) };
+    case "task_status": {
+      const taskId = event.taskId;
+      const task = taskId === undefined ? undefined : view.tasks.get(taskId);
+      if (!task || taskId === undefined) return view;
+      return {
+        ...view,
+        tasks: withEntry(view.tasks, taskId, {
+          ...task,
+          status: event.to,
+          ...(event.to === "running" ? { startedAt: event.at } : {}),
+        }),
+      };
+    }
+    case "artifact_written":
+      return {
+        ...view,
+        artifacts: view.artifacts.concat([{ taskId: event.taskId, artifact: event.artifact }]),
+      };
+    case "intake_question":
+      return {
+        ...view,
+        intakeAsked: view.intakeAsked + 1,
+        inbox: withEntry(view.inbox, event.questionId, { kind: "intake", text: event.question }),
+        questions: view.questions.concat([
+          { id: event.questionId, question: event.question, ...(event.options ? { options: event.options } : {}) },
+        ]),
+      };
+    case "intake_answered":
+      return {
+        ...view,
+        intakeAnswered: view.intakeAnswered + 1,
+        inbox: without(view.inbox, event.questionId),
+        questions: view.questions.filter((question) => question.id !== event.questionId),
+      };
+    case "question_asked":
+      return {
+        ...view,
+        inbox: withEntry(view.inbox, event.questionId, {
+          kind: "question",
+          text: event.question,
+          id: event.questionId,
+        }),
+      };
+    case "question_answered":
+      return { ...view, inbox: without(view.inbox, event.questionId) };
+    case "gate_requested":
+      return {
+        ...view,
+        inbox: withEntry(view.inbox, event.gateId, { kind: "gate", text: event.description }),
+      };
+    case "gate_resolved":
+      return { ...view, inbox: without(view.inbox, event.gateId) };
+    // A live worker asking for a capability outside its grant. It carries its id so
+    // the card can answer it, exactly as a question does.
+    case "permission_requested":
+      return {
+        ...view,
+        inbox: withEntry(view.inbox, event.requestId, {
+          kind: "permission",
+          id: event.requestId,
+          text: `${event.tool} — ${event.detail}`,
+        }),
+      };
+    case "permission_resolved":
+      return { ...view, inbox: without(view.inbox, event.requestId) };
+    default:
+      return view;
+  }
+}
+
+/** One timeline line. The detail is per-type because "task_status" alone says nothing
+ *  a person can act on, and the whole event is far too much to read at a glance. */
+export function line(event: Event): string {
+  const at = String(event.at).slice(11, 19);
+  const detail =
+    event.type === "mission_status"
+      ? event.to
+      // A panel writes four of these in a row (PLAN-NEXT 6.1). Without the seat they are
+      // four identical lines and the timeline reads as a stutter rather than as a vote.
+      : event.type === "criterion_checked"
+        ? `${event.criterionId} ${event.met ? "✓" : "✗"}` +
+          (event.panelSeat === undefined
+            ? ""
+            : `  seat ${event.panelSeat}${event.lens ? ` — ${event.lens}` : ""}`)
+      : event.type === "task_status"
+        ? `${event.taskId} → ${event.to}`
+        : event.type === "progress_ledger"
+          ? `progressing ${event.ledger.isProgressBeingMade ? "✓" : "✗"}  inLoop ${event.ledger.isInLoop ? "✓" : "✗"}`
+          : event.type === "replan_started"
+            ? event.reason
+            : event.type === "signoff_revised"
+              ? event.feedback
+              : "";
+  return `${at}  ${event.type}${detail ? `  ${detail}` : ""}`;
+}

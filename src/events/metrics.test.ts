@@ -1,0 +1,426 @@
+// The failure mode under test: a breakdown that reads as free.
+//
+// `spendByPhase` has been folded since Phase 1 and rendered nowhere, so the numbers a
+// cost decision needs — which decision point is expensive, which task ran long, how
+// much of the bill is invisible — were on disk and unreadable. This is the reader, and
+// it is pure for the usual reason: the arithmetic is where it can be wrong silently.
+//
+// Three of its rules are load-bearing rather than presentational:
+//
+//  - **Unmeasured is reported, never folded into zero (§9.5).** A mission run entirely
+//    on subscription CLIs bills real money and reports `measured: 0`. A summary that
+//    printed that as the cost would be worse than printing nothing, so the count of
+//    dispatches nobody could price is a first-class figure beside it.
+//  - **A phase this version did not write is still reported.** Logs predating the
+//    per-call split carry `"orchestration"`, and `src/testing/receipts/` is a real
+//    mission's log replayed by the suite. Dropping unrecognised phases would make an
+//    old mission's spend silently vanish from its own summary.
+//  - **A task that never ran appears at zero.** The absence of a dispatch is the
+//    finding on a mission that stalled; omitting the row hides it.
+import assert from "node:assert/strict";
+import { describe, test } from "node:test";
+import { spendPhase, zeroSpend, type Spend } from "../domain/budget.js";
+import { aCodeTask, aMission, aMissionState, anAgentSpec } from "../testing/fixtures.js";
+import { missionMetrics, staffingMetrics } from "./metrics.js";
+
+const spend = (wallMs: number, measured = 0, unmeasured = 0, dispatches = 1): Spend => ({
+  ...zeroSpend(),
+  wallMs,
+  tokens: { measured, estimated: 0, unmeasured },
+  dispatches,
+});
+
+describe("missionMetrics", () => {
+  test("attributes decision points call by call, in a stable order", () => {
+    const state = aMissionState({
+      mission: aMission({
+        spendByPhase: {
+          [spendPhase("judge")]: spend(400, 6_000, 0, 2),
+          [spendPhase("research")]: spend(900, 12_000),
+        },
+      }),
+    });
+
+    const { calls } = missionMetrics(state);
+
+    assert.deepEqual(
+      calls.map((entry) => entry.call),
+      ["research", "judge"],
+      "calls are reported in CALL_NAMES order so two runs can be diffed line by line",
+    );
+    assert.equal(calls[0]!.measuredTokens, 12_000);
+    assert.equal(calls[1]!.calls, 2);
+  });
+
+  test("a decision point that never ran is not listed at all", () => {
+    const state = aMissionState({
+      mission: aMission({ spendByPhase: { [spendPhase("plan")]: spend(100, 500) } }),
+    });
+
+    assert.deepEqual(
+      missionMetrics(state).calls.map((entry) => entry.call),
+      ["plan"],
+    );
+  });
+
+  test("reports a task's wall time, attempts, transport and model", () => {
+    const task = aCodeTask({
+      id: "t1",
+      attempts: 2,
+      agentSpec: anAgentSpec({
+        model: "sonnet",
+        transport: { id: "acp", target: "claude" },
+      }),
+    });
+    const state = aMissionState({
+      tasks: [task],
+      mission: aMission({ spendByPhase: { t1: spend(61_000, 4_200) } }),
+    });
+
+    const [row] = missionMetrics(state).tasks;
+
+    assert.equal(row!.taskId, "t1");
+    assert.equal(row!.wallMs, 61_000);
+    assert.equal(row!.attempts, 2);
+    assert.equal(row!.transport, "acp/claude");
+    assert.equal(row!.model, "sonnet");
+  });
+
+  test("a task that never ran is reported at zero rather than omitted", () => {
+    // On a stalled mission the task with no dispatch is the whole finding.
+    const state = aMissionState({ tasks: [aCodeTask({ id: "t1" })], mission: aMission({}) });
+
+    const [row] = missionMetrics(state).tasks;
+
+    assert.equal(row!.taskId, "t1");
+    assert.equal(row!.wallMs, 0);
+    assert.equal(row!.measuredTokens, 0);
+  });
+
+  test("counts what nobody could price instead of calling it zero (§9.5)", () => {
+    const state = aMissionState({
+      tasks: [aCodeTask({ id: "t1" })],
+      mission: aMission({
+        spendByPhase: {
+          t1: spend(30_000, 0, 1),
+          [spendPhase("plan")]: spend(500, 8_000),
+        },
+      }),
+    });
+
+    const metrics = missionMetrics(state);
+
+    assert.equal(metrics.tasks[0]!.unmeasuredDispatches, 1);
+    assert.equal(metrics.totals.unmeasuredDispatches, 1);
+    assert.equal(metrics.totals.measuredTokens, 8_000);
+    assert.equal(
+      metrics.totals.pricedFully,
+      false,
+      "a mission with an unmeasured dispatch must not read as fully priced",
+    );
+  });
+
+  test("a mission whose every dispatch reported usage is marked fully priced", () => {
+    const state = aMissionState({
+      tasks: [aCodeTask({ id: "t1" })],
+      mission: aMission({ spendByPhase: { t1: spend(30_000, 900) } }),
+    });
+
+    assert.equal(missionMetrics(state).totals.pricedFully, true);
+  });
+
+  test("a phase from a log this version did not write is reported, not dropped", () => {
+    // Logs written before the per-call split carry `"orchestration"`, and the committed
+    // receipt in `src/testing/receipts/` is one of them.
+    const state = aMissionState({
+      mission: aMission({ spendByPhase: { orchestration: spend(700, 5_000, 0, 4) } }),
+    });
+
+    const metrics = missionMetrics(state);
+
+    assert.deepEqual(metrics.calls, []);
+    assert.deepEqual(metrics.tasks, []);
+    assert.equal(metrics.other[0]!.phase, "orchestration");
+    assert.equal(metrics.other[0]!.measuredTokens, 5_000);
+    assert.equal(metrics.totals.measuredTokens, 5_000, "an unrecognised phase still cost money");
+  });
+
+  test("a phase that recorded nothing at all is not listed", () => {
+    // `prepare.ts` emits `scan_completed` and `research_completed` carrying a
+    // hardcoded `zeroSpend()`, so every mission has a `scan` phase that never held a
+    // figure. Listing it invites the reader to conclude the scan was free.
+    const state = aMissionState({
+      mission: aMission({
+        spendByPhase: { scan: zeroSpend(), research: zeroSpend(), legacy: spend(10, 20) },
+      }),
+    });
+
+    assert.deepEqual(
+      missionMetrics(state).other.map((entry) => entry.phase),
+      ["legacy"],
+    );
+  });
+
+  test("totals sum every phase, whatever kind it was", () => {
+    const state = aMissionState({
+      tasks: [aCodeTask({ id: "t1" })],
+      mission: aMission({
+        spendByPhase: {
+          t1: spend(30_000, 100),
+          [spendPhase("plan")]: spend(500, 200),
+          legacy: spend(50, 300),
+        },
+      }),
+    });
+
+    const { totals } = missionMetrics(state);
+
+    assert.equal(totals.wallMs, 30_550);
+    assert.equal(totals.measuredTokens, 600);
+    assert.equal(totals.dispatches, 3);
+  });
+});
+
+// Pricing is the fourth rule and it is the same rule as the other three wearing a
+// currency symbol: **absent, never zero**. Most of this system's spend is on subscription
+// CLIs and over ACP, neither of which any card prices, so a `costUsd: 0` on a mission
+// that cost real money would be the exact claim `unmeasured` exists to refuse.
+//
+// The other half is *which* model a phase is priced against. `modelByPhase` records what
+// actually ran, and it has already differed from what was specced by a factor of five —
+// a task asking for `claude-sonnet-4-5` ran on `claude-opus-4-6` because ACP is never
+// told the spec's choice. Pricing from `AgentSpec.model` would have looked precise.
+describe("missionMetrics pricing", () => {
+  const card = {
+    id: "deepseek-ai/DeepSeek-V3",
+    provider: "nebius",
+    access: "api-key" as const,
+    tier: "worker" as const,
+    contextK: 128,
+    costInPer1M: 1,
+    costOutPer1M: 2,
+    verifiedBy: "probes/v3.json",
+  };
+
+  const priceable = (over: Partial<Spend["tokens"]> = {}): Spend => ({
+    ...zeroSpend(),
+    wallMs: 100,
+    dispatches: 1,
+    tokens: {
+      measured: 3_000_000,
+      estimated: 0,
+      unmeasured: 0,
+      input: 2_000_000,
+      output: 1_000_000,
+      ...over,
+    },
+  });
+
+  const stateWith = (tokens: Partial<Spend["tokens"]> = {}, ranOn = card.id) =>
+    aMissionState({
+      mission: aMission({
+        spendByPhase: { [spendPhase("plan")]: priceable(tokens) },
+        modelByPhase: { [spendPhase("plan")]: ranOn },
+      }),
+    });
+
+  test("a call on a carded model is priced from what actually ran", () => {
+    const figures = missionMetrics(stateWith(), [card]);
+
+    assert.equal(figures.calls[0]?.costUsd, 4);
+    assert.equal(figures.totals.costUsd, 4);
+  });
+
+  test("no card for the model that ran leaves the cost absent, not zero", () => {
+    const figures = missionMetrics(stateWith({}, "claude-opus-4-6"), [card]);
+
+    assert.equal(figures.calls[0]?.costUsd, undefined);
+    assert.equal(figures.totals.costUsd, undefined);
+  });
+
+  test("half a usage report is not half a bill", () => {
+    // `output` absent — a transport that reported only its input has not reported a cost.
+    const figures = missionMetrics(stateWith({ output: undefined }), [card]);
+
+    assert.equal(figures.calls[0]?.costUsd, undefined);
+  });
+
+  test("with no cards a mission reports exactly what it reported before", () => {
+    assert.equal(missionMetrics(stateWith()).totals.costUsd, undefined);
+  });
+
+  test("a research call with searches and no card is priced from the searches", () => {
+    const state = aMissionState({
+      mission: aMission({
+        spendByPhase: {
+          [spendPhase("research")]: {
+            ...zeroSpend(),
+            wallMs: 100,
+            dispatches: 1,
+            webSearchRequests: 4,
+          },
+        },
+      }),
+    });
+
+    const figures = missionMetrics(state);
+
+    assert.equal(figures.calls[0]?.costUsd, 0.04);
+    assert.equal(figures.calls[0]?.webSearchRequests, 4);
+    assert.equal(figures.totals.costUsd, 0.04, "the mission total must not forget the searches");
+    assert.equal(figures.totals.webSearchRequests, 4);
+  });
+
+  test("token cost and search cost add on the same call", () => {
+    const state = aMissionState({
+      mission: aMission({
+        spendByPhase: { [spendPhase("plan")]: { ...priceable(), webSearchRequests: 4 } },
+        modelByPhase: { [spendPhase("plan")]: card.id },
+      }),
+    });
+
+    const figures = missionMetrics(state, [card]);
+
+    assert.equal(figures.calls[0]?.costUsd, 4.04);
+    assert.equal(figures.totals.costUsd, 4.04);
+  });
+
+  test("a call with neither a card nor searches stays unpriced", () => {
+    const state = aMissionState({
+      mission: aMission({
+        spendByPhase: { [spendPhase("research")]: spend(100, 500) },
+      }),
+    });
+
+    const figures = missionMetrics(state);
+
+    assert.equal(figures.calls[0]?.costUsd, undefined);
+    assert.equal(figures.calls[0]?.webSearchRequests, undefined);
+    assert.equal(figures.totals.costUsd, undefined);
+    assert.equal("webSearchRequests" in figures.totals, false);
+  });
+
+  test("counted searches do not flip pricedFully false", () => {
+    const state = aMissionState({
+      mission: aMission({
+        spendByPhase: {
+          [spendPhase("research")]: {
+            ...zeroSpend(),
+            wallMs: 100,
+            dispatches: 1,
+            tokens: { measured: 500, estimated: 0, unmeasured: 0 },
+            webSearchRequests: 4,
+          },
+        },
+      }),
+    });
+
+    assert.equal(missionMetrics(state).totals.pricedFully, true);
+  });
+
+  test("counted searches do not hide an unmeasured token dispatch", () => {
+    const state = aMissionState({
+      mission: aMission({
+        spendByPhase: {
+          [spendPhase("research")]: {
+            ...spend(100, 0, 1),
+            webSearchRequests: 4,
+          },
+        },
+      }),
+    });
+
+    assert.equal(missionMetrics(state).totals.pricedFully, false);
+  });
+});
+
+// PLAN-NEXT 4.4. The report exists to answer "was the cheap model cheap?", and the two
+// ways it can lie are opposite: attributing a bill to the model that was *asked for*
+// rather than the one that answered, and showing tokens with no downstream column — a
+// planner whose plan is sent back twice costs the replans as well as its own tokens.
+describe("staffingMetrics", () => {
+  const card = {
+    id: "deepseek-ai/DeepSeek-V3",
+    provider: "nebius",
+    access: "api-key" as const,
+    tier: "worker" as const,
+    contextK: 128,
+    costInPer1M: 1,
+    costOutPer1M: 2,
+    verifiedBy: "probes/v3.json",
+  };
+
+  const stateWith = (staffing: Record<string, string> = {}, ranOn = card.id) =>
+    aMissionState({
+      mission: aMission({
+        staffing,
+        spendByPhase: {
+          [spendPhase("plan")]: {
+            ...zeroSpend(),
+            wallMs: 2_000,
+            dispatches: 1,
+            tokens: { measured: 3_000_000, estimated: 0, unmeasured: 0, input: 1_000_000, output: 1_000_000 },
+          },
+        },
+        modelByPhase: { [spendPhase("plan")]: ranOn },
+      }),
+    });
+
+  test("names both what a call was staffed to and what actually answered", () => {
+    const [row] = staffingMetrics(stateWith({ plan: card.id }), [], [card]);
+
+    assert.equal(row?.call, "plan");
+    assert.equal(row?.staffedTo, card.id);
+    assert.equal(row?.ranOn, card.id);
+    assert.equal(row?.costUsd, 3);
+  });
+
+  test("an unstaffed call is reported with no card rather than dropped", () => {
+    const [row] = staffingMetrics(stateWith(), [], [card]);
+
+    assert.equal(row?.staffedTo, undefined);
+    assert.equal(row?.measuredTokens, 3_000_000);
+  });
+
+  test("counts the send-backs a call's own answer drew", () => {
+    const events = [
+      { type: "signoff_revised" },
+      { type: "signoff_revised" },
+      { type: "outcome_spec_rejected" },
+    ];
+
+    assert.equal(staffingMetrics(stateWith({ plan: card.id }), events)[0]?.sentBack, 2);
+  });
+
+  // PLAN-NEXT 5.3: what the critic found is the number the stage exists to produce.
+  // Against `call:critique`'s own cost and the extra `call:plan` dispatch an objection
+  // buys, it is the whole of "is the critic paying for itself".
+  test("counts what the critic objected to", () => {
+    const state = aMissionState({
+      mission: aMission({
+        spendByPhase: { [spendPhase("critique")]: { ...zeroSpend(), dispatches: 1 } },
+      }),
+    });
+
+    const row = staffingMetrics(state, [{ type: "plan_critiqued" }])[0];
+
+    assert.equal(row?.call, "critique");
+    assert.equal(row?.sentBack, 1);
+  });
+
+  // A decision point with no verdict event of its own reports none rather than a `0`
+  // standing in for one — the same absent-is-not-zero rule the rest of this file follows.
+  test("a call with no verdict event of its own reports no count at all", () => {
+    const state = aMissionState({
+      mission: aMission({
+        spendByPhase: { [spendPhase("progress")]: { ...zeroSpend(), dispatches: 1 } },
+      }),
+    });
+
+    assert.equal(staffingMetrics(state, [])[0]?.sentBack, undefined);
+  });
+
+  test("a mission that recorded nothing reports nothing", () => {
+    assert.deepEqual(staffingMetrics(aMissionState(), []), []);
+  });
+});

@@ -1,0 +1,11 @@
+// Emit config: same settings as the typecheck config, minus the tests —
+// they are typechecked but must not ship in dist/.
+//
+// `src/web/app/` is excluded for a different reason: esbuild owns it. It is
+// typechecked by tsconfig.json like everything else, but tsc must not emit it,
+// because the shipped artefact is one bundled `dist/web/app.js` and a parallel
+// tree of unbundled modules beside it would be dead weight the server never reads.
+{
+  "extends": "./tsconfig.json",
+  "exclude": ["src/**/*.test.ts", "src/testing/**", "src/web/app/**"]
+}
