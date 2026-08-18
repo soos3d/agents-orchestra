@@ -40,7 +40,14 @@ export const spendSchema = z.object({
   }),
   wallMs: z.number().int().nonnegative(),
   dispatches: z.number().int().nonnegative(),
+  /** Anthropic `server_tool_use.web_search_requests`. Not a token kind — a
+   *  separate line item, so it lives beside `tokens` rather than inside it.
+   *  Optional because absent and zero are different claims. */
+  webSearchRequests: z.number().int().nonnegative().optional(),
 });
+
+/** Anthropic's web-search line item: $10 per 1,000 requests. */
+export const WEB_SEARCH_USD_PER_REQUEST = 10 / 1_000;
 
 export type Budget = z.infer<typeof budgetSchema>;
 export type Spend = z.infer<typeof spendSchema>;
@@ -117,6 +124,21 @@ export const isEmptyUsage = (usage: TokenUsage): boolean =>
   usage.cacheWrite === undefined;
 
 /**
+ * Anthropic's `server_tool_use.web_search_requests`, or nothing.
+ *
+ * Missing `server_tool_use` and a non-number count are the same claim: the
+ * transport did not report searches. A throw here would turn a usage shape we
+ * have not seen yet into a failed decision point, which is worse than leaving
+ * the field absent.
+ */
+export function webSearchRequestsOf(usage: {
+  server_tool_use?: { web_search_requests?: unknown } | null;
+}): number | undefined {
+  const n = usage.server_tool_use?.web_search_requests;
+  return typeof n === "number" && Number.isInteger(n) && n >= 0 ? n : undefined;
+}
+
+/**
  * A usage report as the token half of a `Spend`.
  *
  * `measured` stays `input + output` and deliberately excludes cache: it is the number
@@ -166,6 +188,7 @@ function addKinds(a: Spend["tokens"], b: Spend["tokens"]): Partial<Spend["tokens
 }
 
 export function addSpend(a: Spend, b: Spend): Spend {
+  const webSearchRequests = addKind(a.webSearchRequests, b.webSearchRequests);
   return {
     tokens: {
       measured: a.tokens.measured + b.tokens.measured,
@@ -175,6 +198,7 @@ export function addSpend(a: Spend, b: Spend): Spend {
     },
     wallMs: a.wallMs + b.wallMs,
     dispatches: a.dispatches + b.dispatches,
+    ...(webSearchRequests === undefined ? {} : { webSearchRequests }),
   };
 }
 

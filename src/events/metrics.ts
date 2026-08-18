@@ -16,7 +16,13 @@
 // mission run entirely on subscription CLIs spends real money and reports
 // `measured: 0`, so `pricedFully` exists to stop a summary reading as free. That is
 // the same argument `Spend.tokens.unmeasured` was introduced for.
-import { CALL_NAMES, isCallPhase, spendPhase, type Spend } from "../domain/budget.js";
+import {
+  CALL_NAMES,
+  isCallPhase,
+  spendPhase,
+  WEB_SEARCH_USD_PER_REQUEST,
+  type Spend,
+} from "../domain/budget.js";
 import { type ModelCard, costOf } from "../providers/modelCard.js";
 import { type MissionState } from "./fold.js";
 
@@ -44,8 +50,9 @@ export interface TokenBreakdown {
 }
 
 /**
- * What a phase cost in dollars, when that is knowable — `input` and `output` both
- * reported, and a verified model card for whatever actually ran (PLAN-NEXT 2.5).
+ * What a phase cost in dollars, when that is knowable — token cost when `input` and
+ * `output` are both reported and a verified model card matches what actually ran
+ * (PLAN-NEXT 2.5), plus search cost when `webSearchRequests` is present.
  *
  * Absent rather than zero, which is the rule the whole of §9.5 is built on and matters
  * more here than anywhere: most of this system's spend is on subscription CLIs and over
@@ -53,12 +60,15 @@ export interface TokenBreakdown {
  *
  * **It prices the call this orchestrator made, and only that.** A worker running under
  * `acp/opencode` on a DeepSeek model is billed on OpenCode's contract, not on the
- * provider's rate card, so `costUsd` is absent there even when the id matches — the
- * card's rates are a claim about the provider's own API and nothing else. What makes
- * that check possible is the same field the pricing hazard came from: `ranOn`.
+ * provider's rate card, so token `costUsd` is absent there even when the id matches —
+ * the card's rates are a claim about the provider's own API and nothing else. What
+ * makes that check possible is the same field the pricing hazard came from: `ranOn`.
+ * Web-search dollars are a separate Anthropic line item and do not need a card.
  */
 export interface Priced {
   costUsd?: number;
+  /** Anthropic web-search requests on this row. Absent, never 0-by-default. */
+  webSearchRequests?: number;
 }
 
 export interface CallMetrics extends TokenBreakdown, Priced {
@@ -239,15 +249,18 @@ const addBreakdown = (a: TokenBreakdown, b: TokenBreakdown): TokenBreakdown => {
 };
 
 /**
- * What one phase cost, priced against the card for the model that *actually ran*.
+ * What one phase cost, priced against the card for the model that *actually ran*
+ * and against Anthropic's web-search line item when the count is present.
  *
  * `modelByPhase` and never `AgentSpec.model`, and the difference is a real 5× error this
  * repository has already made: ACP is not told the spec's model, so a task specced
  * `claude-sonnet-4-5` ran on `claude-opus-4-6` and a log priced against the spec would
  * have looked precise and been wrong. What did not run cannot be what was billed.
  *
- * Both token kinds are required, not defaulted. A phase reporting only `input` has half a
- * bill, and half a bill printed as a total is worse than no total at all.
+ * Token cost still needs both kinds and a card. Search cost does not: it is a
+ * published Anthropic rate and applies even when no factory card can price the
+ * tokens — the `--research-web` case. `costUsd` is the sum of whichever halves
+ * exist, and absent when neither does.
  */
 function priced(
   spend: Spend | undefined,
@@ -256,8 +269,21 @@ function priced(
 ): Priced {
   const card = ranOn === undefined ? undefined : byId.get(ranOn);
   const { input, output } = spend?.tokens ?? {};
-  if (card === undefined || input === undefined || output === undefined) return {};
-  return { costUsd: costOf(card, { input, output }) };
+  const tokenCost =
+    card !== undefined && input !== undefined && output !== undefined
+      ? costOf(card, { input, output })
+      : undefined;
+  const searches = spend?.webSearchRequests;
+  const searchCost =
+    searches === undefined ? undefined : searches * WEB_SEARCH_USD_PER_REQUEST;
+  const costUsd =
+    tokenCost === undefined && searchCost === undefined
+      ? undefined
+      : (tokenCost ?? 0) + (searchCost ?? 0);
+  return {
+    ...(costUsd === undefined ? {} : { costUsd }),
+    ...(searches === undefined ? {} : { webSearchRequests: searches }),
+  };
 }
 
 /**
@@ -331,10 +357,23 @@ export function missionMetrics(
   // Summed over the phases that *could* be priced, and absent when none could. A total
   // of `0` on a mission with no cards would be a claim that it was free; absent says
   // what is true, which is that this run's spend is not on a metered contract we hold.
-  const costUsd = Object.entries(byPhase).reduce<number | undefined>((running, [phase, spend]) => {
-    const cost = priced(spend, modelByPhase[phase], byId).costUsd;
-    return cost === undefined ? running : (running ?? 0) + cost;
-  }, undefined);
+  // Search cost rides the same reduce so a `--research-web` mission's total cannot
+  // forget the line item that `priced` just counted.
+  const { costUsd, webSearchRequests } = Object.entries(byPhase).reduce<{
+    costUsd: number | undefined;
+    webSearchRequests: number | undefined;
+  }>(
+    (running, [phase, spend]) => {
+      const part = priced(spend, modelByPhase[phase], byId);
+      const add = (x: number | undefined, y: number | undefined): number | undefined =>
+        x === undefined && y === undefined ? undefined : (x ?? 0) + (y ?? 0);
+      return {
+        costUsd: add(running.costUsd, part.costUsd),
+        webSearchRequests: add(running.webSearchRequests, part.webSearchRequests),
+      };
+    },
+    { costUsd: undefined, webSearchRequests: undefined },
+  );
 
   // Summed over the record rather than over the three lists above, so a phase that is
   // somehow in none of them still reaches the total. A cost the summary cannot place
@@ -367,6 +406,7 @@ export function missionMetrics(
       // unmeasured dispatch makes and deserves the same flag.
       pricedFully: totals.unmeasuredDispatches === 0 && totals.estimatedTokens === 0,
       ...(costUsd === undefined ? {} : { costUsd }),
+      ...(webSearchRequests === undefined ? {} : { webSearchRequests }),
     },
     calls,
     tasks,

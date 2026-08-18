@@ -20,7 +20,12 @@ import {
 } from "../domain/ledger.js";
 import { DEFAULT_MIN_SEVERITY } from "../domain/artifacts.js";
 import { type Estimate } from "../domain/mission.js";
-import { type MissionMetrics, type StaffingMetrics, type TokenBreakdown } from "../events/metrics.js";
+import {
+  type MissionMetrics,
+  type Priced,
+  type StaffingMetrics,
+  type TokenBreakdown,
+} from "../events/metrics.js";
 import { type SignoffPresentation } from "../loop/human.js";
 
 /**
@@ -54,6 +59,9 @@ export function renderMetrics(metrics: MissionMetrics): string[] {
     ...(totals.estimatedTokens > 0
       ? [`  estimated   ${group(totals.estimatedTokens)} — a floor, from a source that says so`]
       : []),
+    ...(totals.webSearchRequests === undefined
+      ? []
+      : [`  searches    ${group(totals.webSearchRequests)}`]),
     totals.pricedFully
       ? `  priced      every dispatch reported its usage`
       : `  unpriced    ${unpriced(totals)} — the real cost is higher`,
@@ -64,7 +72,8 @@ export function renderMetrics(metrics: MissionMetrics): string[] {
     for (const call of metrics.calls) {
       lines.push(
         `  ${call.call.padEnd(11)} ${count(call.calls, "call", "calls").padEnd(9)} ${duration(call.wallMs).padStart(8)}  ${group(call.measuredTokens).padStart(9)} tokens` +
-          kinds(call),
+          kinds(call) +
+          searches(call),
       );
     }
   }
@@ -138,6 +147,13 @@ export function renderStaffing(missionId: string, rows: readonly StaffingMetrics
     }),
   ];
 }
+
+/** Named only when the count is present — absent is not zero, and a "0 searches"
+ *  suffix would claim a `--research-web` call did not search. */
+const searches = (row: Priced): string =>
+  row.webSearchRequests === undefined
+    ? ""
+    : `  ${count(row.webSearchRequests, "search", "searches")}`;
 
 /** The kinds as a trailing clause, or nothing at all when the transport did not report
  *  them. Absent is not zero (§9.5), and an "in 0 / out 0" suffix would say otherwise. */

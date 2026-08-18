@@ -19,6 +19,13 @@ on a real run the cache was 470,767 tokens against 11,662 measured. Producers us
 **Absent usage stays absent, never `0`.** `spendOf` counts a transport that reports nothing as one
 *unmeasured* dispatch; a confident zero makes a mission that cost real money read as free.
 
+Web searches are a third metered quantity, not a token kind. Anthropic bills $10 per 1,000
+(`$0.01` each) on `server_tool_use.web_search_requests`; the count rides on
+`Spend.webSearchRequests` and is never folded into token `measured`. `priced()` adds
+`count * WEB_SEARCH_USD_PER_REQUEST` even when no model card can price the tokens, so a
+`--research-web` mission's `costUsd` is not silently short. Absent and zero stay different
+claims; `zeroSpend()` omits the field.
+
 ## Where each transport's numbers come from
 
 - **`claude -p --output-format json`** reports usage and this repo used to discard it, reading
@@ -110,3 +117,23 @@ and narrow together and is what every composition root calls.
 
 Nothing is priced today: every current spend path is a subscription CLI or ACP. The first card-priced
 spend is stage 4's provider call path, and `missionMetrics(state, cards)` is already shaped for it.
+
+## Model cards are evidence, and a menu is not an allowlist (PLAN-NEXT 2.1–2.5)
+
+**A model card is evidence, and a menu is not an allowlist** (`src/providers/`, PLAN-NEXT 2.1–2.5).
+A card is `{id, provider, access, tier, contextK, costInPer1M, costOutPer1M, verifiedBy}` on disk;
+`verifiedBy` is required at parse and names a probe transcript under `<stateDir>/providers/`, which
+`orchestra doctor` writes by actually calling the model. No transcript, no offer — the
+`availability.ts` narrowing, one field along. **`staffableCards` loads and narrows in one call and
+every composition root calls it**, for `staffingOffer`'s reason. The bundled `providers/` directory
+ships empty, and the base URLs in `PROVIDERS` are addresses to knock at rather than verified claims.
+
+The half that is not guessable: **card ids are shown to synthesis and are not added to `models`.**
+`models` is what `inspect()` refuses against, and a card's id is a name at *its provider's* API —
+putting one in would offer a Nebius DeepSeek id to `cli/claude`, and constraining `acp/opencode` to
+nebius ids would refuse the models it actually runs. Cards go into the prompt as a rendered index
+(`modelCardIndex`, budgeted like `rosterIndex`); the door for a card id arrives with the provider
+call path. Pricing follows the same caution: `metrics` prices a phase only when `modelByPhase` — what
+*ran*, never `AgentSpec.model` — matches a card and both token kinds are present, so a worker billed
+on OpenCode's contract stays unpriced rather than charged at somebody else's rate.
+

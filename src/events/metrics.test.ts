@@ -248,6 +248,90 @@ describe("missionMetrics pricing", () => {
   test("with no cards a mission reports exactly what it reported before", () => {
     assert.equal(missionMetrics(stateWith()).totals.costUsd, undefined);
   });
+
+  test("a research call with searches and no card is priced from the searches", () => {
+    const state = aMissionState({
+      mission: aMission({
+        spendByPhase: {
+          [spendPhase("research")]: {
+            ...zeroSpend(),
+            wallMs: 100,
+            dispatches: 1,
+            webSearchRequests: 4,
+          },
+        },
+      }),
+    });
+
+    const figures = missionMetrics(state);
+
+    assert.equal(figures.calls[0]?.costUsd, 0.04);
+    assert.equal(figures.calls[0]?.webSearchRequests, 4);
+    assert.equal(figures.totals.costUsd, 0.04, "the mission total must not forget the searches");
+    assert.equal(figures.totals.webSearchRequests, 4);
+  });
+
+  test("token cost and search cost add on the same call", () => {
+    const state = aMissionState({
+      mission: aMission({
+        spendByPhase: { [spendPhase("plan")]: { ...priceable(), webSearchRequests: 4 } },
+        modelByPhase: { [spendPhase("plan")]: card.id },
+      }),
+    });
+
+    const figures = missionMetrics(state, [card]);
+
+    assert.equal(figures.calls[0]?.costUsd, 4.04);
+    assert.equal(figures.totals.costUsd, 4.04);
+  });
+
+  test("a call with neither a card nor searches stays unpriced", () => {
+    const state = aMissionState({
+      mission: aMission({
+        spendByPhase: { [spendPhase("research")]: spend(100, 500) },
+      }),
+    });
+
+    const figures = missionMetrics(state);
+
+    assert.equal(figures.calls[0]?.costUsd, undefined);
+    assert.equal(figures.calls[0]?.webSearchRequests, undefined);
+    assert.equal(figures.totals.costUsd, undefined);
+    assert.equal("webSearchRequests" in figures.totals, false);
+  });
+
+  test("counted searches do not flip pricedFully false", () => {
+    const state = aMissionState({
+      mission: aMission({
+        spendByPhase: {
+          [spendPhase("research")]: {
+            ...zeroSpend(),
+            wallMs: 100,
+            dispatches: 1,
+            tokens: { measured: 500, estimated: 0, unmeasured: 0 },
+            webSearchRequests: 4,
+          },
+        },
+      }),
+    });
+
+    assert.equal(missionMetrics(state).totals.pricedFully, true);
+  });
+
+  test("counted searches do not hide an unmeasured token dispatch", () => {
+    const state = aMissionState({
+      mission: aMission({
+        spendByPhase: {
+          [spendPhase("research")]: {
+            ...spend(100, 0, 1),
+            webSearchRequests: 4,
+          },
+        },
+      }),
+    });
+
+    assert.equal(missionMetrics(state).totals.pricedFully, false);
+  });
 });
 
 // PLAN-NEXT 4.4. The report exists to answer "was the cheap model cheap?", and the two

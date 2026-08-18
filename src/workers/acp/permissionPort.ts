@@ -10,7 +10,7 @@
 //
 // **A mid-run await that two surfaces can answer is where races live**, so there is
 // exactly one writer and exactly one settle. Every resolution — a terminal `y`, a
-// dashboard click, a carrier reply — goes through `resolve`, which deletes the pending
+// dashboard click, a second surface answering late — goes through `resolve`, which deletes the pending
 // entry *before* it emits, so a request cannot be recorded twice on the log or hand two
 // answers to a worker that asked once. A resolution for an id nothing is waiting on is
 // dropped with a warning and never a throw: a second surface answering late is normal

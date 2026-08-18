@@ -38,7 +38,7 @@ import { z } from "zod";
 import { type DiscoveredConfig } from "../config/discover.js";
 import { evidenceSchema } from "../domain/artifacts.js";
 import { allowedFetchHost, hostOf } from "../domain/envelope.js";
-import { tokensFrom, type Spend } from "../domain/budget.js";
+import { tokensFrom, webSearchRequestsOf, type Spend } from "../domain/budget.js";
 import {
   criterionSchema,
   criterionSchemaWithoutScanner,
@@ -1274,19 +1274,22 @@ function failedResult(message: { subtype: string; num_turns?: number }): Error {
   );
 }
 
-/** The SDK reports four numbers and this used to keep one. Input and output are priced
- *  differently and cache is priced differently again, so the sum of the first two is a
- *  figure nobody can turn back into money — which is what "how much did this mission
- *  cost?" needs. All four are carried through; `measured` still means input + output. */
+/** The SDK reports four token numbers and this used to keep one. Input and output are
+ *  priced differently and cache is priced differently again, so the sum of the first
+ *  two is a figure nobody can turn back into money — which is what "how much did this
+ *  mission cost?" needs. All four are carried through; `measured` still means input +
+ *  output. Web-search requests ride beside them, not inside `tokens`. */
 function spendOf(
   usage: {
     input_tokens?: number;
     output_tokens?: number;
     cache_creation_input_tokens?: number;
     cache_read_input_tokens?: number;
+    server_tool_use?: { web_search_requests?: unknown } | null;
   },
   ms: number,
 ): Spend {
+  const webSearchRequests = webSearchRequestsOf(usage);
   return {
     // Measured, and the portion a mission is actually billed for: the CLI workers
     // ride an existing subscription and the orchestrator does not (§9.5).
@@ -1298,5 +1301,6 @@ function spendOf(
     }),
     wallMs: ms,
     dispatches: 1,
+    ...(webSearchRequests === undefined ? {} : { webSearchRequests }),
   };
 }

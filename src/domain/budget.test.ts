@@ -3,7 +3,15 @@
 // quietly make the ceiling unreachable.
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { addBudget, addSpend, budgetExceeded, isEmptyUsage, tokensFrom, zeroSpend } from "./budget.js";
+import {
+  addBudget,
+  addSpend,
+  budgetExceeded,
+  isEmptyUsage,
+  tokensFrom,
+  webSearchRequestsOf,
+  zeroSpend,
+} from "./budget.js";
 
 const spend = (patch: { wallMs?: number; measured?: number; dispatches?: number } = {}) => ({
   ...zeroSpend(),
@@ -109,6 +117,58 @@ describe("budget", () => {
 
       assert.equal(total.tokens.input, 4);
       assert.equal(total.tokens.cacheRead, 90);
+    });
+  });
+
+  // Web searches are a third metered quantity, not a token kind. Absent and zero
+  // are different claims here too: a transport that never mentioned searches has
+  // not reported none, and summing two such spends must not invent a 0.
+  describe("web search requests", () => {
+    test("zeroSpend omits webSearchRequests rather than claiming zero", () => {
+      assert.equal("webSearchRequests" in zeroSpend(), false);
+    });
+
+    test("addSpend sums webSearchRequests", () => {
+      const total = addSpend(
+        { ...spend(), webSearchRequests: 2 },
+        { ...spend(), webSearchRequests: 3 },
+      );
+
+      assert.equal(total.webSearchRequests, 5);
+    });
+
+    test("adding a reported count to an unreported one keeps the report", () => {
+      const total = addSpend(spend(), { ...spend(), webSearchRequests: 4 });
+
+      assert.equal(total.webSearchRequests, 4);
+    });
+
+    test("adding absent to absent leaves the field missing, not zero", () => {
+      const total = addSpend(spend(), spend());
+
+      assert.equal("webSearchRequests" in total, false);
+    });
+  });
+
+  describe("webSearchRequestsOf", () => {
+    test("reads server_tool_use.web_search_requests", () => {
+      assert.equal(webSearchRequestsOf({ server_tool_use: { web_search_requests: 3 } }), 3);
+    });
+
+    test("a usage with no server_tool_use reports nothing", () => {
+      assert.equal(webSearchRequestsOf({}), undefined);
+      assert.equal(webSearchRequestsOf({ server_tool_use: null }), undefined);
+    });
+
+    test("a non-number search count is ignored, not thrown", () => {
+      assert.equal(
+        webSearchRequestsOf({ server_tool_use: { web_search_requests: "3" } }),
+        undefined,
+      );
+      assert.equal(
+        webSearchRequestsOf({ server_tool_use: { web_search_requests: null } }),
+        undefined,
+      );
     });
   });
 

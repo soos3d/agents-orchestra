@@ -888,13 +888,13 @@ export function appendFacts(
   findings: readonly Finding[],
   at: string,
 ): Fact[] {
-  const seen = new Set(existing.map((fact) => `${fact.text} ${fact.source.ref}`));
+  const seen = new Set(existing.map((fact) => `${fact.text}\0${fact.source.ref}`));
   const taken = new Set(existing.map((fact) => fact.id));
   const facts = [...existing];
   let next = 1;
 
   for (const finding of findings) {
-    const key = `${finding.claim} ${finding.source}`;
+    const key = `${finding.claim}\0${finding.source}`;
     if (seen.has(key)) continue;
     seen.add(key);
 

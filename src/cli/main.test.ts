@@ -732,6 +732,12 @@ describe("orchestra", () => {
       });
 
       // A usable CI gate: `does this mission still plan sensibly?`
+      //
+      // The VPS failure was not exit 1 — `prepareMission` already returned `{ok:false}`.
+      // It was the projection: two missions printed "rejected twice", left a log ending
+      // at `outcome_spec_rejected`, and `mission.json` still read `specifying`, so the
+      // dashboard showed a dead mission as working. Assert the entry point, the log,
+      // and the file `createFileStore` wrote — the same shape as the 429 park test.
       test("exits non-zero when a criterion is rejected", async () => {
         const io = capture();
         // The architect writes the outcome spec since PLAN-NEXT 5.1, so the uncheckable
@@ -749,7 +755,25 @@ describe("orchestra", () => {
         });
 
         assert.equal(code, 1);
-        assert.match(io.errors.join("\n"), /rejected/);
+        assert.match(io.errors.join("\n"), /rejected twice/);
+        assert.match(io.errors.join("\n"), /Re-run/);
+
+        const events = loggedEvents();
+        const last = events.at(-1);
+        assert.equal(last?.type, "mission_status");
+        assert.equal(last?.to, "blocked");
+        assert.match(String(last?.reason ?? ""), /rejected twice/);
+
+        const missions = fs.readdirSync(path.join(stateDir, "missions"));
+        assert.equal(missions.length, 1);
+        const projection = JSON.parse(
+          fs.readFileSync(path.join(stateDir, "missions", missions[0]!, "mission.json"), "utf8"),
+        ) as { status: string };
+        assert.equal(
+          projection.status,
+          "blocked",
+          "mission.json is what the dashboard reads; specifying here is the VPS bug",
+        );
       });
     });
   });

@@ -2,7 +2,9 @@
 // outcome spec the runtime cannot evaluate is rejected here rather than discovered
 // twenty rounds later, when every internal check has been reporting success.
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { describe, test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { fold } from "../events/fold.js";
 import { type LoreEntry } from "../memory/lore.js";
 import { type EventInput } from "../events/schema.js";
@@ -28,7 +30,13 @@ import {
   type ResearchResult,
 } from "./calls.js";
 import { type HumanPort, type SignoffPresentation } from "./human.js";
-import { MAX_SIGNOFF_REVISIONS, prepareMission, presentAndSignOff } from "./prepare.js";
+import {
+  MAX_SIGNOFF_REVISIONS,
+  appendFacts,
+  prepareMission,
+  presentAndSignOff,
+} from "./prepare.js";
+import { type Fact, type Finding } from "../domain/ledger.js";
 import { type MissionStore } from "./run.js";
 
 function testStore(seed: readonly EventInput[] = [missionCreated()]) {
@@ -139,6 +147,68 @@ function callsFor(options: {
 }
 
 const types = (store: { inputs: EventInput[] }) => store.inputs.map((event) => event.type);
+
+// The failure mode under test: a later "fix" that concatenates claim+source, or
+// swaps `\0` for a printable delimiter, makes two different findings look like
+// one — and `motivatedBy` then names the wrong fact. The separator is why the
+// source used to carry literal NUL bytes; the lock is the collision, not the
+// spelling of the escape.
+describe("appendFacts", () => {
+  const at = "2026-08-18T00:00:00.000Z";
+  const fact = (id: string, text: string, ref: string): Fact => ({
+    id,
+    text,
+    addedRound: 0,
+    source: { kind: "research", ref },
+    observedAt: at,
+  });
+  const finding = (claim: string, source: string): Finding => ({
+    claim,
+    source,
+    sourceKind: "codebase",
+    confidence: "high",
+  });
+
+  test("drops a finding already on record", () => {
+    const existing = [fact("f1", "routes live in src/routes", "src/routes")];
+    const out = appendFacts(existing, [finding("routes live in src/routes", "src/routes")], at);
+    assert.equal(out.length, 1);
+    assert.equal(out[0]!.id, "f1");
+  });
+
+  test("keeps a different claim or a different source, with the next free id", () => {
+    const existing = [fact("f1", "routes live in src/routes", "src/routes")];
+    const out = appendFacts(
+      existing,
+      [
+        finding("routes live in src/routes", "src/app.ts"),
+        finding("tests live in src/routes.test.ts", "src/routes"),
+      ],
+      at,
+    );
+    assert.deepEqual(
+      out.map((entry) => entry.id),
+      ["f1", "f2", "f3"],
+    );
+    assert.equal(out[1]!.source.ref, "src/app.ts");
+    assert.equal(out[2]!.text, "tests live in src/routes.test.ts");
+  });
+
+  test("does not treat claim+source concatenation as identity", () => {
+    const existing = [fact("f1", "ab", "c")];
+    const out = appendFacts(existing, [finding("a", "bc")], at);
+    assert.equal(out.length, 2, "ab+c and a+bc collide if the separator is dropped");
+    assert.equal(out[1]!.id, "f2");
+    assert.equal(out[1]!.text, "a");
+    assert.equal(out[1]!.source.ref, "bc");
+  });
+
+  test("the source file has no literal NUL, so ripgrep can search it", () => {
+    const src = fs.readFileSync(fileURLToPath(new URL("./prepare.ts", import.meta.url)), "utf8");
+    assert.equal(src.includes("\u0000"), false);
+    assert.match(src, /\\0\$\{fact\.source\.ref\}/);
+  });
+});
 
 describe("prepareMission", () => {
   test("researches, writes the spec, plans, and estimates", async () => {

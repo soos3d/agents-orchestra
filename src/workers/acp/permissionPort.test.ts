@@ -4,7 +4,7 @@
 // A running agent asking for a capability is the one place in the system where a
 // worker *awaits* a human, and an await is where races live. Two surfaces may answer
 // the same request (§10's one inbox, one level down), an answer may arrive twice from
-// a carrier that retried, and under `--unattended` nobody answers at all. All three
+// a second surface answering late, and under `--unattended` nobody answers at all. All three
 // have to end with exactly one `permission_resolved` on the log and exactly one
 // settled promise — never a hang, never a throw.
 import assert from "node:assert/strict";

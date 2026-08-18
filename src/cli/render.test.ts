@@ -159,6 +159,26 @@ describe("renderMetrics", () => {
     assert.match(out, /unpriced/);
   });
 
+  test("names the web searches that costUsd includes", () => {
+    const out = render({
+      totals: { ...metrics().totals, webSearchRequests: 4, costUsd: 0.04 },
+      calls: [
+        {
+          call: "research",
+          calls: 1,
+          wallMs: 9_000,
+          measuredTokens: 12_000,
+          estimatedTokens: 0,
+          webSearchRequests: 4,
+          costUsd: 0.04,
+        },
+      ],
+    });
+
+    assert.match(out, /4 searches/);
+    assert.match(out, /research/);
+  });
+
   test("groups digits the same way regardless of the machine's locale", () => {
     // These lines get diffed between two runs; a locale-dependent separator is not a
     // property of the mission.
