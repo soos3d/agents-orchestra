@@ -474,7 +474,15 @@ const researchSchema: z.ZodType<ResearchResult> = z.object({
 // it, and an architect that returns a spec and no design has answered half the question
 // while the mission carries on as though it answered all of it.
 const architectSchema: z.ZodType<ArchitectResult> = z.object({
-  criteria: z.array(z.unknown()).optional(),
+  // Required and non-empty, because this call *is* the criteria author and the very next
+  // step refuses an answer without them. Optional here cost two live missions: the model
+  // was shown a shape saying `criteria` could be left out, left it out, and
+  // `writeOutcomeSpec` then rejected "(empty)" twice and ended the mission with a design
+  // note and no contract. Sent back inside `ask` for one cheap reformat rather than
+  // costing an architect round trip at the prepare layer — the same trade `designNote`'s
+  // `min(1)` already makes, one field along. Still `unknown[]`: an uncheckable criterion
+  // has to *reach* `writeOutcomeSpec` to be refused by it.
+  criteria: z.array(z.unknown()).min(1),
   designNote: z.string().min(1),
   // Names, and the schema is where "names only" is enforced rather than hoped for. A
   // POSIX variable name, not merely "no `=` in it": a model that answers

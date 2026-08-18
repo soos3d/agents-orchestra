@@ -521,7 +521,7 @@ describe("createAgentCalls", () => {
     test("tells every call that authors a check that arguments are passed verbatim", async () => {
       const { run, seen } = transport([
         JSON.stringify({ brief: "b", confidence: "low", findings: [], criteria: [] }),
-        JSON.stringify({ criteria: [], designNote: "# Design" }),
+        JSON.stringify({ criteria: [aCriterion()], designNote: "# Design" }),
         JSON.stringify({ tasks: [aPlannedTask()] }),
         JSON.stringify(anAgentSpec()),
       ]);
@@ -569,7 +569,7 @@ describe("createAgentCalls", () => {
     // read. Nothing about it is invalid, so there is nothing to reject — the fix is that
     // the call is told what a line break is inside a JSON string.
     test("the architect is told its note needs real line breaks", async () => {
-      const { run, seen } = transport([JSON.stringify({ criteria: [], designNote: "# D" })]);
+      const { run, seen } = transport([JSON.stringify({ criteria: [aCriterion()], designNote: "# D" })]);
       const calls = createAgentCalls({ config, runQuery: run });
 
       await calls.architect({ goal: "g", brief: "b", findings: [] });
@@ -582,7 +582,7 @@ describe("createAgentCalls", () => {
     // would go back to putting the live integration first and every worker would be
     // asked to do it with no credentials and no network.
     test("the architect is told to design against mocks and to name env vars", async () => {
-      const { run, seen } = transport([JSON.stringify({ criteria: [], designNote: "# D" })]);
+      const { run, seen } = transport([JSON.stringify({ criteria: [aCriterion()], designNote: "# D" })]);
       const calls = createAgentCalls({ config, runQuery: run });
 
       await calls.architect({ goal: "g", brief: "b", findings: [] });
@@ -602,8 +602,8 @@ describe("createAgentCalls", () => {
     // sentence above.
     test("an envVars entry carrying a value is refused at the boundary", async () => {
       const { run, seen } = transport([
-        JSON.stringify({ criteria: [], designNote: "# D", envVars: ["STRIPE_KEY=sk_live_9d8"] }),
-        JSON.stringify({ criteria: [], designNote: "# D", envVars: ["STRIPE_KEY"] }),
+        JSON.stringify({ criteria: [aCriterion()], designNote: "# D", envVars: ["STRIPE_KEY=sk_live_9d8"] }),
+        JSON.stringify({ criteria: [aCriterion()], designNote: "# D", envVars: ["STRIPE_KEY"] }),
       ]);
       const calls = createAgentCalls({ config, runQuery: run });
 
@@ -625,6 +625,44 @@ describe("createAgentCalls", () => {
       assert.equal(seen.prompts.length, 2, "the missing design note was accepted");
       assert.match(seen.prompts[1]!, /rejected/);
       assert.equal(result.designNote, "# Design");
+    });
+
+    // Two live missions died here. `criteria` was optional on this schema, so an answer
+    // that omitted it was *valid* — and `prepare.ts`'s `writeOutcomeSpec(second.criteria ??
+    // [], …)` then refused it as "no criteria, nothing to verify", twice, and the mission
+    // ended having written a design note and no contract. Both a Qwen and a DeepSeek card
+    // did it, so it is the schema and not the card: the model was shown a shape that
+    // permits exactly what the next step forbids, which is the standing rule about a prompt
+    // and its validation moving together, one layer down.
+    //
+    // Sent back *here* rather than refused there for the same reason the design note is: a
+    // reformat is one cheap call inside `ask`, and an architect round trip at the prepare
+    // layer is a whole decision point — up to five minutes on a slow card, twice.
+    test("an architect answer with no criteria is sent back once", async () => {
+      const { run, seen } = transport([
+        JSON.stringify({ designNote: "# Design" }),
+        JSON.stringify({ criteria: [aCriterion()], designNote: "# Design" }),
+      ]);
+      const calls = createAgentCalls({ config, runQuery: run });
+
+      const result = await calls.architect({ goal: "g", brief: "b", findings: [] });
+
+      assert.equal(seen.prompts.length, 2, "an answer with no criteria was accepted");
+      assert.equal(result.criteria?.length, 1);
+    });
+
+    // An empty array is the same answer spelled differently, and it arrived from a real
+    // card as `criteria: []` beside a design note that described three of them.
+    test("an architect answer with an empty criteria array is sent back too", async () => {
+      const { run, seen } = transport([
+        JSON.stringify({ criteria: [], designNote: "# Design" }),
+        JSON.stringify({ criteria: [aCriterion()], designNote: "# Design" }),
+      ]);
+      const calls = createAgentCalls({ config, runQuery: run });
+
+      await calls.architect({ goal: "g", brief: "b", findings: [] });
+
+      assert.equal(seen.prompts.length, 2, "an empty criteria array was accepted");
     });
 
     // The criteria stay an open array here for the reason they were open on `research`:
@@ -931,7 +969,7 @@ describe("the repo map in the tool-less prompts", () => {
         seen.push(systemPrompt);
         return {
           text: JSON.stringify({
-            criteria: [],
+            criteria: [aCriterion()],
             designNote: "x",
             findings: [],
             brief: "",
@@ -962,7 +1000,7 @@ describe("the scanner offer in the criteria-authoring prompts", () => {
         seen.push(systemPrompt);
         return {
           text: JSON.stringify({
-            criteria: [],
+            criteria: [aCriterion()],
             designNote: "x",
             findings: [],
             brief: "",
