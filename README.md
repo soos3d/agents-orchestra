@@ -6,7 +6,9 @@
 
 A local program that runs a **mission**: a goal, a written definition of done, and a loop that drives the coding tools you already have until that definition is met (or you run out of time, or something actually blocks).
 
-<img src="/assets/readme-hero.png" alt="orchestra-hero" width="350"/>
+<p align="center">
+  <img src="/assets/readme-hero.png" alt="orchestra-hero" width="350"/>
+</p>
 
 ## The idea
 
