@@ -181,6 +181,32 @@ describe("spawnDuplex", () => {
       assert.equal((await proc.exited).code, 0);
     });
 
+    // The live failure this file's header only half-anticipated. A worker on the VPS was
+    // spawned as `npx @zed-industries/claude-code-acp`, npx forked the adapter as a
+    // *grandchild*, and the 60s deadline's SIGTERM went to npx alone: the adapter kept the
+    // stdio socketpair open, was reparented to systemd, and went on to serve a permission
+    // request two seconds *after* it had been killed. Nothing closed, so `exited` never
+    // resolved, dispatch waited on a process it believed was gone, and the panic — which
+    // takes the same path — was inert for the 46 minutes that followed. Signalling the pid
+    // is not signalling the process, and every transport target here (`npx`, `npm exec`, a
+    // login shell) forks.
+    test("terminates the whole process group, so a forked grandchild dies too", { timeout: 20_000 }, async () => {
+      // 60s, not 3: a grandchild that outlives the test's own patience cannot pass by exiting
+      // on its own while `exited` waits on the pipe it is still holding.
+      const proc = spawnDuplex(
+        "sh",
+        ["-c", 'sleep 60 & echo "$!"; wait'],
+        { cwd: process.cwd(), timeoutMs: 60_000 },
+      );
+      const grandchild = Number((await waitForOutput(proc.stdout, /\d+\s/)).trim());
+      assert.ok(Number.isInteger(grandchild) && grandchild > 0);
+
+      await proc.kill();
+
+      // Signal 0 tests for existence: it throws ESRCH once the process is really gone.
+      assert.throws(() => process.kill(grandchild, 0), /ESRCH/);
+    });
+
     test("two concurrent kill() calls both resolve", async () => {
       const proc = spawnDuplex("node", node("setInterval(() => {}, 1000)"), {
         cwd: process.cwd(),

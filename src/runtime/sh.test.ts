@@ -121,6 +121,23 @@ describe("run", () => {
     assert.equal((await pending).signal, "SIGTERM");
   });
 
+  // `duplex.ts`'s bug, in the file it was copied from. `terminate` signalled the pid it
+  // spawned, and a target that forks — `npx`, `npm exec`, a shell running a pipeline —
+  // leaves the real work in a grandchild that survives the timeout, holds the stdout pipe
+  // open, and keeps `close` from ever firing. A worker then burns forever instead of
+  // failing at its budget.
+  // The grandchild outlives the test's own 20s patience on purpose: a version that slept
+  // for less than the test's own patience passed by waiting the orphan out, which is the
+  // bug wearing a green tick.
+  test("a timeout terminates the whole process group, not just the spawned pid", { timeout: 20_000 }, async () => {
+    const result = await run("sh", ["-c", 'sleep 60 & echo "$!"; wait'], { timeoutMs: 2000 });
+    const grandchild = Number(result.stdout.trim());
+
+    assert.ok(Number.isInteger(grandchild) && grandchild > 0);
+    assert.equal(result.timedOut, true);
+    assert.throws(() => process.kill(grandchild, 0), /ESRCH/);
+  });
+
   // §2a rule 5: `codex not found on PATH` beats a raw ENOENT.
   test("a missing binary fails with a message naming the binary", async () => {
     const err = await run("definitely-not-installed-xyz", []).catch((e: unknown) => e);

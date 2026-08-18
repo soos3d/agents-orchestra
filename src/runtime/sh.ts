@@ -64,9 +64,34 @@ export class ProcessStartError extends Error {
   }
 }
 
-function terminate(child: ChildProcess, graceMs: number): void {
-  child.kill("SIGTERM");
-  const killer = setTimeout(() => child.kill("SIGKILL"), graceMs);
+/**
+ * Signal the child's whole process group, falling back to the pid alone.
+ *
+ * Signalling the pid is not signalling the process. Every transport target here forks —
+ * `npx` runs the adapter as a grandchild, a login shell runs the CLI as one — and a
+ * SIGTERM to the pid we spawned leaves the real work running, reparented to init, still
+ * holding the stdio it inherited. A live mission is what proved it: an ACP worker was
+ * "killed" at its 60s deadline and served a permission request two seconds later, while
+ * `close` never fired and dispatch waited 46 minutes on a process it believed was gone.
+ *
+ * The negated pid is the group, which exists only because both spawns pass
+ * `detached: true`. The fallback covers the two ways that can fail rather than work:
+ * a platform without process groups, and a group whose last member left between the
+ * SIGTERM and the SIGKILL (ESRCH).
+ */
+export function signalTree(child: ChildProcess, signal: NodeJS.Signals): void {
+  const { pid } = child;
+  if (pid === undefined) return;
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    child.kill(signal);
+  }
+}
+
+export function terminate(child: ChildProcess, graceMs: number): void {
+  signalTree(child, "SIGTERM");
+  const killer = setTimeout(() => signalTree(child, "SIGKILL"), graceMs);
   // Do not hold the event loop open waiting to escalate a process that already left.
   killer.unref?.();
   child.once("close", () => clearTimeout(killer));
@@ -82,6 +107,8 @@ export function run(cmd: string, args: readonly string[], opts: RunOptions = {})
       cwd: opts.cwd,
       env: opts.env ?? process.env,
       stdio: ["pipe", "pipe", "pipe"],
+      // Its own process group, so `terminate` can signal everything the target forks.
+      detached: true,
     });
 
     const stdout = createRingBuffer(limit);

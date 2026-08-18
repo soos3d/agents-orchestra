@@ -53,6 +53,15 @@ npm i -g @soos3d/orchestra
 orchestra doctor
 ```
 
+Until the package is published, ship the tarball instead — no git remote or registry access needed
+on the box:
+
+```bash
+npm run build && npm pack                       # on the laptop
+scp soos3d-orchestra-*.tgz <vps>:/tmp/
+ssh <vps> 'npm i -g /tmp/soos3d-orchestra-*.tgz && orchestra doctor'
+```
+
 ## Pin the port
 
 `serve` asks the kernel for a free port unless told otherwise — `startWebServer` listens on
@@ -89,8 +98,9 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=%h/code/some-repo
+Environment=PATH=%h/.nvm/versions/node/v22.11.0/bin:/usr/local/bin:/usr/bin:/bin
 Environment=NEBIUS_API_KEY=…
-ExecStart=%h/.nvm/versions/node/v22.11.0/bin/orchestra serve --port 4600
+ExecStart=%h/.nvm/versions/node/v22.11.0/bin/node %h/.nvm/versions/node/v22.11.0/lib/node_modules/@soos3d/orchestra/dist/index.js serve --port 4600
 Restart=on-failure
 
 [Install]
@@ -104,8 +114,18 @@ systemctl --user enable --now orchestra
 journalctl --user -u orchestra -f
 ```
 
-Two things the unit has to get right. `ExecStart` needs an absolute path to the binary, because a
-user unit does not inherit the login shell's PATH — `command -v orchestra` on the box gives it.
+Two things the unit has to get right. **`ExecStart` runs `node` on the entry point, not the
+`orchestra` shim** — a user unit does not inherit the login shell's PATH, and the shim starts
+`#!/usr/bin/env node`, so under nvm it dies with `/usr/bin/env: 'node': No such file or directory`
+and `status=127` five times before systemd gives up. Pointing at the binary's absolute path is not
+enough; the interpreter has to be absolute too. `command -v node` and
+`npm root -g` on the box give both halves (`Environment=PATH=…` in front of the shim works as well).
+**`Environment=PATH` is the same trap one layer along, and it fails quietly.** Without it the
+server starts, serves the dashboard, and reports `✗ workers — no coding agent on PATH` while
+`orchestra doctor` in your SSH session (which sourced nvm) reports `✓ workers claude`. `doctor`
+probes what *this process* can start, and a user unit's PATH is `/usr/bin:/bin` — so nvm's `claude`
+does not exist to it. The `acp` row goes with it.
+
 And `WorkingDirectory` matters: the directory `serve` starts in becomes the default workspace, the
 one the rail labels *where serve was started* and the only one that cannot be removed.
 

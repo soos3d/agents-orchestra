@@ -15,9 +15,9 @@
 // through the ring buffer. stdout deliberately does not — it is the protocol channel,
 // it belongs to the reader, and copying it here would both duplicate every frame and
 // put a cap on the thing the whole session runs on.
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createRingBuffer } from "./ringBuffer.js";
-import { ProcessStartError } from "./sh.js";
+import { ProcessStartError, terminate } from "./sh.js";
 
 export interface DuplexExit {
   code: number | null;
@@ -65,14 +65,6 @@ export interface DuplexProcess {
 const DEFAULT_MAX_STDERR = 256 * 1024;
 const DEFAULT_GRACE_MS = 2000;
 
-function terminate(child: ChildProcess, graceMs: number): void {
-  child.kill("SIGTERM");
-  const killer = setTimeout(() => child.kill("SIGKILL"), graceMs);
-  // Do not hold the event loop open waiting to escalate a process that already left.
-  killer.unref?.();
-  child.once("close", () => clearTimeout(killer));
-}
-
 export function spawnDuplex(
   command: string,
   args: readonly string[],
@@ -85,6 +77,9 @@ export function spawnDuplex(
     cwd: opts.cwd,
     env: opts.env ?? process.env,
     stdio: ["pipe", "pipe", "pipe"],
+    // Its own process group, so `terminate` can signal everything the target forks —
+    // `npx` runs the ACP adapter as a grandchild that outlived every SIGTERM before this.
+    detached: true,
   });
 
   const stderr = createRingBuffer(opts.maxStderrBytes ?? DEFAULT_MAX_STDERR);
