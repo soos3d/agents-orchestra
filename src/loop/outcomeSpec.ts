@@ -8,6 +8,7 @@
 // "Vague" is not a property code can read off a sentence. What it can read is whether
 // the criterion carries a check that will ever produce an answer, and that is the
 // operational definition used here: no check, a malformed one, or `kind: 'none'`.
+import { needsShell } from "../runtime/command.js";
 import { criterionSchema, type Criterion } from "../domain/ledger.js";
 
 export interface SpecRejection {
@@ -74,6 +75,29 @@ export function writeOutcomeSpec(
         reason:
           `Its check is 'none', so it can never be evaluated and the mission could never ` +
           `legitimately report success. Give it a command to run or a rubric to judge.`,
+      });
+      continue;
+    }
+
+    // The same question as `kind: 'none'`, one field deeper. `runtime/command.ts` is a
+    // tokenizer and not a shell, so `runCommand` refuses a check carrying `&&`, a pipe or
+    // a redirect *when it fires* — after sign-off has frozen it into the contract, with the
+    // work done and correct. A live mission wrote `test -f index.html && grep -q '<script'`
+    // twice with the authoring prompt already forbidding it, so the prompt is not the
+    // enforcement. Refusing it here turns a criterion that could never be met into a
+    // send-back the author can fix, which is what `inspect()` does for an invented model.
+    //
+    // `needsShell` and not a regex over the string: it walks the same quote and escape
+    // states the parser does, so `grep -q 'a && b' file` stays an argument. A regex here
+    // would be defect 34 in the validator, failing correct work.
+    if (criterion.check.kind === "command" && needsShell(criterion.check.command)) {
+      rejected.push({
+        criterion: criterion.statement,
+        reason:
+          `Its command needs a shell (\`${criterion.check.command}\`), and checks run as one ` +
+          `program with arguments — no pipes, no '&&', no redirects, no '$()', no globs. It ` +
+          `would be refused every time it ran, so the criterion could never be met however ` +
+          `good the work was. Split it into one criterion per command, or use a judge rubric.`,
       });
       continue;
     }

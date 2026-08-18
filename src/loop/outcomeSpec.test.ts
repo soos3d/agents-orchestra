@@ -15,6 +15,42 @@ describe("writeOutcomeSpec", () => {
     assert.equal(result.ok && result.criteria[0]?.id, "c1");
   });
 
+  // A live mission wrote `test -f index.html && grep -q '<script'` as a criterion, twice,
+  // with the prompt already forbidding `&&` in a check. It passed this validation, was
+  // signed off, froze into the contract, and would have been refused by `needsShell` at
+  // verification time — every round, with the work already done and correct. That is the
+  // failure this file exists to prevent, one field deeper than "has a check": a check the
+  // runtime will refuse is a check that never produces an answer. Refusing it here makes
+  // it a planning problem the author is sent back to fix, which is what `inspect()` does
+  // for an invented model id.
+  test("rejects a command check that needs a shell, which verification would refuse", () => {
+    const result = writeOutcomeSpec([
+      {
+        id: "c1",
+        statement: "the page exists and has an inline script",
+        check: { kind: "command", command: "test -f index.html && grep -q '<script' index.html" },
+      },
+    ]);
+
+    assert.equal(result.ok, false);
+    assert.match(result.ok === false ? result.rejected[0]!.reason : "", /shell|&&/);
+  });
+
+  // The quoting rules are `runtime/command.ts`'s, not a second opinion about them: a `&&`
+  // inside quotes is an argument, and refusing it here would fail correct work — defect 34
+  // in the validator instead of in the scanner.
+  test("accepts a command whose shell operator is inside quotes, because that is an argument", () => {
+    const result = writeOutcomeSpec([
+      {
+        id: "c1",
+        statement: "the README documents the && idiom",
+        check: { kind: "command", command: "grep -q 'a && b' README.md" },
+      },
+    ]);
+
+    assert.equal(result.ok, true);
+  });
+
   test("accepts a criterion checked by a judge, which is how non-code work closes", () => {
     const result = writeOutcomeSpec([
       {
