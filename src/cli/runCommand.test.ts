@@ -10,6 +10,8 @@ import os from "node:os";
 import path from "node:path";
 import { describe, test } from "node:test";
 import { type DiscoveredConfig } from "../config/discover.js";
+import { staffableCalls } from "../domain/mission.js";
+import { type ModelCard } from "../providers/modelCard.js";
 import { zeroSpend } from "../domain/budget.js";
 import { fold } from "../events/fold.js";
 import { type EventInput } from "../events/schema.js";
@@ -492,6 +494,17 @@ describe("parseRunArgs and --staff", () => {
   });
 });
 
+describe("parseRunArgs and --factory", () => {
+  test("the flag reaches the options, and absent is today's empty staffing", () => {
+    const off = parseRunArgs(["do the thing"]);
+    const on = parseRunArgs(["do the thing", "--factory"]);
+
+    assert.equal(off.ok ? off.options.factory : undefined, false);
+    assert.equal(on.ok ? on.options.factory : undefined, true);
+    assert.deepEqual(on.ok ? on.options.staffing : undefined, {});
+  });
+});
+
 // The optional-`Deps` trap, one field along: `staffing` is threaded through four
 // composition roots, and a feature that is finished and switched off at the same time is
 // what happens when one of them drops it. So the root is what is asserted here — that the
@@ -611,6 +624,113 @@ describe("runMission and staffing", () => {
     assert.equal(code, 1);
     assert.match(errors.join("\n"), /--research-web cannot be combined/);
     assert.equal(fs.existsSync(path.join(config.stateDir, "missions")), false);
+  });
+
+  const aCard = (over: Partial<ModelCard> = {}): ModelCard => ({
+    id: "cheap/fast",
+    provider: "nebius",
+    access: "api-key",
+    tier: "fast",
+    contextK: 128,
+    costInPer1M: 0.05,
+    costOutPer1M: 0.1,
+    verifiedBy: "probes/cheap.json",
+    ...over,
+  });
+
+  const plant = (stateDir: string, cards: ModelCard[]): void => {
+    const dir = path.join(stateDir, "providers");
+    fs.mkdirSync(path.join(dir, "probes"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "nebius.json"), JSON.stringify(cards));
+    for (const card of cards) fs.writeFileSync(path.join(dir, card.verifiedBy), "{}");
+  };
+
+  test("--factory staffs every staffable call to the resolved card id, not the word fast", async () => {
+    const config = { ...aConfig(), providerKeys: { nebius: "k" } };
+    const cheap = aCard();
+    const dear = aCard({
+      id: "dear/fast",
+      costInPer1M: 0.4,
+      costOutPer1M: 0.8,
+      verifiedBy: "probes/dear.json",
+    });
+    plant(config.stateDir, [dear, cheap]);
+    const seen: unknown[] = [];
+
+    await assert.rejects(() =>
+      runMission({ ...options({}), factory: true }, config, quietIo, {
+        createCalls: (_config, _onSpend, staffing) => {
+          seen.push(staffing);
+          return scriptedCalls({});
+        },
+      }),
+    );
+
+    const expected = Object.fromEntries(staffableCalls().map((call) => [call, "cheap/fast"]));
+    assert.deepEqual(seen, [expected]);
+  });
+
+  test("--staff plan=OtherId --factory leaves plan as OtherId", async () => {
+    const config = { ...aConfig(), providerKeys: { nebius: "k" } };
+    const cheap = aCard();
+    const other = aCard({
+      id: "other/id",
+      costInPer1M: 0.4,
+      verifiedBy: "probes/other.json",
+    });
+    plant(config.stateDir, [cheap, other]);
+    const seen: Record<string, string | undefined>[] = [];
+
+    await assert.rejects(() =>
+      runMission(
+        { ...options({ plan: "other/id" }), factory: true },
+        config,
+        quietIo,
+        {
+          createCalls: (_config, _onSpend, staffing) => {
+            seen.push(staffing ?? {});
+            return scriptedCalls({});
+          },
+        },
+      ),
+    );
+
+    assert.equal(seen[0]?.plan, "other/id");
+    for (const call of staffableCalls()) {
+      if (call === "plan") continue;
+      assert.equal(seen[0]?.[call], "cheap/fast");
+    }
+  });
+
+  test("--factory with zero cards exits 1 and writes no mission dir", async () => {
+    const config = aConfig();
+    const errors: string[] = [];
+
+    const code = await runMission(
+      { ...options({}), factory: true },
+      config,
+      { out: () => {}, err: (line: string) => errors.push(line) },
+      { createCalls: () => scriptedCalls({}) },
+    );
+
+    assert.equal(code, 1);
+    assert.match(errors.join("\n"), /probe a fast or worker card/);
+    assert.equal(fs.existsSync(path.join(config.stateDir, "missions")), false);
+  });
+
+  test("no --factory and no --staff still hands createCalls an empty staffing", async () => {
+    const seen: unknown[] = [];
+
+    await assert.rejects(() =>
+      runMission(options({}), aConfig(), quietIo, {
+        createCalls: (_config, _onSpend, staffing) => {
+          seen.push(staffing);
+          return scriptedCalls({});
+        },
+      }),
+    );
+
+    assert.deepEqual(seen, [{}]);
   });
 });
 

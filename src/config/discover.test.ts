@@ -244,6 +244,15 @@ describe("doctor", () => {
     assert.match(formatReport(doctor({ ...base, agents: [] }, "v18.0.0")), /Not ready/);
     assert.match(formatReport(doctor({ ...base, repoRoot: "/work" }, "v23.11.0")), /Ready\./);
   });
+
+  test("the report leads with the two pools, before any check", () => {
+    const text = formatReport(doctor({ ...base, agents: ["claude"] }, "v23.11.0"));
+
+    assert.match(
+      text,
+      /^Workers on PATH \(capped\): claude\nFactory cards probed: 0 \(none\)\nJudge is local and not staffable\.\n/,
+    );
+  });
 });
 
 // Zero required environment variables stays the rule: a provider nobody configured is

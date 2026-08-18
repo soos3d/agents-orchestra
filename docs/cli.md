@@ -71,7 +71,8 @@ at any time without blocking the loop, and panic stops dispatch immediately.
 | `--harness <id>` | how the workers run: `<transport>/<agent>`, e.g. `acp/claude`. Defaults to what this machine offers — see `doctor`. |
 | `--worker-model <m>` | the model workers run on. `acp/claude` and `acp/codex` pick their own and ignore it; `acp/opencode` honours it. |
 | `--orchestrator-model <m>` | the model the decision points run on, for this mission only. |
-| `--staff <pairs>` | run named decision points on a verified model card: `--staff plan=<card>,research=<card>`. `doctor` is what makes a card offerable; `judge` is not staffable. See [models](./models.md). |
+| `--staff <pairs>` | run named decision points on a verified model card or tier (`fast`, `worker`, `strong`, `frontier`): `--staff plan=fast,research=<card>`. `doctor` is what makes a card offerable; `judge` is not staffable. See [models](./models.md). |
+| `--factory` | fill still-empty staffable points with the cheapest probed `fast` (else `worker`) card. Opt-in. Refused if this machine has neither. |
 | `--scan <name>` | let the outcome spec gate on a security scanner (`deepsec`). Off by default — a scan runs an AI agent over the changed files and costs real money per file. Not with `--quick`. |
 | `--research-web` | let the research pass read the web (WebSearch, WebFetch). Off by default; not with `--quick` or `--staff research=<card>`. |
 | `--domain <host>` | a host `--research-web` may fetch (repeatable). WebFetch is held to the list; search is not, because results come from a backend rather than a host. A denied fetch lands in the inbox. |

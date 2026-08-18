@@ -16,8 +16,12 @@ import { anEnvelope } from "../testing/fixtures.js";
 import { type ChatRequest, type ChatResult } from "../providers/openaiCompatible.js";
 import { CALL_NAMES } from "../domain/budget.js";
 import { type Calls } from "./calls.js";
+import { staffableCalls } from "../domain/mission.js";
 import {
+  applyFactoryPreset,
   createProviderCalls,
+  pickCardForTier,
+  pickFactoryDefault,
   providerResponseFormat,
   providerRunQuery,
   resolveStaffing,
@@ -221,6 +225,96 @@ describe("resolveStaffing", () => {
     const resolved = resolveStaffing({}, [aCard()], { nebius: "k" });
 
     assert.deepEqual(resolved.ok && resolved.byCall, {});
+  });
+
+  test("plan=fast picks the cheaper of two fast cards", () => {
+    const cheap = aCard({ id: "cheap/fast", costInPer1M: 0.05, costOutPer1M: 0.1 });
+    const dear = aCard({ id: "dear/fast", costInPer1M: 0.2, costOutPer1M: 0.4 });
+    const resolved = resolveStaffing({ plan: "fast" }, [dear, cheap], { nebius: "k" });
+
+    assert.equal(resolved.ok, true);
+    assert.equal(resolved.ok && resolved.byCall.plan?.id, "cheap/fast");
+  });
+
+  test("an exact card id wins even when a cheaper card shares the tier", () => {
+    const cheap = aCard({ id: "cheap/fast", costInPer1M: 0.05, costOutPer1M: 0.1 });
+    const dear = aCard({ id: "dear/fast", costInPer1M: 0.2, costOutPer1M: 0.4 });
+    const resolved = resolveStaffing({ plan: "dear/fast" }, [cheap, dear], { nebius: "k" });
+
+    assert.equal(resolved.ok, true);
+    assert.equal(resolved.ok && resolved.byCall.plan?.id, "dear/fast");
+  });
+
+  test("a token that is both a card id and a tier name is the card", () => {
+    const named = aCard({ id: "fast", costInPer1M: 9 });
+    const cheaper = aCard({ id: "other/fast", costInPer1M: 0.01 });
+    const resolved = resolveStaffing({ plan: "fast" }, [named, cheaper], { nebius: "k" });
+
+    assert.equal(resolved.ok && resolved.byCall.plan?.id, "fast");
+  });
+
+  test("plan=fast with only worker cards refuses and names the tiers present", () => {
+    const resolved = resolveStaffing(
+      { plan: "fast" },
+      [aCard({ id: "a/worker", tier: "worker" })],
+      { nebius: "k" },
+    );
+
+    assert.equal(resolved.ok, false);
+    assert.match(resolved.ok ? "" : resolved.problem, /fast/);
+    assert.match(resolved.ok ? "" : resolved.problem, /worker/);
+    assert.doesNotMatch(resolved.ok ? "" : resolved.problem, /frontier/);
+  });
+
+  test("an unknown token names probed ids and the four tiers", () => {
+    const resolved = resolveStaffing({ plan: "deepseek-v4" }, [aCard()], { nebius: "k" });
+
+    assert.equal(resolved.ok, false);
+    assert.match(resolved.ok ? "" : resolved.problem, /Qwen\/Qwen3-4B-fast/);
+    assert.match(resolved.ok ? "" : resolved.problem, /frontier/);
+    assert.match(resolved.ok ? "" : resolved.problem, /strong/);
+    assert.match(resolved.ok ? "" : resolved.problem, /worker/);
+    assert.match(resolved.ok ? "" : resolved.problem, /fast/);
+  });
+});
+
+describe("pickCardForTier", () => {
+  test("breaks a price tie on costOut then id", () => {
+    const late = aCard({ id: "z/fast", costInPer1M: 0.1, costOutPer1M: 0.3 });
+    const mid = aCard({ id: "m/fast", costInPer1M: 0.1, costOutPer1M: 0.2 });
+    const early = aCard({ id: "a/fast", costInPer1M: 0.1, costOutPer1M: 0.2 });
+
+    assert.equal(pickCardForTier([late, mid, early], "fast")?.id, "a/fast");
+  });
+});
+
+describe("applyFactoryPreset", () => {
+  test("fills missing staffable points with the cheapest fast card's id", () => {
+    const cheap = aCard({ id: "cheap/fast", costInPer1M: 0.05 });
+    const dear = aCard({ id: "dear/fast", costInPer1M: 0.2 });
+    const applied = applyFactoryPreset({ plan: "dear/fast" }, [dear, cheap]);
+
+    assert.equal(applied.ok, true);
+    if (!applied.ok) return;
+    assert.equal(applied.staffing.plan, "dear/fast");
+    for (const call of staffableCalls()) {
+      if (call === "plan") continue;
+      assert.equal(applied.staffing[call], "cheap/fast");
+    }
+  });
+
+  test("falls through to the cheapest worker when no fast card exists", () => {
+    const worker = aCard({ id: "a/worker", tier: "worker", costInPer1M: 0.2 });
+    const dear = aCard({ id: "b/worker", tier: "worker", costInPer1M: 0.9 });
+    assert.equal(pickFactoryDefault([dear, worker])?.id, "a/worker");
+  });
+
+  test("refuses when there is no fast or worker card, naming the fix", () => {
+    const applied = applyFactoryPreset({}, [aCard({ id: "opus", tier: "frontier" })]);
+
+    assert.equal(applied.ok, false);
+    assert.match(applied.ok ? "" : applied.problem, /probe a fast or worker card/);
+    assert.match(applied.ok ? "" : applied.problem, /--staff plan=/);
   });
 });
 

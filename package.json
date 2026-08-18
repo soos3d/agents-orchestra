@@ -12,12 +12,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/soos3d/orchestra.git"
+    "url": "git+https://github.com/soos3d/agents-orchestra.git"
   },
   "bugs": {
-    "url": "https://github.com/soos3d/orchestra/issues"
+    "url": "https://github.com/soos3d/agents-orchestra/issues"
   },
-  "homepage": "https://github.com/soos3d/orchestra#readme",
+  "homepage": "https://github.com/soos3d/agents-orchestra#readme",
   "publishConfig": {
     "access": "public"
   },

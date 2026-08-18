@@ -35,7 +35,7 @@ import { ensureRepoKb } from "../config/kb.js";
 import { readLore } from "../memory/lore.js";
 import { loadSavedMission, seedFromSaved, type SavedMission } from "../memory/savedMission.js";
 import { staffableCards } from "../providers/modelCard.js";
-import { resolveStaffing } from "../loop/providerCalls.js";
+import { applyFactoryPreset, resolveStaffing } from "../loop/providerCalls.js";
 import { SCANNERS } from "../domain/artifacts.js";
 import { availableScanners } from "../workers/availability.js";
 import { staffingOffer } from "../workers/harness.js";
@@ -81,6 +81,11 @@ export interface RunOptions {
   /** Which decision points run on a model card rather than through the Agent SDK
    *  (`--staff plan=<card>`). Empty is every mission before PLAN-NEXT 4. */
   staffing: MissionStaffing;
+  /**
+   * Fill still-empty staffable points with the cheapest probed `fast` (else `worker`)
+   * card (`--factory`). Opt-in: a run that never typed it is today's empty staffing.
+   */
+  factory?: boolean;
   /**
    * Specialist scanners this mission's outcome spec may use as a check
    * (`--scan deepsec`) — PLAN-NEXT 6.3.
@@ -189,6 +194,7 @@ const RUN_FLAGS = {
   scan: { type: "string", multiple: true },
   env: { type: "string", multiple: true },
   "research-web": { type: "boolean" },
+  factory: { type: "boolean" },
   domain: { type: "string", multiple: true },
   saved: { type: "string" },
   budget: { type: "string" },
@@ -239,6 +245,7 @@ export function parseRunArgs(argv: readonly string[]): ParsedRun {
     scan: string[];
     env: string[];
     "research-web": boolean;
+    factory: boolean;
     domain: string[];
     saved: string;
     budget: string;
@@ -429,6 +436,7 @@ export function parseRunArgs(argv: readonly string[]): ParsedRun {
       budgetMinutes,
       runtime,
       staffing,
+      factory: values.factory === true,
       scanners,
       env,
       research,
@@ -556,7 +564,16 @@ export async function runMission(
   // now is a human's decision made now. Merged here, before `resolveStaffing`, so a preset
   // naming a card whose probe transcript has since gone is refused with the same message
   // the flag gets rather than falling through to the Agent SDK silently.
-  const staffing: MissionStaffing = { ...saved?.staffing, ...options.staffing };
+  const cards = staffableCards(config.stateDir, (message) => io.err(message));
+  let staffing: MissionStaffing = { ...saved?.staffing, ...options.staffing };
+  if (options.factory) {
+    const preset = applyFactoryPreset(staffing, cards);
+    if (!preset.ok) {
+      io.err(preset.problem);
+      return 1;
+    }
+    staffing = preset.staffing;
+  }
 
   const goal = options.goal || saved?.goal || "";
   const missionId = newMissionId(goal, new Date());
@@ -593,7 +610,7 @@ export async function runMission(
   // with a directory already on disk (PLAN-NEXT 4.2's door).
   const resolved = resolveStaffing(
     staffing,
-    staffableCards(config.stateDir, (message) => io.err(message)),
+    cards,
     config.providerKeys ?? {},
     options.research === "web",
   );

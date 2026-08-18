@@ -10,6 +10,7 @@ import path from "node:path";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  CARD_TIERS,
   MODEL_CARD_INDEX_BUDGET,
   costOf,
   loadModelCards,
@@ -42,6 +43,10 @@ test("a card with no evidence does not parse", () => {
   assert.match(parsed.ok ? "" : parsed.problem, /verifiedBy/);
   // The message names the fix rather than quoting a zod path at somebody.
   assert.match(parsed.ok ? "" : parsed.problem, /JSON array of model cards/);
+});
+
+test("CARD_TIERS is the existing enum, not a second vocabulary", () => {
+  assert.deepEqual([...CARD_TIERS], ["frontier", "strong", "worker", "fast"]);
 });
 
 test("a tier or access value outside the vocabulary does not parse", () => {

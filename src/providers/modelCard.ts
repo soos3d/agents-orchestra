@@ -38,6 +38,11 @@ import { z } from "zod";
  */
 export const MODEL_CARD_INDEX_BUDGET = 2000;
 
+const cardTierSchema = z.enum(["frontier", "strong", "worker", "fast"]);
+/** The four names `--staff plan=fast` accepts. Same enum the card schema already had. */
+export const CARD_TIERS = cardTierSchema.options;
+export type CardTier = z.infer<typeof cardTierSchema>;
+
 export const modelCardSchema = z.object({
   /** Exactly the string that goes into `AgentSpec.model` — this is the id a harness is
    *  told, not a display name. */
@@ -46,7 +51,7 @@ export const modelCardSchema = z.object({
    *  has no base URL for can never be probed, and so can never be offered. */
   provider: z.string().min(1),
   access: z.enum(["subscription", "api-key", "local"]),
-  tier: z.enum(["frontier", "strong", "worker", "fast"]),
+  tier: cardTierSchema,
   contextK: z.number().int().positive(),
   costInPer1M: z.number().nonnegative(),
   costOutPer1M: z.number().nonnegative(),

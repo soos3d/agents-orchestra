@@ -29,13 +29,13 @@
 import { z } from "zod";
 import { type DiscoveredConfig } from "../config/discover.js";
 import { CALL_NAMES, tokensFrom, type Spend } from "../domain/budget.js";
-import { type MissionStaffing } from "../domain/mission.js";
+import { staffableCalls, type MissionStaffing } from "../domain/mission.js";
 import {
   chatCompletion,
   PROVIDERS,
   type ChatResult,
 } from "../providers/openaiCompatible.js";
-import { type ModelCard } from "../providers/modelCard.js";
+import { CARD_TIERS, type CardTier, type ModelCard } from "../providers/modelCard.js";
 import { renderSchema } from "../runtime/json.js";
 import { createAgentCalls, type RunQuery } from "./agentCalls.js";
 import { type Calls } from "./calls.js";
@@ -139,6 +139,53 @@ export type ResolvedStaffing =
   | { ok: true; byCall: Partial<Record<keyof MissionStaffing, ModelCard>> }
   | { ok: false; problem: string };
 
+export type FactoryPreset =
+  | { ok: true; staffing: MissionStaffing }
+  | { ok: false; problem: string };
+
+/**
+ * Cheapest probed card of a tier. `costInPer1M` then `costOutPer1M` then `id`, so two
+ * cards at the same rate do not flip between runs.
+ */
+export function pickCardForTier(cards: readonly ModelCard[], tier: CardTier): ModelCard | undefined {
+  return cards
+    .filter((card) => card.tier === tier)
+    .sort(
+      (a, b) =>
+        a.costInPer1M - b.costInPer1M ||
+        a.costOutPer1M - b.costOutPer1M ||
+        a.id.localeCompare(b.id),
+    )[0];
+}
+
+/** Cheapest `fast`, else cheapest `worker`. No fall-through to `strong`/`frontier`. */
+export function pickFactoryDefault(cards: readonly ModelCard[]): ModelCard | undefined {
+  return pickCardForTier(cards, "fast") ?? pickCardForTier(cards, "worker");
+}
+
+/**
+ * Fill still-empty staffable points with the factory default's *id*, not the word
+ * `fast` — resume must re-run the same card, not re-pick a tier.
+ */
+export function applyFactoryPreset(
+  staffing: MissionStaffing,
+  cards: readonly ModelCard[],
+): FactoryPreset {
+  const chosen = pickFactoryDefault(cards);
+  if (!chosen) {
+    return {
+      ok: false,
+      problem:
+        "No factory card to staff with — probe a fast or worker card, or pass --staff plan=<id>.",
+    };
+  }
+  const filled: MissionStaffing = { ...staffing };
+  for (const call of staffableCalls()) {
+    if (filled[call] === undefined) filled[call] = chosen.id;
+  }
+  return { ok: true, staffing: filled };
+}
+
 /**
  * The model-card allowlist door — the one stage 2 deliberately did not build.
  *
@@ -182,17 +229,32 @@ export function resolveStaffing(
   for (const [call, id] of Object.entries(staffing)) {
     if (id === undefined) continue;
 
-    const card = cards.find((candidate) => candidate.id === id);
+    const byId = cards.find((candidate) => candidate.id === id);
+    const asTier = (CARD_TIERS as readonly string[]).includes(id);
+    const card = byId ?? (asTier ? pickCardForTier(cards, id as CardTier) : undefined);
     if (!card) {
+      if (cards.length === 0) {
+        return {
+          ok: false,
+          problem:
+            `No verified model card '${id}' to staff '${call}' with. This machine has none: ` +
+            `write a card under <stateDir>/providers/ and run 'orchestra doctor' to probe ` +
+            `it, which is what makes it offerable.`,
+        };
+      }
+      if (asTier) {
+        const present = [...new Set(cards.map((candidate) => candidate.tier))].sort().join(", ");
+        return {
+          ok: false,
+          problem: `No verified '${id}' card to staff '${call}' with — this machine has: ${present}.`,
+        };
+      }
       const offered = cards.map((candidate) => candidate.id).join(", ");
       return {
         ok: false,
         problem:
-          `No verified model card '${id}' to staff '${call}' with` +
-          (offered
-            ? ` — this machine has: ${offered}.`
-            : `. This machine has none: write a card under <stateDir>/providers/ and run ` +
-              `'orchestra doctor' to probe it, which is what makes it offerable.`),
+          `No verified model card '${id}' to staff '${call}' with — this machine has: ` +
+          `${offered}. Tiers: ${CARD_TIERS.join(", ")}.`,
       };
     }
 

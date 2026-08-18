@@ -70,8 +70,12 @@ const USAGE = `orchestra — a looping orchestrator for any kind of task
     --orchestrator-model <m>
                        the model the decision points run on, for this mission only
     --staff <pairs>    run named decision points on a verified model card, e.g.
-                       --staff research=<card>,plan=<card>. 'orchestra doctor' is what
-                       makes a card offerable; judge is not staffable.
+                       --staff research=<card>,plan=<card>. A tier name (fast, worker,
+                       strong, frontier) picks the cheapest probed card of that tier.
+                       'orchestra doctor' is what makes a card offerable; judge is not
+                       staffable.
+    --factory          fill unstaffed decision points with the cheapest probed fast
+                       (else worker) card. Opt-in; not automatic.
     --scan <name>      let this mission's outcome spec gate on a security scanner
                        (deepsec). Off by default: a scan runs an AI agent over the
                        changed files and costs real money per file.

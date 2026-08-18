@@ -6,19 +6,20 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { type ModelCard } from "../providers/modelCard.js";
-import { checkContainment, checkKb, checkProviders } from "./doctor.js";
+import { checkContainment, checkKb, checkProviders, formatReport, type DoctorReport } from "./doctor.js";
+
+const card = (id: string): ModelCard => ({
+  id,
+  provider: "nebius",
+  access: "api-key",
+  tier: "worker",
+  contextK: 128,
+  costInPer1M: 0.13,
+  costOutPer1M: 0.4,
+  verifiedBy: `probes/${id}.json`,
+});
 
 describe("checkProviders", () => {
-  const card = (id: string): ModelCard => ({
-    id,
-    provider: "nebius",
-    access: "api-key",
-    tier: "worker",
-    contextK: 128,
-    costInPer1M: 0.13,
-    costOutPer1M: 0.4,
-    verifiedBy: `probes/${id}.json`,
-  });
 
   test("no provider and no card is a pass, not a gap", () => {
     const check = checkProviders([], {}, []);
@@ -106,5 +107,39 @@ describe("checkKb", () => {
     assert.equal(check.level, "ok");
     assert.match(check.detail, /abc1234/);
     assert.match(check.detail, /HEAD moves/);
+  });
+});
+
+// The two-pool lead-in: capped workers vs probed factory cards, printed before any
+// check so a person reading doctor for the first time sees both menus and that
+// judge is not on either.
+describe("formatReport lead-in", () => {
+  const empty: DoctorReport = {
+    checks: [{ name: "node", level: "ok", detail: "v22" }],
+    ready: true,
+    agents: [],
+    factoryCards: [],
+  };
+
+  test("names both pools and that judge is not staffable, before the check list", () => {
+    const text = formatReport({
+      ...empty,
+      agents: ["claude", "opencode"],
+      factoryCards: [card("a"), { ...card("b"), tier: "fast" }],
+    });
+    const lines = text.split("\n");
+
+    assert.equal(lines[0], "Workers on PATH (capped): claude, opencode");
+    assert.equal(lines[1], "Factory cards probed: 2 (fast, worker)");
+    assert.equal(lines[2], "Judge is local and not staffable.");
+    assert.match(lines[3] ?? "", /✓ node/);
+  });
+
+  test("empty pools say none rather than inventing a menu", () => {
+    const lines = formatReport(empty).split("\n");
+
+    assert.equal(lines[0], "Workers on PATH (capped): none");
+    assert.equal(lines[1], "Factory cards probed: 0 (none)");
+    assert.equal(lines[2], "Judge is local and not staffable.");
   });
 });

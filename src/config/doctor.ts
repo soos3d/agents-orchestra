@@ -30,6 +30,8 @@ export interface Check {
 export interface DoctorReport {
   checks: Check[];
   ready: boolean;
+  agents: readonly string[];
+  factoryCards: readonly ModelCard[];
 }
 
 const MIN_NODE_MAJOR = 20;
@@ -297,29 +299,41 @@ export function doctor(
   nodeVersion: string = process.version,
 ): DoctorReport {
   const cards = loadModelCards([providersDir(), localProvidersDir(config.stateDir)]);
+  const factoryCards = staffableCards(config.stateDir);
   const checks = [
     checkNode(nodeVersion),
     checkRepo(config),
     checkVerify(config),
     checkAgents(config),
     checkAcp(config),
-    checkProviders(cards, config.providerKeys ?? {}, staffableCards(config.stateDir)),
+    checkProviders(cards, config.providerKeys ?? {}, factoryCards),
     checkContainment(config),
     checkScanners(config),
     checkKb(config, readRepoKb(config.stateDir)),
     checkStateDir(config),
     checkIgnored(config),
   ];
-  return { checks, ready: checks.every((check) => check.level !== "fail") };
+  return {
+    checks,
+    ready: checks.every((check) => check.level !== "fail"),
+    agents: config.agents,
+    factoryCards,
+  };
 }
 
 const SYMBOL: Record<CheckLevel, string> = { ok: "✓", warn: "!", fail: "✗" };
 
 export function formatReport(report: DoctorReport): string {
-  const lines = report.checks.flatMap((check) => {
-    const head = `${SYMBOL[check.level]} ${check.name.padEnd(13)} ${check.detail}`;
-    return check.fix ? [head, `                → ${check.fix}`] : [head];
-  });
+  const tiers = [...new Set(report.factoryCards.map((card) => card.tier))].sort();
+  const lines = [
+    `Workers on PATH (capped): ${report.agents.length > 0 ? report.agents.join(", ") : "none"}`,
+    `Factory cards probed: ${report.factoryCards.length} (${tiers.length > 0 ? tiers.join(", ") : "none"})`,
+    "Judge is local and not staffable.",
+    ...report.checks.flatMap((check) => {
+      const head = `${SYMBOL[check.level]} ${check.name.padEnd(13)} ${check.detail}`;
+      return check.fix ? [head, `                → ${check.fix}`] : [head];
+    }),
+  ];
   lines.push("");
   lines.push(report.ready ? "Ready." : "Not ready — fix the ✗ lines above.");
   return lines.join("\n");

@@ -119,6 +119,12 @@ orchestra run "<goal>" --staff plan=Qwen/Qwen3-30B-A3B-Instruct-2507,critique=<c
 Pairs are `<decision point>=<card id>`, comma-separated. Unstaffed points stay on the Agent SDK,
 byte for byte as before — absent staffing is every mission that ran before this existed.
 
+`--staff plan=fast` is also legal: `fast` (or `worker`, `strong`, `frontier`) resolves to the
+cheapest probed card of that tier, by `costInPer1M` then `costOutPer1M` then `id`. A card id still
+wins if you name one. `--factory` fills every still-empty staffable point with the cheapest probed
+`fast` card, or `worker` if none — it never falls through to `strong` or `frontier`. The log records
+the resolved id, not the word `fast`, so `resume` re-runs the same card.
+
 The choice is folded onto `mission_created`, like `runtime`, so a `resume` runs on what was chosen
 rather than on what the process defaults to.
 
