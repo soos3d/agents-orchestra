@@ -162,3 +162,11 @@ which is why `fonts.test.ts` asserts the file is really there.
 later.** Naming `tokens.ts` or `briefing()` in a CSS comment the way every other comment here does
 breaks the build, and it reads as a broken edit rather than a stray character — four debugging
 detours before `web/style.test.ts` was written to trip on it.
+
+## A runtime from a browser is checked against what was offered
+
+**A harness or model from a browser is checked against what the server offered.**
+`isOfferedRuntime` (`web/protocol.ts`) is `workspace_add`'s rule applied to a runtime: you cannot
+choose one you have not been shown. Pure, and tested in `server.test.ts`, because these strings
+decide which binary is spawned and what `--model` it gets — the same reason `compose` carries a
+`workspaceId` and never a path.

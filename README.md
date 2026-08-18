@@ -108,6 +108,7 @@ Full flag list: [docs/cli.md](./docs/cli.md). How to add a model card and staff 
 | | |
 |---|---|
 | [Status](./docs/status.md) | What has landed, what has not |
+| [Receipts](./docs/receipts/2026-08-18-calculator.md) | A real mission: two models, cost, evidence |
 | [CLI](./docs/cli.md) | Every flag and command |
 | [Architecture](./docs/architecture.md) | The loop, the event log, `.orchestra/` |
 | [Models](./docs/models.md) | Cards, the probe, staffing |

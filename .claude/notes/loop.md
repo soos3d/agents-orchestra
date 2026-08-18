@@ -46,6 +46,12 @@ arrive when no loop is running and resume can only lift what the fold recorded. 
 `waiting`, where the scheduler owns the promotion. Pause works the same way: a folded flag the loop
 parks on, lifted by `orchestra resume`.
 
+**Panic stops the next dispatch; it does not unblock a human wait.** `run.ts` checks `state.panicked`
+at the top of the loop and the abort signal cancels workers and decision points.
+`HumanPort.awaitSignoff` and the permission port do not listen — `webHuman` never rejects and never
+times out. A mission already sitting on sign-off, a criteria-change approval, or a mid-run `ask`
+stays there until a surface answers or the process is killed. Recorded on the VPS; still true.
+
 **A missing credential parks nothing** (PLAN-NEXT 7.1). `raiseSecrets` in `prepare.ts` compares the
 architect's `envVars` against `Envelope.env` and emits `secret_required` plus a `question_asked` whose
 `blocks` list is **empty** — there is no task to park, because the plan is written after the architect
@@ -81,7 +87,17 @@ per round. `Task.completedRound` is folded from `task_status` the way `attempts`
 
 **The gate is unchanged wherever the criteria came from.** `writeOutcomeSpec` did not move with the
 spec, and the one retry goes back to whichever call wrote the criteria it refused: the architect on
-an ordinary mission, the deep research pass on a quick one, which is that mission's escalation.
+an ordinary mission, the deep research pass on a quick one, which is that mission's escalation. A
+second refusal emits `mission_status` `{to:"blocked"}` with `SPEC_REJECTED_TWICE` (`prepare.ts`) so
+the projection and the dashboard no longer read `specifying` after the process exits — that dead end
+is closed.
+
+**A replan that cannot meet the criteria will often try to rewrite them instead of the work.**
+`PLAN_PROMPT` invites the planner to return `criteria` as a request. After sign-off `reviseLedger`
+refuses the write; `run.ts` emits `criteria_change_requested` and either parks (`--unattended`) or
+reopens sign-off. That door is working. The live failure is the request itself: the cheaper move for
+a failing replan is a weaker check or a dropped criterion, and a human is then asked to move the
+goalposts. Seen on the VPS; not a closed defect.
 
 **A judge-checked criterion is graded by a panel, and the fold applies only its answer**
 (PLAN-NEXT 6.1). `panelSeats(quick)` is one unlensed seat on a quick mission and three lensed ones
@@ -225,3 +241,144 @@ once.** `requestExtension`, `owns` and `reformat` were each built to spec, unit-
 reachable only through a parameter no entry point passed; all three surfaced on a real mission
 rather than in the suite. When you add one, test the composition root that builds it
 (`buildLoopDeps`, `runMission`), not only the mechanism.
+
+## Staffing a decision point to a model card (PLAN-NEXT 4)
+
+**A decision point can be staffed to a card, and the provider path is the same code with its
+transport swapped** (`loop/providerCalls.ts`, PLAN-NEXT 4). `mission_created.staffing` names a card
+per decision point, optional and folded like `runtime`; absent is the Agent SDK for everything,
+which is every mission before this. `createProviderCalls` is `createAgentCalls` with a `RunQuery`
+that posts a chat completion — the system prompts (one per decision point), the schema in each
+prompt, the one reformat attempt and `CallFormatError` are shared, because two copies of a prompt
+drift the first time one of them is corrected and neither suite can see it. Three facts are load-bearing. **`judge` has no
+`staffing` field at all**: §3's exception to the no-tools rule is the judge reading the artifacts it
+grades, a chat completion holds no tools, and a judge there fails correct work while honestly saying
+it could not open the files — defects 22 and 40, one layer along. **The card is the model and the
+requested one is ignored**, because `ask` passes `PROGRESS_MODEL` (`sonnet`, an Anthropic alias) and
+a staffed card is what that call runs on. And **`resolveStaffing` is where the model-card allowlist
+door landed**, not `inspect()`: a card id nobody probed is refused before the log opens, while
+`models` stays free of card ids for stage 2's reason. `metrics --staffing` is the evidence — per
+decision point, what it was staffed to, what actually answered (`RunQuery` now returns `ranOn`, which
+reaches `spend_recorded.model`), the cost, and the send-backs its answer drew.
+
+
+## The architect and the critic (PLAN-NEXT 5)
+
+**The outcome spec is the architect's, and a quick mission has no architect** (`loop/prepare.ts`,
+PLAN-NEXT 5). `architect` and `critique` are the seventh and eighth decision points: the first turns
+research findings into the criteria *and* a design note, the second attacks the plan between the
+`plan` call and `validatePlan`. Both are staffable: the question `judge` failed is "does this call need
+tools", and neither of these does. Four facts are load-bearing. **`quick` skips both**, because the
+done-when "quick token count unchanged" and an unconditional critic cannot both hold; `solePass` is
+untouched and a quick mission's spec is still the scan's own criteria, which is also why
+`RESEARCH_PROMPT` still teaches criteria authorship and now says the architect writes them
+otherwise. **The critic runs before dispatch and never inside the loop's replan** — a colliding
+lease is cheap exactly once, and a mid-loop critique argues about a plan half of which has merged.
+**One objection buys one replan and no more**; the cap is a `plan_critiqued` event carrying
+`replanned`, so a log does not have to be counted to see that it held. And **the design note is a
+file the event names rather than a payload the event carries**: `design_written` folds `{path,
+summary}`, the summary is what `PlanInput.design` gets (a projection, budgeted), the absolute path is
+what a *code* worker's prompt names, and the write is best-effort with the event following it —
+naming a file nothing wrote would put a dead path in every worker's prompt, defect 40 one layer up.
+
+
+## The verdict panel, and deterministic checks first (PLAN-NEXT 6.1–6.2)
+
+**A panel is three seats and the log carries all three; the fold applies only the resolved
+verdict** (`loop/criteria.ts`, `loop/verify.ts`, PLAN-NEXT 6). `criterion_checked` gained optional
+`panelSeat` and `lens`, and a seated event is a *record* — `fold` returns early on it. Applied, `met`
+would read whichever judge answered last, wrong on a third of 2-1 splits, and `lastCheckedRound`
+would move mid-panel so `shouldCheckCriterion` would refuse to re-convene the panel that was still
+voting. **`web/app/state.ts` `apply` carries the same guard**, because it is the log's second reader
+and a rule enforced in `fold` alone is a dashboard that contradicts its own mission. Three facts are load-bearing. **Quorum is a strict majority of the votes actually cast**
+(`panelVerdict`), never a threshold carried beside a seat count: two lists disagree the first time
+somebody edits one, and a panel of three read against a threshold of one is a criterion any single
+seat can pass. **A quick mission convenes one seat with no lens**, and `judgeSystemPrompt(undefined)`
+returns the unmodified `JUDGE_PROMPT` — which is what makes "quick judge spend unchanged" an equality
+the suite holds rather than a token count somebody remembers measuring. And **the lenses are three
+different questions, not three samples of one**: quorum over identical prompts costs three calls and
+resolves nothing.
+
+**Deterministic checks run before judges, and a failing one closes the round to panels**
+(`deterministicFirst`, PLAN-NEXT 6.2). A command exits 0 or it does not; a panel is the mission's
+largest recurring spend, and paying three judges to grade prose in a tree whose tests are red buys an
+answer that is either wrong or about to be re-asked. The gated criteria are left **untouched** rather
+than marked unmet — `lastCheckedRound` does not move, so the panel convenes on its own next round,
+and the failing command criterion is what the replan is looking at meanwhile.
+
+
+## The deepsec scanner gate (PLAN-NEXT 6.3)
+
+**A scanner gate is granted on the envelope, and deepsec's exit 1 does not mean "findings"**
+(`loop/scanner.ts`, PLAN-NEXT 6.3). `Envelope.scanners` is the door — `containment`'s shape, for
+`containment`'s reason: a deepsec scan is an AI agent with shell access whose own FAQ puts a
+2,000-file repository at hundreds of dollars, so it is granted by name per mission (`--scan deepsec`)
+and `defaultEnvelope` grants none. `availableScanners` (`workers/availability.ts`) intersects that grant with `probeScanners`,
+`writeOutcomeSpec` refuses the variant outside the intersection, and `checkAuthoring(scanners)` is
+the prompt half — a mission with no grant sees the byte-identical text it saw before 6.3. Three
+facts came out of running it and none is in deepsec's docs. **Exit 1 is "a finding *or* a batch that
+failed"**: a seeded vulnerable file came back `Errored batches: 1` and exit 1 with an empty export
+because the agent it drives had hit its usage limit, so the export carries *everything* and
+`findingsAtOrAbove` applies the threshold here — exit 1 with nothing at all then unambiguously means
+the scan never ran, and reading it as clean would pass a security criterion because nobody was logged
+in. **`HIGH_BUG` sits below `HIGH`**, not beside it, in deepsec's own sort. And **the export is scoped
+with `--since` and deleted before every scan**, because deepsec's store persists in the repository
+across rounds: unscoped, a finding a later round fixed keeps the criterion red forever, and a stale
+file at the same path is graded as this round's scan whenever an export writes nothing. Nothing is
+added to `DERIVED_PATHS` for it — direct mode leaves a bare `data/` at the repo root, which is
+exactly the plausible-source-directory name that list refuses.
+
+
+## Research on the web: the grant, and grounding (PLAN-NEXT 11.3–11.4)
+
+**Research reaches the web only where a human granted it, and a grant is not grounding**
+(`domain/envelope.ts`, `loop/agentCalls.ts`, `domain/ledger.ts`, PLAN-NEXT 11.3–11.4). `research` ran
+with `tools: []` while the ledger already demanded a `source` and had `"web"` in its `sourceKind`
+enum, so every web-shaped finding was a recollection wearing a citation. `Envelope.research` is the
+door — `"closed" | "web"`, `.default("closed")` like `containment` and `scanners`, `--research-web`
+on the command line — and it buys `["WebSearch", "WebFetch"]` plus a real `RESEARCH_MAX_TURNS`,
+because tools make turns a loop and the old backstop was sized for a call that could not. Six facts
+are load-bearing. **`--quick` refuses the grant** and the tools attach to the deep pass only, which
+is what keeps the quick invariant an equality rather than a measurement. **A staffed research card
+plus a grant is refused, not degraded** — a chat completion holds no tools, `judge`'s reasoning one
+call along, and honouring it silently would be the `honoursModel` trap. **`toolClasses` was not
+overloaded to carry it**: `violations()` reads that against *worker* specs, so granting `net.read`
+there to unlock research would widen every worker at once. **`WebSearch` cannot be
+domain-constrained** — results come from a backend, not a host the envelope names — so `WebFetch` is
+the enforced half and the help text says so instead of implying a control that does nothing. **An
+out-of-grant fetch is denied in-call and the call carries on**, surfacing afterwards as one advisory
+`question_asked`, `raiseSecrets`' rule; a real run is what proved the SDK invokes `canUseTool` at all
+and that a denial does not abort, which no fixture could establish. And **`groundedFindings` asks
+whether the host was reachable, not whether the mission was granted**: the first granted run returned
+`"web"` findings whose source was the *refusal text*, and a mission granted `example.com` cited
+twelve `nodejs.org` URLs it never fetched. It goes through `allowedFetchHost`, the same function the
+permission callback uses, so `undici.nodejs.org` fails a `nodejs.org` grant in the ledger for exactly
+the reason the live fetch was refused. The honest path was opened in the same commit or the fix would
+only delete evidence — `researchAuthoring` sends a search-derived claim to `guesses` with the search
+as `basis`, inside the granted paragraph only, so the closed prompt stays byte-identical.
+**Uncounted, and known**: web search bills $10 per 1,000 searches on top of tokens, the count arrives
+as `usage.server_tool_use.web_search_requests`, and nothing reads it — a granted mission's `costUsd`
+is short while reading as measured.
+
+
+## Staffing in a saved mission (PLAN-NEXT 11.2)
+
+**A staffing choice survives into a saved mission, and the door it passes is the one it already had**
+(`memory/savedMission.ts`, PLAN-NEXT 11.2). `staffing` is optional on `savedMissionSchema` and reuses
+`missionStaffingSchema` rather than restating it, so `judge` stays absent by shape rather than by
+somebody remembering. `runCommand` merges `{...saved?.staffing, ...options.staffing}` **before**
+`resolveStaffing`, which is the whole design: a `--staff` pair typed now wins per decision point, and
+a preset naming a card whose probe transcript has since been deleted is refused with the same message
+the flag gets rather than falling through to the Agent SDK on a model nobody chose. `save` still
+requires an already-run mission — saving the staffing of the run that just happened costs no new
+code, and a `preset` command would be a second way to author the same file.
+
+
+## `CALL_NAMES` is the one list of decision-point names
+
+**There is one list of decision-point names and it is `CALL_NAMES`** (`domain/budget.ts`).
+`resilience.ts` kept a second copy behind a header claiming it enumerated `keyof Calls`, and that is
+how `architect` was wrapped everywhere except the retry wrapper and arrived at the composition root
+as `undefined` with the whole suite green. `loop/calls.test.ts` pins the constant to `keyof Calls`;
+`missionStaffingSchema` and the compose card's `STAFFABLE` are the two lists that may legitimately be
+shorter, and only by `judge`.

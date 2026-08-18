@@ -19,6 +19,9 @@
 A real mission has gone from brief to `complete` uninterrupted over ACP: six synthesized agents, five
 real merges, nine criteria met with evidence.
 
+A later staffed run (architect on a Nebius card, worker on `acp/claude`) is the public
+[calculator receipt](./receipts/2026-08-18-calculator.md).
+
 ## Recent work: cheaper, not more capable
 
 - **`--quick`** skips the deep research call on a job you already understand, halving a plan-only
