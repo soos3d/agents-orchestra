@@ -40,10 +40,6 @@ export interface DiscoveredConfig {
    */
   scanners?: string[];
   orchestratorModel: string;
-  maxConcurrency: number;
-  /** An OpenClaw Gateway to mirror the inbox to, if the user runs one (§2). Never
-   *  required; refused unless loopback (§17). */
-  gatewayUrl?: string;
   /**
    * API keys by provider name, for the providers that have one set (PLAN-NEXT 2.2).
    *
@@ -54,10 +50,10 @@ export interface DiscoveredConfig {
    * unconfigured is a configuration, and a blank string would be a key that fails
    * authentication instead of a provider nobody asked for.
    *
-   * Optional for the reason `gatewayUrl` is: a machine with no provider configured is
-   * the normal case, and every reader treats absent as "no providers". `discoverConfig`
-   * always sets it, which is what `discover.test.ts` asserts — there is one producer,
-   * so this is not the optional-`Deps` trap.
+   * Optional: a machine with no provider configured is the normal case, and every
+   * reader treats absent as "no providers". `discoverConfig` always sets it, which
+   * is what `discover.test.ts` asserts — there is one producer, so this is not the
+   * optional-`Deps` trap.
    */
   providerKeys?: Record<string, string>;
 }
@@ -232,11 +228,6 @@ export function readProviderKeys(env: NodeJS.ProcessEnv): Record<string, string>
   );
 }
 
-const num = (value: string | undefined, fallback: number): number => {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-};
-
 export async function discoverConfig(cwd = process.cwd()): Promise<DiscoveredConfig> {
   const root = process.env.TARGET_REPO
     ? path.resolve(process.env.TARGET_REPO)
@@ -270,11 +261,7 @@ export async function discoverConfig(cwd = process.cwd()): Promise<DiscoveredCon
     // SDK resolves it to. §14 notes nothing in the design depends on a specific
     // model; `ORCHESTRATOR_MODEL` is the override when it does.
     orchestratorModel: process.env.ORCHESTRATOR_MODEL || "opus",
-    maxConcurrency: num(process.env.MAX_CONCURRENCY, 4),
     providerKeys: readProviderKeys(process.env),
-    // The phone mirror's gateway, when one is configured at all (§2). Carried as
-    // config so `doctor` can refuse a non-loopback URL before anything trusts it.
-    ...(process.env.ORCHESTRA_GATEWAY_URL ? { gatewayUrl: process.env.ORCHESTRA_GATEWAY_URL } : {}),
   };
 }
 

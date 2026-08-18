@@ -68,7 +68,7 @@ export const findingSchema = z.object({
   // Required. A finding with an empty source is rejected and re-entered as a guess,
   // so an unsourced assertion cannot become factsVerified and then ground truth.
   source: z.string().min(1),
-  sourceKind: z.enum(["memory", "codebase", "web", "prior-art", "apps"]),
+  sourceKind: z.enum(["memory", "codebase", "web"]),
   confidence: z.enum(["high", "medium", "low"]),
 });
 

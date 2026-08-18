@@ -490,7 +490,6 @@ export function defaultEnvelope(
     // instruction is the default this field exists to refuse.
     research,
     maxSpend: budget,
-    approval: "local",
   };
 }
 

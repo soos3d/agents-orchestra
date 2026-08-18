@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 Guidance for Claude Code working in this repository. **Read this file only.** The detail behind
-every claim here lives in `.claude/notes/` and in `PLAN.md`; load one when you are about to touch
+every claim here lives in `.claude/notes/` and in `plans/`; load one when you are about to touch
 that area, not before.
 
 ## What this is
@@ -15,8 +15,9 @@ cleanup item.**
 Phases 1–7 and P1–P5 have landed; the dashboard is a real app (U0–U7). Defects 1–42 are closed —
 42 last: a worker's child environment is now **constructed** from an `Envelope.env` allowlist rather
 than inherited from the process (`workers/childEnv.ts`, and see `.claude/notes/workers.md`).
-PLAN-NEXT stages 1–11 are in; 11 gave `research` real web access behind an opt-in grant and put both
-open-model worker lanes (`cli/pi`, `acp/opencode`) onto Nebius by config alone.
+PLAN-NEXT stages 1–11 are in (that plan is done — archived at `plans/archive/PLAN-NEXT.md`; the
+active plan is `plans/v2-plan.md`); 11 gave `research` real web access behind an opt-in grant and
+put both open-model worker lanes (`cli/pi`, `acp/opencode`) onto Nebius by config alone.
 Branch `feat/phase-3`, no remote. Apache-2.0, prepared to publish; `npm publish` and making the
 GitHub repo public are the last steps.
 
@@ -33,20 +34,45 @@ list shows — `--scan`, `--env`, `--research-web`, `--domain`; `orchestra help`
 | touch `src/workers/**`, dispatch, envelopes, git leases | `.claude/notes/workers.md` |
 | touch spend, tokens, `metrics`, `domain/budget.ts`, `src/providers/**` | `.claude/notes/spend.md` |
 | touch `src/loop/**`, `src/agents/**`, decision points | `.claude/notes/loop.md` |
-| ask "why is it like this / has this been tried" | `PLAN.md` §4 decisions, §6 gotchas, §7 defects 1–42 |
-| plan work | `PLAN.md` §1 status, §2 next |
+| ask "why is it like this / has this been tried" | `.claude/notes/history.md`, then the notes file for the area |
+| plan work | `plans/v2-plan.md` (the active plan) and `plans/ecosystem-analysis.md` (why that order) |
 
-**`§N` citations in the source do not resolve against `specs.md` as it stands.** The code carries
-662 of them (`§9.4`, `§7`, `§17`…); the current `specs.md` was condensed and renumbered and has only
-§1–§9, pointing at different subjects. `SPECS-AUDIT.md` has the mapping table. So: treat a citation
-as a marker of *why this shape*, read the comment beside it and the test header, **do not follow the
-number into `specs.md`**, do not delete a citation, and do not invent one. `specs.md` and `PLAN.md`
-are gitignored — they exist on the maintainer's machine only.
+### Docs layout
+
+Tracked and public: `README.md`, `docs/` (the user-facing reference — `architecture.md` is the
+conceptual spec now), `CONTRIBUTING.md`, `agents/`, and this file plus `.claude/notes/`.
+Maintainer-only and gitignored: `plans/` — `v2-plan.md` and `ecosystem-analysis.md` are the active
+strategy; `plans/archive/` holds superseded documents (`PLAN-NEXT.md`, the old `specs.md`,
+`SPECS-AUDIT.md`, session handoffs). Do not add new documents at the repo root.
+
+### `§N` citations
+
+**`§N` citations in the source resolve against nothing on disk.** The code carries ~686 of them
+(`§9.4`, `§7`, `§17`…); they refer to a retired long-form spec that no longer exists in this repo.
+Treat a citation as a marker of *why this shape*: read the comment beside it and the test header,
+**do not follow the number anywhere**, do not delete a citation, and do not invent a new one.
+What the numbers meant, by subject (full audit: `plans/archive/SPECS-AUDIT.md`):
+
+| Citation | Subject |
+|---|---|
+| §2, §2a, §2b | core principles; intake's three-question cap |
+| §3 | the decision points / the call-loop contract |
+| §4, §4.0–§4.2 | task states, criterion-check timing, git as a `code` property |
+| §6 | memory: lore, provenance, staling, promotion |
+| §7 | transports, the registry, saved missions, envelope validation |
+| §8 | file leases, `owns`, overlap and escape detection |
+| §9.1 | the event schema union and the four replay rules |
+| §9.4 | the failure policy: typed retry, park, escalate |
+| §9.5 | the measured/unmeasured spend split |
+| §11 | the computer-use security posture |
+| §12 | ACP and the transport bet |
+| §13 | the run view |
+| §17 | what leaves the machine; the risk register |
 
 ## Commands
 
 ```
-npm test          # node:test via tsx over src/**/*.test.ts(x) — ~1,520 tests, ~110s
+npm test          # node:test via tsx over src/**/*.test.ts(x) — ~1,760 tests, ~110s
 npm run typecheck # tsc --noEmit (includes tests and the dashboard; build config excludes both)
 npm run build     # tsc -p tsconfig.build.json → dist/, then esbuild → dist/web/app.js
 npm run build:web # just the dashboard bundle; add `-- --watch` while working on it
@@ -148,9 +174,9 @@ on OpenCode's contract stays unpriced rather than charged at somebody else's rat
 transport swapped** (`loop/providerCalls.ts`, PLAN-NEXT 4). `mission_created.staffing` names a card
 per decision point, optional and folded like `runtime`; absent is the Agent SDK for everything,
 which is every mission before this. `createProviderCalls` is `createAgentCalls` with a `RunQuery`
-that posts a chat completion — the six system prompts, the schema in each prompt, the one reformat
-attempt and `CallFormatError` are shared, because two copies of a prompt drift the first time one of
-them is corrected and neither suite can see it. Three facts are load-bearing. **`judge` has no
+that posts a chat completion — the system prompts (one per decision point), the schema in each
+prompt, the one reformat attempt and `CallFormatError` are shared, because two copies of a prompt
+drift the first time one of them is corrected and neither suite can see it. Three facts are load-bearing. **`judge` has no
 `staffing` field at all**: §3's exception to the no-tools rule is the judge reading the artifacts it
 grades, a chat completion holds no tools, and a judge there fails correct work while honestly saying
 it could not open the files — defects 22 and 40, one layer along. **The card is the model and the
@@ -204,7 +230,7 @@ and the failing command criterion is what the replan is looking at meanwhile.
 (`loop/scanner.ts`, PLAN-NEXT 6.3). `Envelope.scanners` is the door — `containment`'s shape, for
 `containment`'s reason: a deepsec scan is an AI agent with shell access whose own FAQ puts a
 2,000-file repository at hundreds of dollars, so it is granted by name per mission (`--scan deepsec`)
-and `defaultEnvelope` grants none. `availableScanners` intersects that grant with `probeScanners`,
+and `defaultEnvelope` grants none. `availableScanners` (`workers/availability.ts`) intersects that grant with `probeScanners`,
 `writeOutcomeSpec` refuses the variant outside the intersection, and `checkAuthoring(scanners)` is
 the prompt half — a mission with no grant sees the byte-identical text it saw before 6.3. Three
 facts came out of running it and none is in deepsec's docs. **Exit 1 is "a finding *or* a batch that
@@ -237,8 +263,8 @@ uses `split`/`join` rather than `String.replace` — a value containing `$&` wou
 re-inserted by the replacement syntax, leaking exactly what was being removed. **A value shorter than
 `MIN_REDACTED_LENGTH` (8) is not scrubbed at all**: `LOG_LEVEL=debug` granted would delete the word
 *debug* from every report, and no credential worth protecting is seven characters. And **`keepEvidence`
-takes the secrets as a required parameter**, so a call site added later cannot forget it — the
-compiler is what enforces "no granted value reaches a file", not review. The scrub sits on `run.raw`
+(`loop/verify.ts`) takes the secrets as a required parameter**, so a call site added later cannot
+forget it — the compiler is what enforces "no granted value reaches a file", not review. The scrub sits on `run.raw`
 *before* the parse (so the report, the reformatter's input, the summary and every artifact path are
 covered by one substitution), on `runCommand`'s output (so the event, the failure message and the
 evidence file get the same string), on each judge's reasoning, and on the `detail` a
@@ -386,9 +412,9 @@ Each of these has cost real time. The reasoning is in the notes file for its are
   once.** `requestExtension`, `owns` and `reformat` were each built, tested, and reachable through a
   parameter no entry point passed. Test the composition root (`buildLoopDeps`, `runMission`), not
   only the mechanism.
-- **`src/loop/prepare.ts` contains a literal NUL byte and is not corrupt** (a `\x00` composite-key
-  separator, ~line 538). `rg` calls it binary and silently skips it — a ripgrep search for a symbol
-  in this file returns nothing. Use `grep -a`.
+- **`src/loop/prepare.ts` contains two literal NUL bytes and is not corrupt** (`\x00` composite-key
+  separators, lines 862 and 868). `rg` calls it binary and silently skips it — a ripgrep search for
+  a symbol in this file returns nothing. Use `grep -a`.
 - **`src/web/style.ts` is a template literal; a stray backtick in a comment is a parse error many
   lines later.** Never write `` `tokens.ts` `` in a CSS comment there. `web/style.test.ts` trips on
   it and refuses any interpolation that is not a `tokens.ts` value.
@@ -435,7 +461,9 @@ Each of these has cost real time. The reasoning is in the notes file for its are
   `fs.realpathSync` (macOS `/var` vs `/private/var`).
 - `runtime/command.ts` is a tokenizer, not a shell — no globs, pipes or substitution; `needsShell()`
   exists so a piped command fails loudly.
-- No env validation layer and no dotenv. `process.env` is read in exactly two places
-  (`config/discover.ts`, `index.ts`); every var in `.env.example` is an optional override.
+- No env validation layer and no dotenv. *Configuration* is read from `process.env` in exactly two
+  places (`config/discover.ts`, `index.ts`); every var in `.env.example` is an optional override.
+  (The runtime also passes `process.env` through as a parent env for subprocesses and reads granted
+  secret *values* from it at the composition roots — those are not configuration reads.)
 - Requires Node 20+ (`MIN_NODE_MAJOR` in `config/doctor.ts`, unenforced at install) and
   `claude` / `codex` on PATH, already logged in.

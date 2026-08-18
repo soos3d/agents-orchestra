@@ -1,43 +1,13 @@
-// The channel check is a security check wearing a diagnostic's clothes: §17's rule
-// is that a non-loopback Gateway is refused, not authenticated, and `doctor` is
-// where a bad URL is caught before anything trusts it. The failure mode under test
-// is the confident misconfiguration — a Gateway on another machine that would carry
-// payment gates off this one.
-import assert from "node:assert/strict";
-import { describe, test } from "node:test";
-import { type ModelCard } from "../providers/modelCard.js";
-import { checkChannel, checkContainment, checkKb, checkProviders } from "./doctor.js";
-
-describe("checkChannel", () => {
-  test("no mirror is the default and passes", () => {
-    assert.equal(checkChannel(undefined).level, "ok");
-  });
-
-  test("a loopback gateway is accepted, with the honest caveat", () => {
-    for (const url of ["ws://127.0.0.1:18789", "ws://localhost:18789", "http://[::1]:18789"]) {
-      const check = checkChannel(url);
-      assert.notEqual(check.level, "fail", url);
-    }
-  });
-
-  test("a non-loopback gateway fails with the fix named", () => {
-    for (const url of ["ws://192.168.1.20:18789", "wss://gateway.example.com", "ws://127.0.0.1.evil.com:1"]) {
-      const check = checkChannel(url);
-      assert.equal(check.level, "fail", url);
-      assert.ok(check.fix);
-    }
-  });
-
-  test("a string that is not a URL fails rather than passing by accident", () => {
-    assert.equal(checkChannel("not a url").level, "fail");
-  });
-});
-
 // The providers line reports a *narrowing*, which is the only fact a mission depends on:
 // a card with no probe transcript is on no menu, exactly as an ACP target with no binary
 // is on none. The case worth catching is the middle one — a key set, cards on disk, and
 // nothing verified — because that is somebody who configured a provider and would
 // otherwise see a passing report with no models in it.
+import assert from "node:assert/strict";
+import { describe, test } from "node:test";
+import { type ModelCard } from "../providers/modelCard.js";
+import { checkContainment, checkKb, checkProviders } from "./doctor.js";
+
 describe("checkProviders", () => {
   const card = (id: string): ModelCard => ({
     id,
@@ -85,7 +55,6 @@ describe("checkContainment", () => {
     worktreeRoot: "/wt",
     agents: [],
     orchestratorModel: "opus",
-    maxConcurrency: 4,
   };
 
   test("no backend is not a failure — containment is opt-in per mission", () => {
@@ -118,7 +87,6 @@ describe("checkKb", () => {
     worktreeRoot: "/wt",
     agents: [],
     orchestratorModel: "opus",
-    maxConcurrency: 4,
   };
 
   test("no repository is nothing to index", () => {

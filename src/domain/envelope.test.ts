@@ -12,7 +12,7 @@ import {
 import { anEnvelope } from "../testing/fixtures.js";
 
 const envelope = anEnvelope({
-  toolClasses: ["fs.read", "browser.read"],
+  toolClasses: ["fs.read"],
   domains: ["xero.com", "ramp.com"],
   fsRoots: ["/repo/src"],
   env: ["XERO_TOKEN"],
@@ -32,8 +32,8 @@ describe("envelope", () => {
   });
 
   test("refuses a tool class that was never granted", () => {
-    assert.deepEqual(violations(envelope, { toolClasses: ["browser.commit"] }), [
-      { field: "toolClasses", requested: "browser.commit" },
+    assert.deepEqual(violations(envelope, { toolClasses: ["shell.run"] }), [
+      { field: "toolClasses", requested: "shell.run" },
     ]);
   });
 
@@ -86,7 +86,6 @@ describe("envelope", () => {
       fsRoots: ["/repo"],
       network: "none",
       maxSpend: { wallMs: 1000 },
-      approval: "local",
     };
     const parsed = envelopeSchema.safeParse(legacy);
 
@@ -120,7 +119,6 @@ describe("envelope", () => {
       fsRoots: ["/repo"],
       network: "none",
       maxSpend: { wallMs: 1000 },
-      approval: "local",
     };
     const parsed = envelopeSchema.safeParse(legacy);
 
@@ -136,13 +134,13 @@ describe("envelope", () => {
   // a time across three round trips.
   test("reports every violation at once", () => {
     const found = violations(envelope, {
-      toolClasses: ["browser.commit"],
+      toolClasses: ["shell.run"],
       domains: ["evil.example"],
       fsPaths: ["/etc/passwd"],
     });
 
     assert.equal(found.length, 3);
-    assert.match(describeViolations(found), /browser\.commit/);
+    assert.match(describeViolations(found), /shell\.run/);
   });
 });
 
@@ -184,7 +182,6 @@ describe("the research grant's default", () => {
       fsRoots: ["/repo"],
       network: "none",
       maxSpend: { wallMs: 1000 },
-      approval: "local",
     });
 
     assert.equal(parsed.success && parsed.data.research, "closed");

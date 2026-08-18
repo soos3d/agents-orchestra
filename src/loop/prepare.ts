@@ -30,7 +30,7 @@ import { recallToLedger } from "../memory/recall.js";
 import { validatePlan } from "../scheduler/validate.js";
 import { type Calls } from "./calls.js";
 import { estimatePlan } from "./estimate.js";
-import { unattendedHuman, type HumanPort, type SignoffPresentation } from "./human.js";
+import { unattendedHuman, type HumanPort } from "./human.js";
 import { runIntake } from "./intake.js";
 import { writeOutcomeSpec, type SpecRejection } from "./outcomeSpec.js";
 import {
@@ -127,6 +127,16 @@ export type PrepareResult =
   | { ok: true; criteria: Criterion[]; plan: PlannedTask[]; estimate: Estimate; brief: string }
   | { ok: false; reason: string; rejected?: SpecRejection[] };
 
+/** Why a twice-rejected spec ends the mission, and what to do about it. One string,
+ *  because the CLI prints it and the terminal `mission_status` carries it: a reason a
+ *  person reads on the terminal and a reason the dashboard shows have to be the same
+ *  sentence, or the log is the second-best account of what happened. */
+const SPEC_REJECTED_TWICE =
+  `The outcome spec was rejected twice. A criterion the runtime cannot evaluate ` +
+  `means this mission could never legitimately report success. Re-run with a goal ` +
+  `that says how success is checked — a command that exits 0, a file that must ` +
+  `exist — or grant what the refused criterion needed (for example --scan deepsec).`;
+
 export async function prepareMission(deps: PrepareDeps): Promise<PrepareResult> {
   const missionId = deps.store.state().mission.id;
   const base = { missionId, actor: "orchestrator" as const };
@@ -153,8 +163,16 @@ export async function prepareMission(deps: PrepareDeps): Promise<PrepareResult> 
   // Scan (§2b): one cheap pass, silent, never blocks. It exists to make intake's
   // questions specific rather than to answer them, so its findings land in the ledger
   // before a single question is asked.
-  const scan = await deps.calls.research(
-    buildResearchInput(deps.store.state(), "scan", undefined, deps.repoKb),
+  //
+  // Grounded before the event, for the reason the deep pass is (PLAN-NEXT 11.3): the scan
+  // is the same decision point at a cheaper depth, and its findings reach `factsVerified`
+  // *first*. The first real VPS mission ran with `research: "closed"` and its
+  // `scan_completed` still carried three `"web"` findings citing `nodejs.org` and MDN —
+  // a gate on the deep call alone filters the second answer into a ledger the first one
+  // has already contaminated.
+  const scan = withGroundedFindings(
+    deps,
+    await deps.calls.research(buildResearchInput(deps.store.state(), "scan", undefined, deps.repoKb)),
   );
   emit({ ...base, type: "scan_completed", findings: scan.findings, spend: zeroSpend() });
 
@@ -321,13 +339,21 @@ export async function prepareMission(deps: PrepareDeps): Promise<PrepareResult> 
 
     if (!spec.ok) {
       emit({ ...base, type: "outcome_spec_rejected", rejected: spec.rejected });
-      return {
-        ok: false,
-        rejected: spec.rejected,
-        reason:
-          `The outcome spec was rejected twice. A criterion the runtime cannot evaluate ` +
-          `means this mission could never legitimately report success.`,
-      };
+      // The mission dies here, and the log is the only place that can say so: the
+      // process exits 1, but `mission.json` is a projection of this file, so a log
+      // ending at `outcome_spec_rejected` leaves the dashboard showing a dead mission
+      // as `specifying` forever — observed on two real runs. `blocked` rather than a
+      // new event type, because it is the status the synthesis failure in
+      // `grantSignoff` already ends on, and a second way to say "this mission is
+      // dead" is a rule `fold` and `web/app/state.ts` would each have to learn twice.
+      emit({
+        ...base,
+        type: "mission_status",
+        from: deps.store.state().mission.status,
+        to: "blocked",
+        reason: SPEC_REJECTED_TWICE,
+      });
+      return { ok: false, rejected: spec.rejected, reason: SPEC_REJECTED_TWICE };
     }
   }
 
@@ -352,7 +378,7 @@ export async function prepareMission(deps: PrepareDeps): Promise<PrepareResult> 
   const planned = await planWithOneRetry(deps);
   if ("message" in planned) return { ok: false, reason: planned.message };
 
-  const estimate = estimatePlan({ plan: planned.tasks });
+  const estimate = estimatePlan(planned.tasks);
   emit({
     ...base,
     type: "ledger_revised",
@@ -435,7 +461,7 @@ export async function presentAndSignOff(deps: PresentDeps): Promise<SignoffOutco
     const { mission } = state;
     const estimate =
       mission.estimate ??
-      estimatePlan({ plan: mission.ledger.plan });
+      estimatePlan(mission.ledger.plan);
 
     const decision = await deps.human.awaitSignoff({
       missionId: mission.id,
@@ -490,8 +516,11 @@ export async function presentAndSignOff(deps: PresentDeps): Promise<SignoffOutco
     // worth a call, and a mission resumed at its own sign-off starting the count again
     // costs one research call, which is the right side of that trade to be wrong on.
     if (revision === 0 && mission.quick) {
-      const deep = await deps.calls.research(
-        buildResearchInput(deps.store.state(), "deep", undefined, deps.repoKb),
+      // Grounded like every other research answer: this is the one call that happens after
+      // sign-off was refused, and a finding kept here enters the ledger the replan reads.
+      const deep = withGroundedFindings(
+        deps,
+        await deps.calls.research(buildResearchInput(deps.store.state(), "deep", undefined, deps.repoKb)),
       );
       const ledger = deps.store.state().mission.ledger;
       const at = new Date().toISOString();
@@ -514,7 +543,7 @@ export async function presentAndSignOff(deps: PresentDeps): Promise<SignoffOutco
     const replanned = await planWithOneRetry(deps, decision.feedback);
     if ("message" in replanned) return { ok: false, reason: replanned.message };
 
-    const revised = estimatePlan({ plan: replanned.tasks });
+    const revised = estimatePlan(replanned.tasks);
 
     emit({
       ...base,

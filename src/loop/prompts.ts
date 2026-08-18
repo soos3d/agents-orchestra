@@ -9,8 +9,8 @@
 // matters as much. No transcripts, no raw stdout, no accumulated message history —
 // the orchestrator sees short reports and artifact metadata, and that is why a
 // mission can run for hours without drowning.
-import { type Finding, type PlannedTask } from "../domain/ledger.js";
-import { type MissionState } from "../events/fold.js";
+import { type Finding, type LedgerEntry, type PlannedTask } from "../domain/ledger.js";
+import { type MissionState, type Note } from "../events/fold.js";
 import { unreachable } from "../scheduler/ready.js";
 import {
   type ArchitectInput,
@@ -20,7 +20,6 @@ import {
   type ResearchInput,
 } from "./calls.js";
 import { type PanelLens } from "./criteria.js";
-import { pendingNotes } from "./notes.js";
 
 /** How many past ledgers the progress call sees. Enough to recognise a repeat,
  *  short enough that round 15 does not pay for round 1. */
@@ -266,4 +265,15 @@ export function buildProgressInput(state: MissionState): ProgressInput {
       }),
     })),
   };
+}
+
+/** Undelivered global notes — input to the loop's own next decision. */
+export function pendingNotes(notes: readonly Note[]): Note[] {
+  return notes.filter((note) => !note.deliveredAt && note.scope === "global");
+}
+
+/** A note becomes a fact the human gave. Ids continue from what is there, since
+ *  `motivatedBy` names entries by id and a reused id points at the wrong thing. */
+export function noteAsFact(note: Note, existing: readonly LedgerEntry[], round: number): LedgerEntry {
+  return { id: `h${existing.length + 1}`, text: note.text, addedRound: round };
 }

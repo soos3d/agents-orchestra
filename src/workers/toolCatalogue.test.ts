@@ -30,14 +30,8 @@ describe("the tool catalogue", () => {
   // mission.
   test("a class nobody authored grants nothing", () => {
     assert.deepEqual(resolveClasses(["fs.wirte"]), []);
-    assert.deepEqual(resolveClasses([]), []);
-  });
-
-  // §11's classes exist in the design and their tools land in Phase 8. Resolving to
-  // nothing is the honest answer; resolving to an error would make an envelope that
-  // names the future unrepresentable.
-  test("a class whose tools are not built yet grants nothing rather than failing", () => {
     assert.deepEqual(resolveClasses(["browser.commit"]), []);
+    assert.deepEqual(resolveClasses([]), []);
   });
 
   test("maps a tool back to its class, which is what containment is checked on", () => {

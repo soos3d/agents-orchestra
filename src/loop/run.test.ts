@@ -10,7 +10,7 @@ import { describe, test } from "node:test";
 import { type Budget } from "../domain/budget.js";
 import { type Criterion } from "../domain/ledger.js";
 import { type Task } from "../domain/task.js";
-import { fold, type MissionState } from "../events/fold.js";
+import { fold } from "../events/fold.js";
 import { type EventInput } from "../events/schema.js";
 import {
   aBudget,
@@ -220,7 +220,7 @@ function harness(options: {
   };
 }
 
-const typesIn = (state: MissionState, store: { inputs: EventInput[] }) =>
+const typesIn = (store: { inputs: EventInput[] }) =>
   store.inputs.map((event) => event.type);
 
 describe("runLoop", () => {
@@ -240,7 +240,7 @@ describe("runLoop", () => {
     assert.match(result.reason, /orchestra resume/);
     // The park is on the log, so a resumed mission reads a status rather than a run
     // that stopped mid-sentence.
-    assert.ok(typesIn(h.store.state(), h.store).includes("mission_status"));
+    assert.ok(typesIn(h.store).includes("mission_status"));
     // And the round's work still happened — the park is after the dispatch, not
     // instead of it.
     assert.deepEqual(h.dispatched, ["t1"]);
@@ -281,7 +281,7 @@ describe("runLoop", () => {
     const result = await runLoop(h.deps);
 
     assert.notEqual(result.status, "complete");
-    assert.ok(typesIn(h.store.state(), h.store).includes("replan_started"));
+    assert.ok(typesIn(h.store).includes("replan_started"));
     assert.equal(h.store.state().mission.ledger.criteria[0]?.met, false);
   });
 
@@ -489,7 +489,7 @@ describe("runLoop", () => {
       await runLoop(h.deps);
 
       assert.equal(h.store.state().mission.stalls, 0);
-      assert.ok(typesIn(h.store.state(), h.store).includes("replan_started"));
+      assert.ok(typesIn(h.store).includes("replan_started"));
     });
 
     test("replans after maxStalls consecutive non-progressing rounds", async () => {
@@ -506,7 +506,7 @@ describe("runLoop", () => {
 
       await runLoop(h.deps);
 
-      const events = typesIn(h.store.state(), h.store);
+      const events = typesIn(h.store);
       assert.ok(events.includes("stall_detected"));
       assert.ok(events.includes("replan_started"));
     });
@@ -706,7 +706,7 @@ describe("runLoop", () => {
       const result = await runLoop(h.deps);
 
       assert.equal(result.status, "complete");
-      assert.ok(typesIn(h.store.state(), h.store).includes("ledger_revised"));
+      assert.ok(typesIn(h.store).includes("ledger_revised"));
     });
   });
 

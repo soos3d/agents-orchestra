@@ -57,39 +57,6 @@ describe("readyTasks", () => {
     assert.deepEqual(ids(readyTasks(state)), []);
   });
 
-  // §11: parallel tabs in the same account is how two tasks submit the same form.
-  test("never runs two computer tasks at once, whatever the plan says", () => {
-    const browser = (id: string): Task =>
-      ({
-        ...aCodeTask({ id }),
-        worker: "computer",
-        surface: "browser",
-        allowedDomains: ["xero.com"],
-        branch: undefined,
-        owns: undefined,
-      }) as unknown as Task;
-
-    const state = aMissionState({ tasks: [browser("t1"), browser("t2"), browser("t3")] });
-
-    assert.deepEqual(ids(readyTasks(state)), ["t1"]);
-  });
-
-  test("a computer task already running leaves no slot for a second", () => {
-    const browser = (id: string, status: Task["status"]): Task =>
-      ({
-        ...aCodeTask({ id, status }),
-        worker: "computer",
-        surface: "browser",
-        allowedDomains: [],
-        branch: undefined,
-        owns: undefined,
-      }) as unknown as Task;
-
-    const state = aMissionState({ tasks: [browser("t1", "running"), browser("t2", "todo")] });
-
-    assert.deepEqual(ids(readyTasks(state)), []);
-  });
-
   test("caps each kind separately, so research does not starve behind code", () => {
     const state = aMissionState({
       tasks: [

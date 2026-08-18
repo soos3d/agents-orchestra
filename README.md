@@ -4,199 +4,116 @@
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue)](./LICENSE)
 [![node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org)
 
-**A local, resilient, looping orchestrator for any kind of task — not only coding.**
+A local program that runs a **mission**: a goal, a written definition of done, and a loop that drives the coding tools you already have until that definition is met (or you run out of time, or something actually blocks).
 
-You give it a mission. Orchestra researches it *and what a good outcome would look like*, writes that
-down, asks up to three questions, plans a set of tasks, waits for you to sign off, synthesizes a
-purpose-built agent for each task, runs them in parallel, verifies each, and re-assesses after every
-round. It loops until the outcome is met, the budget is spent, or it is genuinely blocked.
+## The idea
 
----
+You know Claude Code, Codex, OpenCode, and friends. You type what you want, an assistant edits the repo, you watch the terminal. Fine for a small change. Less fine when the job is bigger than one sitting, or when you hit the weekly cap while it is still planning.
 
-## Quickstart
+Orchestra sits above those tools. It does not replace them.
+
+1. You give it a goal in English.
+2. It looks at the repo, asks up to three questions, and writes down what “done” means (checks that can actually fail).
+3. You sign off on that definition *and* the plan. Nothing runs until you do.
+4. It starts the coding tools as **workers**, possibly several at once, each on its own git copy of the repo.
+5. It grades the result against the written checks, not against the worker’s claim that it finished.
+6. If the work is incomplete it replans and goes again. If the process dies you type `orchestra resume`.
+
+Most of a long job is thinking (research, a plan, a critique), not the file edit. Claude and Codex are good at the edit and they run out. You can put the thinking on a cheaper pay-per-token model (Nebius and anything else you have probed) and keep the capped seat for the task that needs it:
 
 ```bash
-# 1. A coding CLI, logged in (at least one)
+orchestra run "add a clamp helper with a colocated test" \
+  --staff plan=Qwen/Qwen3-30B-A3B-Instruct-2507
+```
+
+`--staff` is per step of the loop. Workers can also use different tools and models from each other. The model that writes the code is never the one that grades it.
+
+## Fair warning
+
+This is early (0.1.0). A mission runs end to end. It is also probably over-engineered for what it currently delivers, and it is not the fastest or cheapest way to change a file. Opening Claude still wins for a two-hour feature.
+
+I built a lot of machinery. Some of it is the point (the frozen definition of done, the log you can resume, spending Claude only on the edit). Some of it is me enjoying types. Help me tell which is which.
+
+If you are smarter than I am, which is likely, [contributions](./CONTRIBUTING.md) are welcome. Make it smaller. Make it nicer to use. Delete something.
+
+What works and what does not: [docs/status.md](./docs/status.md).
+
+## Run it
+
+You need **Node 20+** and **at least one coding CLI, already logged in**.
+
+Use a scratch git repo the first time. Workers get a real shell and will edit whatever you point them at.
+
+```bash
+# 1. A coding CLI (one is enough)
 npm i -g @anthropic-ai/claude-code && claude   # log in once, then quit
+#    or:  npm i -g @openai/codex && codex
 
-# 2. Orchestra itself
+# 2. Orchestra
 npm i -g @soos3d/orchestra
+#    or from this repo:  npm install && npm run build && npm link
 
-# 3. Check your setup
+# 3. What is missing
+cd ~/scratch/trial          # git init if you need to
 orchestra doctor
 
-# 4. Plan a mission without paying for a full run
-cd ~/some/scratch/repo
+# 4. Plan only (cheap). Read the spec, then stop. Nothing edits the repo.
 orchestra run "add a clamp(value, min, max) helper with a colocated test" --plan-only
+
+# 5. Same goal, actually run it. Sign off in the terminal or the local dashboard.
+orchestra run "add a clamp(value, min, max) helper with a colocated test" --budget 30
 ```
 
----
+`--quick` skips the long research pass and plans a single task. Use it when you already know the job. `--plan-only` plus `--quick` is the cheapest way to see whether a goal even makes sense.
 
-## Contents
+A dashboard URL prints on `127.0.0.1` unless you pass `--no-web`. Sign-off appears there and in the terminal; whichever you answer first wins.
 
-- [What it is not](#what-it-is-not)
-- [Install](#install)
-- [Run a mission](#run-a-mission)
-- [Commands](#commands)
-- [How it works](#how-it-works)
-- [Documentation](#documentation)
-- [License](#license)
+No environment variable is required. Everything in `.env.example` is an override (API keys for extra model providers, a container image if you want workers boxed in).
 
----
+From source, the gate is `npm run typecheck && npm test`. There is no linter.
 
-## What it is not
+## Why bother with the extra ceremony
 
-| | |
-|---|---|
-| **Not a coding swarm** | A task can be research, review, or writing. Only `code` tasks get git. |
-| **Not a hosted service or desktop app** | One npm package, one `orchestra` binary, one process. No database, no daemon. |
-| **Not autonomous by default** | A human signs off on the outcome spec *and* the plan before anything is synthesized. `--unattended` has to be asked for twice. |
+**Done is the document you signed.** After sign-off, a worker cannot quietly change the goal. A check that never ran cannot count as met.
 
-**Status:** Phases 1–7 have landed — a mission runs end to end.
-See [docs/status.md](./docs/status.md) for what works and what does not.
+**The writer does not grade the paper.** Repo tests run first. A separate judge reads the artifacts. That judge cannot be swapped onto a cheap chat-completion model, because it has to open files.
 
----
+**Several coding tools, one mission.** Claude on one task, Codex on another, OpenCode plus a factory model on a third, if those tools are on your machine. Labs will not dispatch each other’s CLIs. This will.
 
-## Install
+**Spend the capped seat on the edit.** Loop steps (`research`, `plan`, `critique`, …) can run on a probed model card. `orchestra metrics <id> --staffing` shows what was asked for, what actually answered, and what it cost.
 
-**Requirements:** Node 20+, and at least one coding CLI, logged in.
+**The mission is a log.** State lives in `.orchestra/` as `events.jsonl`. Crash, close the lid, `orchestra resume <id>`. Round 15 does not replay round 1’s conversation.
 
-```bash
-npm i -g @anthropic-ai/claude-code && claude   # log in once, then quit
-npm i -g @openai/codex             && codex    # log in once, then quit
-```
-
-Then the orchestrator:
-
-```bash
-npm i -g @soos3d/orchestra
-```
-
-<details>
-<summary><strong>Or from source</strong> — the same thing plus the tests</summary>
-
-```bash
-git clone https://github.com/soos3d/orchestra.git && cd orchestra
-npm install
-npm run build
-npm link          # puts `orchestra` on your PATH
-```
-
-</details>
-
-### `orchestra doctor`
-
-It tells you what is missing and what to type. It is the first thing to run and the only setup
-documentation there should ever be:
-
-```
-✓ node          v23.11.0
-✓ repo          /Users/you/code/ledger (detected from cwd)
-✓ verification  npm test (from package.json)
-✓ workers       claude, codex
-✓ state         /Users/you/code/ledger/.orchestra
-✓ gitignore     .orchestra/ is ignored
-
-Ready.
-```
-
-No environment variable is required. Everything in `.env.example` is an override.
-
----
-
-## Run a mission
-
-> ⚠️ Work in a scratch repo the first time. Workers get a real git worktree and a real shell, and
-> they will edit the repository you point them at.
-
-**Plan only** — the cheap half. Scan, intake, research, spec, plan, estimate, then stop. Nothing is
-dispatched and no agent is synthesized.
-
-```bash
-orchestra run "<goal>" --plan-only
-```
-
-**Full run** — drop the flag. It prints a dashboard URL on `127.0.0.1` within seconds. The sign-off
-screen renders in the browser and the terminal at once; whichever you answer first wins.
-
-```bash
-orchestra run "<goal>" --budget 30
-```
-
-**Quick mode** — for a job you already understand. Skips the deep research call and plans one task:
-**8,194 tokens / 1m53s** against **15,921 / 3m35s** on the same goal.
-
-```bash
-orchestra run "fix the off-by-one in parseRange" --quick --plan-only
-```
-
-### Flags at a glance
-
-| Flag | Effect |
-|---|---|
-| `--plan-only` | Plan and stop. Nothing runs. |
-| `--quick` | Skip deep research, plan one task. A hint, not a permission. |
-| `--moonshot` | The opposite: a second critic round, and the critic reads the design note. Not with `--quick`. |
-| `--budget <minutes>` | Wall-clock ceiling. Default 240. |
-| `--unattended` | Skip sign-off. Requires `--saved` or `--force`. |
-| `--saved <name>` | Replay a saved mission. |
-| `--force` | The acknowledgement `--unattended` needs without `--saved`. |
-| `--no-web` | No dashboard. For CI. |
-
-→ Full details, budgets, and the rules around `--quick` in the **[CLI reference](./docs/cli.md)**.
-
----
+**Workers only get what you named.** Their environment is built from an allowlist, not inherited from your shell. A missing secret is a question. The mission plans against mocks and continues.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `orchestra serve` | The dashboard that outlives missions — compose, watch, answer, resume, save, promote |
-| `orchestra run <goal>` | Start a mission |
-| `orchestra resume <missionId>` | Replay the log, reconcile orphans, carry on |
-| `orchestra forget <missionId>` | Delete everything a mission wrote |
-| `orchestra save <missionId> --as <name>` | Keep the mission to replay with `--saved` |
-| `orchestra promote <missionId> <taskId> --as <name>` | Keep the agent as a reusable role |
-| `orchestra metrics <missionId> [--json]` | What each decision point cost |
-| `orchestra doctor` | What is installed, authed, and missing |
+| `orchestra doctor` | What is installed, logged in, and missing |
+| `orchestra run "<goal>"` | Start a mission |
+| `orchestra resume <id>` | Continue from the log |
+| `orchestra serve` | Dashboard that outlives a single run |
+| `orchestra metrics <id>` | Cost per step; add `--staffing` for the model split |
+| `orchestra save <id> --as <name>` | Replay later with `--saved` |
+| `orchestra promote <id> <task> --as <name>` | Keep a worker as a reusable role |
+| `orchestra forget <id>` | Delete everything that mission wrote |
 
-`orchestra serve` is the only command a normal run needs.
+Useful flags on `run`: `--plan-only`, `--quick`, `--budget <minutes>`, `--staff <step>=<card>`, `--unattended` (needs `--saved` or `--force`; asked for twice on purpose).
 
----
-
-## How it works
-
-```
-  events.jsonl ──fold──►  MissionState  ──►  mission.json + tasks.json
-   (source of truth)      (pure reducer)     (projections — safe to delete)
-```
-
-The loop is a TypeScript `while`, not a conversation. A model is called at six fixed decision points
-— `research`, `intake`, `plan`, `synthesize`, `progress`, `judge` — each with a fresh context built by
-folding the log, each returning a structured value that becomes an event.
-
-Between calls, TypeScript owns everything: the counters, the budget, lease overlap, DAG readiness, and
-the criteria freeze. **A model never enforces an invariant.**
-
-→ The module map, replay rules, and the `.orchestra/` security notes are in
-**[docs/architecture.md](./docs/architecture.md)**.
-
----
+Full flag list: [docs/cli.md](./docs/cli.md). How to add a model card and staff a step: [docs/models.md](./docs/models.md).
 
 ## Documentation
 
 | | |
 |---|---|
-| **[Status](./docs/status.md)** | What has landed, what has not |
-| **[CLI reference](./docs/cli.md)** | Every flag and command, in full |
-| **[Architecture](./docs/architecture.md)** | The loop, the event log, the modules, `.orchestra/` |
-| **[Agent roster](./docs/agent-roster.md)** | The eighteen roles, and how to add your own |
-| **[Models and providers](./docs/models.md)** | Model cards, the probe, and staffing a decision point |
-| **[Deployment](./docs/deployment.md)** | Running `serve` on a VPS, over an SSH tunnel |
-| **[Development](./docs/development.md)** | Build, test, and the one rule the suite cannot enforce |
-| **[Contributing](./CONTRIBUTING.md)** | What a first patch has to hit |
-
----
+| [Status](./docs/status.md) | What has landed, what has not |
+| [CLI](./docs/cli.md) | Every flag and command |
+| [Architecture](./docs/architecture.md) | The loop, the event log, `.orchestra/` |
+| [Models](./docs/models.md) | Cards, the probe, staffing |
+| [Agent roster](./docs/agent-roster.md) | Roles a worker can start from |
+| [Development](./docs/development.md) | Build, test, the rule the suite cannot enforce |
+| [Contributing](./CONTRIBUTING.md) | What a first patch has to hit |
 
 ## License
 

@@ -344,7 +344,7 @@ describe("executeMission", () => {
   // `/state` that does not exist fails every dispatch on the mkdir instead of on the
   // thing being asserted.
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "orchestra-execute-"));
-  const config = { cwd: "/repo", stateDir, worktreeRoot: "/wt", agents: ["claude"], orchestratorModel: "opus", maxConcurrency: 4 } satisfies DiscoveredConfig;
+  const config = { cwd: "/repo", stateDir, worktreeRoot: "/wt", agents: ["claude"], orchestratorModel: "opus" } satisfies DiscoveredConfig;
 
   function harness(seed: EventInput[], against: DiscoveredConfig = config, human?: HumanPort) {
     const store = testStore(seed);

@@ -8,7 +8,7 @@ import path from "node:path";
 import { after, beforeEach, describe, test } from "node:test";
 import { createEventLog } from "./log.js";
 import { fold } from "./fold.js";
-import { MISSION_FILE, TASKS_FILE, rebuildProjections, writeProjections } from "./projections.js";
+import { MISSION_FILE, TASKS_FILE, writeProjections } from "./projections.js";
 import { aCodeTask, aReport, fixedClock, missionCreated } from "../testing/fixtures.js";
 import { type EventInput } from "./schema.js";
 
@@ -63,7 +63,7 @@ describe("projections", () => {
 
     fs.rmSync(path.join(dir, MISSION_FILE));
     fs.rmSync(path.join(dir, TASKS_FILE));
-    rebuildProjections(dir, log.read());
+    writeProjections(dir, fold(log.read()));
 
     assert.equal(fs.readFileSync(path.join(dir, MISSION_FILE), "utf8"), before.mission);
     assert.equal(fs.readFileSync(path.join(dir, TASKS_FILE), "utf8"), before.tasks);
@@ -80,7 +80,8 @@ describe("projections", () => {
     };
     const log = seedLog([...aRunningMission, { ...orchestrator, type: "dead_end_added", deadEnd }]);
 
-    const state = rebuildProjections(dir, log.read());
+    const state = fold(log.read());
+    writeProjections(dir, state);
 
     // A resumed run that forgot its dead ends would re-walk every one of them.
     assert.deepEqual(state.mission.ledger.deadEnds, [deadEnd]);

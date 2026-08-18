@@ -167,11 +167,7 @@ export function availableTransports(probe: ProbedAgents): string[] {
   const hasCli = CLI_TARGETS.some((target) => probe.agents.includes(target));
   const hasAcp = runnableAcpTargets(probe).length > 0;
 
-  return AVAILABLE_TRANSPORTS.filter((id) => {
-    if (id === "cli") return hasCli;
-    if (id === "acp") return hasAcp;
-    // A transport with no probe of its own is offered whenever the build ships it —
-    // `chrome-mcp` (Phase 8) will want a row here rather than a silent default.
-    return true;
-  });
+  return AVAILABLE_TRANSPORTS.filter((id) =>
+    id === "cli" ? hasCli : id === "acp" ? hasAcp : false,
+  );
 }

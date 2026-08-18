@@ -26,7 +26,7 @@ import { type WorkerReport } from "../domain/report.js";
 
 export interface ResearchInput {
   question: string;
-  sources: ("memory" | "codebase" | "web" | "prior-art" | "apps")[];
+  sources: ("memory" | "codebase" | "web")[];
   depth: "scan" | "deep";
   /**
    * What semantic memory already established, so research is not paid for twice

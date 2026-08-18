@@ -576,7 +576,13 @@ Nothing in the string is expanded either. A quoted argument reaches the program
 exactly as written, so a \`\\n\` inside one stays a backslash followed by an \`n\`
 rather than becoming a line break — a \`-c\` program written with \`\\n\` between its
 statements is a syntax error, not a multi-line script. Keep a one-liner genuinely one
-line, separating statements with \`;\`, or check something a task has left on disk.`;
+line, separating statements with \`;\`, or check something a task has left on disk.
+
+A check is graded on its **exit code** and nothing ever reads its output, so it has to
+*exit non-zero* when it fails: \`process.exit(ok ? 0 : 1)\`, an assertion, or a test
+runner. A one-liner that prints \`false\` and exits 0 is recorded as met however the work
+turned out — a criterion that cannot fail is not a gate, and the spec gate refuses that
+shape at authoring.`;
 
 /**
  * The check-authoring rules, plus the specialist gate **only when one was granted**
@@ -875,6 +881,11 @@ as written, so a \`\\n\` inside one stays two characters instead of becoming a l
 break, and a \`-c\` program whose statements are separated that way fails to parse.
 Keep a one-liner genuinely one line, separating statements with \`;\`.
 
+And a check is graded on its exit code, never on its output: it has to exit non-zero
+when it fails. \`process.exit(ok ? 0 : 1)\`, an assertion, or a test runner — a
+one-liner that prints \`false\` and exits 0 is recorded as met however the work turned
+out, and the spec gate refuses that shape at authoring.
+
 ${SHAPE}`;
 
 const SYNTHESIZE_PROMPT = `You write the agent that will do one task: its role, its
@@ -984,6 +995,11 @@ Nothing in the string is expanded either: a quoted argument reaches the program
 exactly as written, so a \`\\n\` inside one stays a backslash and an \`n\` rather than
 becoming a line break, and a \`-e\` or \`-c\` program written that way is a syntax
 error. Keep a one-liner genuinely one line, separating statements with \`;\`.
+
+And the exit code is the whole verdict — the output is never read, so a \`command\`
+check has to exit non-zero when it fails. \`process.exit(ok ? 0 : 1)\`, an assertion,
+or a test runner; a check that prints \`false\` and exits 0 passes every time however
+the work turned out, and the spec gate refuses that shape at authoring.
 
 The system prompt is for the worker, which sees no mission context. Write what it
 needs to do this task well and nothing about the mission around it.

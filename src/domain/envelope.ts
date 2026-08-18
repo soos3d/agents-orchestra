@@ -70,9 +70,6 @@ export const envelopeSchema = z.object({
    */
   research: z.enum(["closed", "web"]).default("closed"),
   maxSpend: budgetSchema,
-  // "This mission's gates never leave this machine" is a blast-radius property and
-  // belongs next to the rest of them (§17).
-  approval: z.enum(["local", "local+mirror"]),
 });
 
 export type Envelope = z.infer<typeof envelopeSchema>;

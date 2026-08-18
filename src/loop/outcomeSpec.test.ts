@@ -215,3 +215,80 @@ describe("a mock-first criterion", () => {
     assert.equal(result.ok, false);
   });
 });
+
+// The defect the 2026-08-18 calculator run recorded in production: `criterion_checked`
+// with `met: true` and `checkOutput: "exit 0\nfalse"`. The criteria had been authored as
+// `node -e "console.log(cond ? 'true' : 'false')"`, which exits 0 whatever it decides,
+// and `runCommand` reads the exit code and never the output. Four of that mission's six
+// command criteria were in that state. A criterion that cannot fail is not a gate — it is
+// `kind: 'none'` wearing a command, which is what this file already refuses.
+//
+// The gate cannot execute the check, so it cannot know the exit code. What it can read is
+// the shape: a `node -e`/`node -p` body that prints a true/false verdict and carries
+// nothing that could make the process exit non-zero. Everything else is accepted, because
+// a false refusal here fails correct work (defects 34, 37, 38, 44 — four scanners over
+// model output, all of them failing on work that was right).
+describe("a command check that prints its verdict instead of exiting on it", () => {
+  const refused = (command: string) => {
+    const result = writeOutcomeSpec([{ id: "c1", statement: "s", check: { kind: "command", command } }]);
+    return result.ok === false ? result.rejected[0]!.reason : undefined;
+  };
+
+  test("is refused, in the exact shape the run produced", () => {
+    const reason = refused(`node -e "console.log(2 + 2 === 4 ? 'true' : 'false')"`);
+
+    assert.match(reason ?? "", /exit code/);
+    // Every message in this file names the fix.
+    assert.match(reason ?? "", /process\.exit/);
+  });
+
+  test("is refused when the verdict is printed after real work, which is how it is written", () => {
+    const reason = refused(
+      `node -e "const s = require('fs').readFileSync('index.html', 'utf8'); console.log(s.includes('<script') ? 'true' : 'false')"`,
+    );
+
+    assert.match(reason ?? "", /exit code/);
+  });
+
+  test("is refused for node -p, which prints its expression and exits 0 all the same", () => {
+    assert.match(refused(`node -p "ok ? 'true' : 'false'"`) ?? "", /exit code/);
+  });
+
+  test("is refused for --eval=, because the flag's spelling is not the defect", () => {
+    assert.match(refused(`node --eval="console.log(true)"`) ?? "", /exit code/);
+  });
+
+  // The other half, and the one that matters more: everything below can fail, so nothing
+  // below may be refused.
+  test("accepts the check the prompts now ask for", () => {
+    assert.equal(refused(`node -e "process.exit(2 + 2 === 4 ? 0 : 1)"`), undefined);
+  });
+
+  test("accepts a check that prints its verdict and then exits on it", () => {
+    assert.equal(
+      refused(`node -e "const ok = 2 + 2 === 4; console.log(ok ? 'true' : 'false'); process.exit(ok ? 0 : 1)"`),
+      undefined,
+    );
+  });
+
+  test("accepts a check that throws or asserts, which is how a node check usually fails", () => {
+    assert.equal(refused(`node -e "require('assert').equal(add(2, 2), 4)"`), undefined);
+    assert.equal(refused(`node -e "if (!ok) throw new Error('not ok')"`), undefined);
+  });
+
+  test("accepts a test runner, which decides its own exit code", () => {
+    assert.equal(refused(`node --test test/calculator.test.js`), undefined);
+    assert.equal(refused(`npm test`), undefined);
+  });
+
+  // The scanner has to know what it is inside of — the standing trap. A `true` inside a
+  // string the check is searching *for* is data, not a verdict, and a program that is not
+  // node is not this shape at all.
+  test("accepts a non-node command that merely mentions true", () => {
+    assert.equal(refused(`grep -q 'return true' src/index.js`), undefined);
+  });
+
+  test("accepts a printed message that is not a true/false verdict", () => {
+    assert.equal(refused(`node -e "console.log('all checks passed')"`), undefined);
+  });
+});

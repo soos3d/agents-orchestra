@@ -13,8 +13,10 @@ That is the whole thing. There is **no lint and no formatter**, deliberately: th
 are about structure rather than whitespace, and a formatter would not catch any of them. Please do
 not add one in a first PR.
 
-CI runs the same two commands on Node 20 and 22, plus a fold-equality check over a committed event
-log. Node 20 is the floor (`engines`), and `orchestra doctor` enforces it at runtime.
+CI runs typecheck → build → test on Node 22 and 24 (the suite needs Node 21+ — `node --test`
+gained glob support there), with a separate job proving the shipped binary starts on Node 20.
+The suite replays a committed real-mission event log (`src/testing/receipts/`) as part of the run.
+Node 20 is the floor (`engines`), and `orchestra doctor` enforces it at runtime.
 
 ## Conventions a patch has to hit
 

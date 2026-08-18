@@ -13,8 +13,6 @@ import os from "node:os";
 import path from "node:path";
 import { after, describe, test } from "node:test";
 import { WebSocket } from "ws";
-import { type Carrier, type CarrierReply } from "../channel/carrier.js";
-import { type GateCard } from "../channel/cards.js";
 import { type DiscoveredConfig } from "../config/discover.js";
 import { fold } from "../events/fold.js";
 import { createEventLog } from "../events/log.js";
@@ -27,8 +25,6 @@ import { type Io } from "./main.js";
 import { type RunOptions } from "./runCommand.js";
 import { parseServeArgs, serve, type ServeDeps } from "./serveCommand.js";
 
-const quietIo: Io = { out: () => {}, err: () => {} };
-
 function scratchConfig(): DiscoveredConfig {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "orchestra-serve-"));
   return {
@@ -37,7 +33,6 @@ function scratchConfig(): DiscoveredConfig {
     worktreeRoot: path.join(stateDir, "worktrees"),
     agents: [],
     orchestratorModel: "sonnet",
-    maxConcurrency: 4,
   };
 }
 
@@ -193,7 +188,7 @@ describe("serve", () => {
     const config = scratchConfig();
 
     let release = () => {};
-    const client = await boot(config, async (options, _config, _io, deps) => {
+    const client = await boot(config, async (_options, _config, _io, deps) => {
       // A runner that registers like the real one and stays live until released.
       deps.surface!.register("m-live", {
         human: createWebHuman(),
@@ -271,77 +266,6 @@ describe("serve", () => {
     const state = fold(events);
     assert.ok(events.some((e) => e.type === "question_answered"));
     assert.equal(state.tasks[0]?.status, "waiting");
-  });
-
-  // The mirror wiring, against a hostile carrier (§17): the carrier is fake and the
-  // trust decisions are real. What has to hold — the card leaves without a
-  // screenshot, a forged reply approves nothing, a forwarded reply is refused and
-  // reported, and the same valid reply approves once.
-  test("mirrors a live question and lets only the bound sender answer it, once", async () => {
-    const config = scratchConfig();
-    // The live mission's log holds an open question before the runner registers.
-    seedParkedMission(config.stateDir, "m-live");
-
-    const published: GateCard[] = [];
-    let reply: (r: CarrierReply) => void = () => {
-      throw new Error("the carrier was never given a reply handler");
-    };
-    const carrier: Carrier = {
-      id: "test",
-      publish: async (card) => {
-        published.push(card);
-      },
-      onReply: (handler) => {
-        reply = handler;
-      },
-    };
-
-    let release = () => {};
-    const client = await boot(
-      config,
-      async (_options, _config2, _io, deps) => {
-        const store = createFileStore(path.join(config.stateDir, "missions", "m-live"));
-        deps.surface!.register("m-live", { human: createWebHuman(), store, onPanic: () => {} });
-        await new Promise<void>((r) => { release = r; });
-        deps.surface!.release("m-live");
-        return 0;
-      },
-      { channel: { carrier, identity: { carrier: "test", senderId: "davide-123", boundAt: "2026-08-01T00:00:00Z" } } },
-    );
-    await client.next(); // the listing
-    client.send({ kind: "compose", goal: "hold the live slot" });
-    await client.next(); // the registration publish
-
-    // The open question was carded, with a nonce and without the screenshot field
-    // even existing.
-    assert.equal(published.length, 1);
-    const card = published[0]!;
-    assert.equal(card.itemId, "q1");
-    assert.match(card.caption, /Which account\?/);
-    assert.ok(card.nonce.length >= 32);
-
-    const logOf = () =>
-      createEventLog(path.join(config.stateDir, "missions", "m-live")).read();
-
-    // Forged: a nonce the carrier invented approves nothing.
-    reply({ nonce: "invented-by-the-carrier", senderId: "davide-123", text: "production" });
-    assert.equal(logOf().some((e) => e.type === "question_answered"), false);
-
-    // Forwarded: the right nonce from the wrong account is refused, recorded, and
-    // the bound user is told.
-    reply({ nonce: card.nonce, senderId: "mallory-999", text: "production" });
-    assert.equal(logOf().some((e) => e.type === "question_answered"), false);
-    assert.ok(logOf().some((e) => e.type === "envelope_violation"));
-    assert.ok(published.some((c) => c.kind === "notice"));
-
-    // The bound sender answers — once; the replayed duplicate does nothing.
-    reply({ nonce: card.nonce, senderId: "davide-123", text: "the staging one" });
-    reply({ nonce: card.nonce, senderId: "davide-123", text: "the staging one" });
-    const answers = logOf().filter((e) => e.type === "question_answered");
-    assert.equal(answers.length, 1);
-    assert.ok("answer" in answers[0]! && answers[0].answer === "the staging one");
-
-    release();
   });
 
   // ── workspaces (UI plan U4) ──

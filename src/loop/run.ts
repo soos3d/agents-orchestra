@@ -15,7 +15,7 @@ import { type ModelCard } from "../providers/modelCard.js";
 import { budgetExceeded, type Budget } from "../domain/budget.js";
 import { type Criterion } from "../domain/ledger.js";
 import { LIMITS, type Limits, type MissionStatus } from "../domain/mission.js";
-import { type Task, type WorkerKind } from "../domain/task.js";
+import { type Task } from "../domain/task.js";
 import { type MissionState } from "../events/fold.js";
 import { type EventInput } from "../events/schema.js";
 import { promotable, readyTasks, standstill } from "../scheduler/ready.js";
@@ -29,8 +29,7 @@ import {
 } from "./criteria.js";
 import { type DispatchOutcome } from "./dispatch.js";
 import { type ExtendRequest } from "./human.js";
-import { noteAsFact, pendingNotes } from "./notes.js";
-import { buildPlanInput, buildProgressInput } from "./prompts.js";
+import { buildPlanInput, buildProgressInput, noteAsFact, pendingNotes } from "./prompts.js";
 import { DecisionPointError } from "./resilience.js";
 import { isCancellation, retryPolicy } from "./retry.js";
 import { reviseLedger } from "./revise.js";

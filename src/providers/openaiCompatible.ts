@@ -13,6 +13,13 @@
 // `orchestra doctor` with the response body quoted, instead of silently shipping a menu of
 // models nobody called.
 //
+// **A `fetch` rejection carries its reason on `cause`, and re-throwing `error.message`
+// throws that reason away.** Measured on a VPS: an `architect` call to a slow model came back
+// as the bare `fetch failed`, which is undici's 300-second headers timeout wearing Node's
+// generic message — the same seat took 143 s, 187 s, and past 300 s twice. Raising the
+// timeout would mean an `undici` dependency and a knob, against setup simplicity; so the
+// timeout is *named* instead, with the fix that actually worked (a faster card on that seat).
+//
 // Key *names* live here and key *values* never do: `config/discover.ts` is one of the two
 // places `process.env` is read in this codebase, and it stays that way — the value is
 // threaded in as an argument.
@@ -80,15 +87,36 @@ const completionSchema = z.object({
     .optional(),
 });
 
+/** What to try when the reason is unknown: the three things a failed call is usually
+ *  about. A failure that knows its own fix passes that instead — advice for the wrong
+ *  problem is what makes an operator re-check a key that was never at fault. */
+const GENERIC_ADVICE =
+  `Check the model id on its card, the key in the provider's environment variable, ` +
+  `and that the provider is reachable — 'orchestra doctor' probes all three.`;
+
 export class ProviderCallError extends Error {
-  constructor(provider: string, model: string, problem: string) {
-    super(
-      `Provider '${provider}' could not answer for model '${model}': ${problem} ` +
-        `Check the model id on its card, the key in the provider's environment variable, ` +
-        `and that the provider is reachable — 'orchestra doctor' probes all three.`,
-    );
+  constructor(provider: string, model: string, problem: string, advice: string = GENERIC_ADVICE) {
+    super(`Provider '${provider}' could not answer for model '${model}': ${problem} ${advice}`);
     this.name = "ProviderCallError";
   }
+}
+
+const HEADERS_TIMEOUT_CODE = "UND_ERR_HEADERS_TIMEOUT";
+
+/**
+ * Whether undici gave up waiting for the response header.
+ *
+ * `fetch` reports this as `TypeError: fetch failed` and puts the only distinguishing fact on
+ * `cause`, which is typed `unknown` because it is — a cause can be absent, a string, or an
+ * error from any layer. So this narrows rather than casts: object, non-null, and a `code`
+ * that reads `UND_ERR_HEADERS_TIMEOUT`. Anything else is somebody else's failure and must
+ * keep its own message.
+ */
+function isHeadersTimeout(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const cause: unknown = error.cause;
+  if (typeof cause !== "object" || cause === null || !("code" in cause)) return false;
+  return (cause as { code: unknown }).code === HEADERS_TIMEOUT_CODE;
 }
 
 export interface ChatDeps {
@@ -138,6 +166,17 @@ export async function chatCompletion(
       ...(request.signal ? { signal: request.signal } : {}),
     });
   } catch (error) {
+    if (isHeadersTimeout(error)) {
+      throw new ProviderCallError(
+        request.provider,
+        request.model,
+        `it sent no response header within 300 seconds, which is where Node's fetch gives up.`,
+        `The model is too slow for this seat, not unreachable — the request was accepted and ` +
+          `never answered. Staff this decision point to a faster card: ` +
+          `'orchestra run … --staff <point>=<card>', with 'orchestra metrics --staffing' ` +
+          `showing what each seat runs on today.`,
+      );
+    }
     throw new ProviderCallError(request.provider, request.model, `${(error as Error).message}.`);
   }
 

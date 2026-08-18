@@ -41,7 +41,7 @@ function scratchConfig(): DiscoveredConfig {
     worktreeRoot: path.join(stateDir, "worktrees"),
     agents: [],
     orchestratorModel: "sonnet",
-    maxConcurrency: 4,
+
   };
 }
 

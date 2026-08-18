@@ -132,8 +132,8 @@ probed cards and enforced again server-side. You cannot choose what you were not
 ### The provider path
 
 `loop/providerCalls.ts` is `createAgentCalls` with its transport swapped, not a second
-implementation — the six system prompts, the schema in each prompt, the one reformat attempt and
-`CallFormatError` are shared. Two copies of a prompt drift the first time one of them is corrected,
+implementation — the system prompts (one per decision point), the schema in each prompt, the one
+reformat attempt and `CallFormatError` are shared. Two copies of a prompt drift the first time one of them is corrected,
 and neither suite can see it.
 
 Two consequences worth knowing:
@@ -164,9 +164,11 @@ Add `--json` for the same rows machine-readable, carrying `staffedTo`, `ranOn` a
 
 **A phase is priced only when the model that *ran* matches a card and both token kinds are
 present.** Never from `AgentSpec.model`, which is what was asked for rather than what answered. A
-worker billed on OpenCode's contract stays unpriced rather than charged at somebody else's rate,
-and ACP carries no token usage at all, so those stay unpriced too. An unpriced row is honest; an
-estimated one is a confident claim about someone else's invoice.
+worker billed on OpenCode's contract stays unpriced rather than charged at somebody else's rate.
+ACP workers also stay unpriced — the wire carries no usage, and although the transport now reads
+token counts from the agent's own session log (`workers/acp/usage.ts`), the model that ran
+(e.g. `claude-opus-4-6`) matches no card. An unpriced row is honest; an estimated one is a
+confident claim about someone else's invoice.
 
 ---
 

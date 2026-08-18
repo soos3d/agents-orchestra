@@ -110,3 +110,54 @@ test("a transport failure becomes the same error everything else does", async ()
     /getaddrinfo ENOTFOUND/,
   );
 });
+
+// A model that never sends a response header is the one failure whose message used to say
+// nothing: undici gives up at 300 s with `TypeError: fetch failed`, the real reason living
+// only on `cause.code`. Measured on a VPS — the same `architect` call took 143 s, 187 s and
+// over 300 s twice on DeepSeek V4-Flash — and the operator saw `fetch failed` with no move
+// to make. These two tests pin that the timeout is named with its fix and that no other
+// transport failure was swallowed into it.
+test("a header timeout says the model never answered and names the faster seat", async () => {
+  const timedOut = new TypeError("fetch failed", {
+    cause: Object.assign(new Error("Headers Timeout Error"), { code: "UND_ERR_HEADERS_TIMEOUT" }),
+  });
+
+  await assert.rejects(
+    () =>
+      chatCompletion(request, {
+        fetch: (async () => {
+          throw timedOut;
+        }) as unknown as typeof globalThis.fetch,
+      }),
+    (error: Error) => {
+      assert.ok(error instanceof ProviderCallError);
+      assert.match(error.message, /no response header within 300 seconds/);
+      // The fix, not the symptom: a slower card on this seat is the cause and --staff is
+      // the lever. 'fetch failed' said none of this.
+      assert.match(error.message, /--staff/);
+      assert.doesNotMatch(error.message, /fetch failed/);
+      return true;
+    },
+  );
+});
+
+test("a transport failure that is not a header timeout still reports its own message", async () => {
+  await assert.rejects(
+    () =>
+      chatCompletion(request, {
+        fetch: (async () => {
+          throw new TypeError("fetch failed", {
+            cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }),
+          });
+        }) as unknown as typeof globalThis.fetch,
+      }),
+    (error: Error) => {
+      assert.match(error.message, /fetch failed/);
+      assert.doesNotMatch(error.message, /no response header/);
+      assert.doesNotMatch(error.message, /--staff/);
+      // The path everything else lands on, unchanged.
+      assert.match(error.message, /orchestra doctor/);
+      return true;
+    },
+  );
+});

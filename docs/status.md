@@ -9,10 +9,12 @@
 | The loop | scan → intake → research → outcome spec → plan → sign-off → synthesis → dispatch → verification → merge → replan |
 | Memory | recalls lore before the scan, writes back on completion |
 | Saved missions | replay with `--saved` |
-| Dashboard | attended runs serve one on loopback; `orchestra serve` outlives missions — compose, watch, answer a parked question, pause, forget |
+| Dashboard | attended runs serve one on loopback; `orchestra serve` outlives missions — compose, watch, answer a parked question, resume, pause, save, promote, forget, inspect a task's diff and evidence, and manage multiple workspaces |
 | `ask_human` | parks exactly the tasks it blocks; the rest keep running |
-| Phone mirror (trust core) | carrier-independent and tested: single-use nonces, one bound sender, replay approves once |
-| ACP workers | a pinned adapter per target, a real permission channel in place of `--dangerously-skip-permissions` |
+| ACP workers | a pinned adapter per target (`acp/opencode` is the deliberate exception — it is the agent's own subcommand, nothing to pin), a real permission channel in place of `--dangerously-skip-permissions` |
+| Worker lanes | `cli/claude`, `cli/codex`, `cli/pi`, `acp/claude`, `acp/codex`, `acp/opencode` — the open-model lanes (`cli/pi`, `acp/opencode`) run factory models by config alone |
+| Research web access | `--research-web` grants the deep research pass WebSearch/WebFetch; `--domain <host>` constrains what WebFetch may reach. Off by default |
+| Spend attribution | `metrics --staffing`: per decision point, staffed-to vs actually-answered, tokens, cost, send-backs |
 
 A real mission has gone from brief to `complete` uninterrupted over ACP: six synthesized agents, five
 real merges, nine criteria met with evidence.
@@ -42,17 +44,14 @@ real merges, nine criteria met with evidence.
 **Not yet proven end to end:** a secrets-flow mission running all the way to `complete` — both
 evidence runs parked on a provider 529 before their last criterion.
 
-**No control chooses containment or a scanner from the dashboard yet.** Both are CLI or saved-mission
-only.
-
 ## Not built
 
 - Computer use and its approval gates
-- The concrete phone carrier for the inbox
+- Phone inbox (no carrier)
 
 Started and named rather than half-wired:
 
 - Killing a single task
-- Resuming a parked mission from the server rather than the CLI
-- The artifact retention sweep
+- The artifact retention sweep (the scheduled purge half; `forget` exists)
 - Streaming live worker activity to the dashboard
+- Compose controls for containment and scanners (both are CLI or saved-mission only)

@@ -12,16 +12,13 @@ import { isCodeTask, isTerminal, type Task, type TaskRef, type WorkerKind } from
 import { type MissionState } from "../events/fold.js";
 import { requestLease, type Lease } from "./leases.js";
 
-/** Per worker kind, not one global number: six parallel research calls and six
- *  parallel browser sessions are not the same risk. */
+/** Per worker kind, not one global number. */
 export const CONCURRENCY: Record<WorkerKind, number> = {
   code: 4,
   research: 4,
   review: 4,
   general: 4,
-  // One real logged-in browser session. Parallel tabs in the same account is how two
-  // tasks submit the same form (§11).
-  computer: 1,
+  computer: 4,
 };
 
 /** A slot is occupied from dispatch until the task leaves verification: a code task

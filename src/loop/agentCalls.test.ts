@@ -545,6 +545,17 @@ describe("createAgentCalls", () => {
         // The concrete consequence, not just the rule — a model that is told "no shell"
         // still reads `\n` as a line break, because in most contexts it is one.
         assert.match(prompt, /line\s+break/);
+        // The 2026-08-18 calculator run, and the same lesson one field along: a check is
+        // graded on its exit code and nothing reads its output. That mission's criteria were
+        // authored as `node -e "console.log(cond ? 'true' : 'false')"`, which exits 0
+        // whatever it decides — `criterion_checked` recorded `met: true` against a
+        // `checkOutput` of `exit 0\nfalse`, and four of six command criteria could not fail.
+        // `writeOutcomeSpec` refuses that shape now; this is the half that stops it being
+        // written, and the two ship together because a prompt and its validation always do.
+        assert.match(prompt, /exit\s+non-zero/, "a check-authoring call was not told to fail loudly");
+        // The mechanism, not just the instruction — `process.exit(ok ? 0 : 1)` is the fix
+        // the refusal message names, so the prompt and the send-back say the same thing.
+        assert.match(prompt, /process\.exit\(ok \? 0 : 1\)/);
       }
     });
 

@@ -233,7 +233,7 @@ describe("runMission under a surface", () => {
       worktreeRoot: path.join(stateDir, "worktrees"),
       agents: [],
       orchestratorModel: "sonnet",
-      maxConcurrency: 4,
+  
     };
 
     const log: string[] = [];
@@ -276,7 +276,7 @@ describe("runMission under a surface", () => {
       worktreeRoot: path.join(stateDir, "worktrees"),
       agents: [],
       orchestratorModel: "sonnet",
-      maxConcurrency: 4,
+  
     };
 
     const log: string[] = [];
@@ -318,7 +318,7 @@ describe("runMission spend attribution", () => {
       worktreeRoot: path.join(stateDir, "worktrees"),
       agents: [],
       orchestratorModel: "sonnet",
-      maxConcurrency: 4,
+  
     };
 
     await assert.rejects(() =>
@@ -506,7 +506,7 @@ describe("runMission and staffing", () => {
       worktreeRoot: path.join(stateDir, "worktrees"),
       agents: [],
       orchestratorModel: "sonnet",
-      maxConcurrency: 4,
+  
     };
   };
 
@@ -655,7 +655,7 @@ describe("runMission and the scanner grant", () => {
     worktreeRoot: path.join(stateDir, "worktrees"),
     agents: [],
     orchestratorModel: "sonnet",
-    maxConcurrency: 4,
+
     ...(probed ? { scanners: probed } : {}),
   });
 
@@ -740,7 +740,7 @@ describe("--env", () => {
     assert.equal(parsed.ok, true);
     assert.deepEqual(parsed.ok && parsed.options.env, ["STRIPE_KEY", "SLACK_TOKEN"]);
     const envelope = defaultEnvelope(
-      { cwd: "/repo", stateDir: "/state", worktreeRoot: "/w", agents: [], orchestratorModel: "sonnet", maxConcurrency: 4 },
+      { cwd: "/repo", stateDir: "/state", worktreeRoot: "/w", agents: [], orchestratorModel: "sonnet" },
       { wallMs: 60_000 },
       [],
       parsed.ok ? parsed.options.env : [],
@@ -839,7 +839,7 @@ describe("the repo map reaches the calls that cannot look", () => {
             worktreeRoot: path.join(repo.path, ".orchestra", "worktrees"),
             agents: [],
             orchestratorModel: "sonnet",
-            maxConcurrency: 4,
+        
           },
           quietIo,
           {
@@ -917,7 +917,7 @@ describe("--research-web and --domain", () => {
 
   test("the envelope carries the grant, which is what a resume folds", () => {
     const envelope = defaultEnvelope(
-      { cwd: "/repo", stateDir: "/repo/.orchestra", worktreeRoot: "/w", agents: [], orchestratorModel: "sonnet", maxConcurrency: 4 },
+      { cwd: "/repo", stateDir: "/repo/.orchestra", worktreeRoot: "/w", agents: [], orchestratorModel: "sonnet" },
       { wallMs: 1000 },
       [],
       [],
@@ -927,6 +927,6 @@ describe("--research-web and --domain", () => {
 
     assert.equal(envelope.research, "web");
     assert.deepEqual(envelope.domains, ["docs.python.org"]);
-    assert.equal(defaultEnvelope({ cwd: "/repo", stateDir: "/repo/.orchestra", worktreeRoot: "/w", agents: [], orchestratorModel: "sonnet", maxConcurrency: 4 }, { wallMs: 1000 }).research, "closed");
+    assert.equal(defaultEnvelope({ cwd: "/repo", stateDir: "/repo/.orchestra", worktreeRoot: "/w", agents: [], orchestratorModel: "sonnet" }, { wallMs: 1000 }).research, "closed");
   });
 });

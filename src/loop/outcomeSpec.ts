@@ -8,8 +8,16 @@
 // "Vague" is not a property code can read off a sentence. What it can read is whether
 // the criterion carries a check that will ever produce an answer, and that is the
 // operational definition used here: no check, a malformed one, or `kind: 'none'`.
-import { needsShell } from "../runtime/command.js";
+import { needsShell, parseCommand, type ParsedCommand } from "../runtime/command.js";
 import { criterionSchema, type Criterion } from "../domain/ledger.js";
+
+const CONSOLE_LOG = "console.log(";
+const EVAL_FLAGS = new Set(["-e", "--eval", "-p", "--print"]);
+const INLINE_FLAGS = ["--eval=", "--print="];
+/** Anything that can leave the process with a non-zero status, however indirectly. */
+const CAN_EXIT_NON_ZERO = /process\s*\.\s*(exit|exitCode|abort)|\bthrow\b|\bassert\b/;
+/** A printed verdict, bare or quoted. `falsey` is not one — the word boundaries matter. */
+const VERDICT_LITERAL = /\b(true|false)\b/i;
 
 export interface SpecRejection {
   /** The criterion as proposed, quoted so the retry knows which one to fix. */
@@ -102,6 +110,32 @@ export function writeOutcomeSpec(
       continue;
     }
 
+    // The same question again, one layer past "will it run": will it ever say no. A real
+    // mission recorded `criterion_checked` with `met: true` and `checkOutput: "exit 0\nfalse"` —
+    // the check's own script printed `false`. The criteria had been authored as
+    // `node -e "console.log(cond ? 'true' : 'false')"`, and `runCommand` grades on the exit
+    // code and never reads the output, so four of that mission's six command criteria could
+    // not fail. That is `kind: 'none'` wearing a command.
+    //
+    // This gate cannot execute the check, so the exit code is not knowable here. The shape
+    // is: a `node -e`/`node -p` body that prints a true/false verdict and carries nothing
+    // that could make the process leave with a non-zero status. Anything else is accepted,
+    // deliberately — a false refusal fails correct work, which is defects 34, 37, 38 and 44,
+    // four scanners over model output that every one of them got wrong in that direction.
+    if (criterion.check.kind === "command" && printsItsVerdictInstead(criterion.check.command)) {
+      rejected.push({
+        criterion: criterion.statement,
+        reason:
+          `Its command prints its verdict instead of exiting on it ` +
+          `(\`${criterion.check.command}\`). A check is graded on its exit code and its output ` +
+          `is never read, so this one is recorded as met however the work turns out — a real ` +
+          `mission logged 'exit 0' against a script that printed 'false'. Make the decision the ` +
+          `exit status: end the body with \`process.exit(ok ? 0 : 1)\`, throw, or assert. Use a ` +
+          `judge rubric if the answer is not a status.`,
+      });
+      continue;
+    }
+
     if (criterion.check.kind === "scanner" && !scanners.includes(criterion.check.scanner)) {
       rejected.push({
         criterion: criterion.statement,
@@ -131,6 +165,107 @@ export function writeOutcomeSpec(
   }
 
   return rejected.length > 0 ? { ok: false, rejected } : { ok: true, criteria };
+}
+
+/**
+ * Whether a `node -e`/`node -p` check decides in its output rather than in its exit status.
+ *
+ * Conservative on purpose, and the bar is *certainty*: this returns true only for a body
+ * that prints a `true`/`false` verdict and contains no `process.exit`, no `process.exitCode`,
+ * no `throw` and no `assert` — nothing that could produce a non-zero status. A body that
+ * merely logs progress, one that asserts, one whose program is not `node`, and every command
+ * this tokenizer cannot parse are all accepted, because refusing a correct check costs a
+ * mission its criteria while quoting work that was right (defect 44).
+ *
+ * `parseCommand` does the shell-level quoting rather than a regex over the raw string, for
+ * `needsShell`'s reason: the body arrives quoted, and a scanner that does not know what it is
+ * inside of reads the check's own argument as syntax.
+ */
+function printsItsVerdictInstead(command: string): boolean {
+  let parsed: ParsedCommand;
+  try {
+    parsed = parseCommand(command);
+  } catch {
+    // Unbalanced quotes. `runCommand` refuses it with the better message, and guessing at a
+    // string the tokenizer could not read is how a scanner fails correct work.
+    return false;
+  }
+
+  const evaluated = evaluatedBody(parsed);
+  if (evaluated === undefined) return false;
+  // Searched over the raw body, comments and string contents included: a match there is a
+  // false *exemption*, which costs nothing, where a miss would be a false refusal.
+  if (CAN_EXIT_NON_ZERO.test(evaluated.body)) return false;
+
+  return evaluated.printed.some((expression) => VERDICT_LITERAL.test(expression));
+}
+
+/** `-p` prints its whole expression; `-e` prints whatever it hands `console.log`. */
+function evaluatedBody(parsed: ParsedCommand): { body: string; printed: string[] } | undefined {
+  if (parsed.cmd.split("/").pop() !== "node") return undefined;
+
+  for (let i = 0; i < parsed.args.length; i++) {
+    const arg = parsed.args[i]!;
+    const inline = INLINE_FLAGS.find((flag) => arg.startsWith(flag));
+    const body = inline ? arg.slice(inline.length) : EVAL_FLAGS.has(arg) ? parsed.args[i + 1] : undefined;
+    if (body === undefined) continue;
+
+    const printsWholeBody = arg.startsWith("-p") || arg.startsWith("--print");
+    return { body, printed: printsWholeBody ? [body] : loggedExpressions(body) };
+  }
+  return undefined;
+}
+
+/**
+ * The arguments of every top-level `console.log(...)` in a JavaScript body.
+ *
+ * Quote-aware for the third time in this codebase and for the third time because of the
+ * same bug: a `)` inside `console.log("a )")` closes nothing, and a `console.log` inside a
+ * string is text. An unbalanced call returns what was found so far rather than a guess.
+ */
+function loggedExpressions(body: string): string[] {
+  const found: string[] = [];
+  let quote: string | undefined;
+
+  for (let i = 0; i < body.length; i++) {
+    const char = body[i]!;
+    if (quote !== undefined) {
+      if (char === "\\") i++;
+      else if (char === quote) quote = undefined;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+      continue;
+    }
+    if (!body.startsWith(CONSOLE_LOG, i)) continue;
+
+    const open = i + CONSOLE_LOG.length;
+    const close = closingParen(body, open);
+    if (close === undefined) return found;
+    found.push(body.slice(open, close));
+    i = close;
+  }
+  return found;
+}
+
+/** The index of the `)` closing a call whose `(` was just consumed, or undefined. */
+function closingParen(body: string, from: number): number | undefined {
+  let depth = 1;
+  let quote: string | undefined;
+
+  for (let i = from; i < body.length; i++) {
+    const char = body[i]!;
+    if (quote !== undefined) {
+      if (char === "\\") i++;
+      else if (char === quote) quote = undefined;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === "`") quote = char;
+    else if (char === "(") depth++;
+    else if (char === ")" && --depth === 0) return i;
+  }
+  return undefined;
 }
 
 function describe(candidate: unknown): string {

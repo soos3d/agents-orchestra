@@ -15,11 +15,9 @@
 // document as "this command's, not the architecture's". The identity that makes it
 // hold is `workspaceId`'s: one real path, one workspace, whatever it was typed as.
 import fs from "node:fs";
-import { buildCard } from "../channel/cards.js";
-import { type Carrier } from "../channel/carrier.js";
-import { createTrust, type BoundIdentity } from "../channel/trust.js";
+import { parseArgs } from "node:util";
 import { missionDir, type DiscoveredConfig } from "../config/discover.js";
-import { doctor } from "../config/doctor.js";
+import { doctor, type Check } from "../config/doctor.js";
 import { forgetMission } from "../config/hygiene.js";
 import {
   configForWorkspace,
@@ -39,9 +37,12 @@ import { createFileStore } from "../loop/store.js";
 import { saveProfile } from "../memory/profiles.js";
 import { saveMission } from "../memory/savedMission.js";
 import { createMissionRegistry } from "../web/registry.js";
-import { healthFrame } from "../web/health.js";
 import { staffableCards } from "../providers/modelCard.js";
-import { isOfferedRuntime, isOfferedStaffing, type ClientMessage } from "../web/protocol.js";
+import { PROGRESS_MODEL } from "../loop/agentCalls.js";
+import { availableTransports } from "../workers/availability.js";
+import { MODELS_BY_VENDOR, offeredHarnesses, offeredModels } from "../workers/harness.js";
+import { REFORMAT_MODEL } from "../workers/transport.js";
+import { isOfferedRuntime, isOfferedStaffing, type ClientMessage, type HealthFrame } from "../web/protocol.js";
 import { startWebServer, type Handled, type RunningServer } from "../web/server.js";
 import { showWork, type ShowRequest, type ShowResult } from "../web/showWork.js";
 import { createWebHuman, type WebHuman } from "../web/webHuman.js";
@@ -51,6 +52,36 @@ import { type Io } from "./main.js";
 
 const DEFAULT_BUDGET_MINUTES = 240;
 
+const SERVE_FLAGS = {
+  port: { type: "string" },
+} as const;
+
+const ORCHESTRATOR_MODELS = MODELS_BY_VENDOR.anthropic;
+
+function healthFrame(
+  config: DiscoveredConfig,
+  report: { checks: readonly Check[]; ready: boolean },
+  cards: readonly { id: string; tier: string; provider: string }[],
+): HealthFrame {
+  return {
+    checks: report.checks,
+    ready: report.ready,
+    transports: availableTransports(config),
+    harnesses: offeredHarnesses(config).map((harness) => ({
+      id: harness.id,
+      models: offeredModels(harness.id),
+      honoursModel: harness.honoursModel,
+    })),
+    orchestratorModels: ORCHESTRATOR_MODELS,
+    orchestratorModel: config.orchestratorModel,
+    modelCards: cards.map((card) => ({ id: card.id, tier: card.tier, provider: card.provider })),
+    fixedModels: [
+      { name: "progress", model: PROGRESS_MODEL },
+      { name: "reformat", model: REFORMAT_MODEL },
+    ],
+  };
+}
+
 export interface ServeOptions {
   port?: number;
 }
@@ -58,20 +89,23 @@ export interface ServeOptions {
 export type ParsedServe = { ok: true; options: ServeOptions } | { ok: false; message: string };
 
 export function parseServeArgs(argv: readonly string[]): ParsedServe {
-  const options: ServeOptions = {};
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i]!;
-    if (arg === "--port") {
-      const port = Number(argv[++i]);
-      if (!Number.isInteger(port) || port <= 0 || port > 65535) {
-        return { ok: false, message: "--port takes a port number, e.g. --port 4600." };
-      }
-      options.port = port;
-      continue;
+  let values: { port?: string };
+  try {
+    ({ values } = parseArgs({ args: [...argv], options: SERVE_FLAGS, allowPositionals: false }));
+  } catch (error) {
+    const { code, message } = error as { code?: string; message?: string };
+    const flag = /'(--?[^'\s]*)/.exec(message ?? "")?.[1] ?? "";
+    if (code === "ERR_PARSE_ARGS_UNKNOWN_OPTION") {
+      return { ok: false, message: `Unknown flag '${flag}'. Usage: orchestra serve [--port <n>]` };
     }
-    return { ok: false, message: `Unknown flag '${arg}'. Usage: orchestra serve [--port <n>]` };
+    return { ok: false, message: "--port takes a port number, e.g. --port 4600." };
   }
-  return { ok: true, options };
+  if (values.port === undefined) return { ok: true, options: {} };
+  const port = Number(values.port);
+  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+    return { ok: false, message: "--port takes a port number, e.g. --port 4600." };
+  }
+  return { ok: true, options: { port } };
 }
 
 interface LiveSession {
@@ -90,10 +124,6 @@ export interface ServeDeps {
    *  the same wiring as a composed one and differs only in where the plan came from,
    *  so the two are substituted together. */
   resume?: typeof resumeMission;
-  /** The phone mirror, when one is configured (§2, §10). Optional in exactly the
-   *  defect-12b sense, which is why the wiring below has its own test: the carrier
-   *  delivers, `trust` decides, and no mirror at all is the default. */
-  channel?: { carrier: Carrier; identity: BoundIdentity };
   /** Resolves the command: serve runs until this aborts (SIGINT in `main`). */
   signal?: AbortSignal;
 }
@@ -164,97 +194,6 @@ export async function serve(
     pending,
     live: Object.fromEntries([...sessions].map(([id, session]) => [id, session.missionId])),
     defaultId: defaultWorkspace.id,
-  });
-
-  // ── the mirror (§10, §17): the carrier moves cards, the trust store decides ──
-  const trust = deps.channel ? createTrust(deps.channel.identity) : undefined;
-  const carded = new Set<string>();
-
-  // Open questions on the live mission, carded once each. Questions only until
-  // Phase 8 gives gates something to show; the card builder already refuses what
-  // may never be mirrored, whatever this loop learns to send.
-  const mirror = (): void => {
-    if (!deps.channel || !trust) return;
-    for (const { missionId, store } of sessions.values()) {
-      for (const item of store.state().inbox) {
-        if (item.kind !== "question" || item.resolvedAt || carded.has(item.id)) continue;
-        const event = registry
-          .eventsFor(missionId)
-          .find((e) => e.type === "question_asked" && e.questionId === item.id);
-        if (!event) continue;
-        carded.add(item.id);
-        const built = buildCard(event, trust.issue(item.id, now()).nonce);
-        if (!built.ok) {
-          io.err(`not mirrored: ${built.reason}`);
-          continue;
-        }
-        deps.channel.carrier
-          .publish(built.card)
-          .catch((error: unknown) => io.err(`mirror publish failed: ${(error as Error).message}`));
-      }
-    }
-  };
-
-  /** Which live mission raised this inbox item. With one mission the answer was
-   *  "the live one"; with one per workspace it has to be looked up, because a card
-   *  approved on a phone must not be applied to whichever mission happens to be
-   *  first in the map. */
-  const sessionForItem = (itemId: string): LiveSession | undefined =>
-    [...sessions.values()].find((session) =>
-      session.store.state().inbox.some((item) => item.id === itemId),
-    );
-
-  deps.channel?.carrier.onReply((reply) => {
-    const verdict = trust!.validate({ nonce: reply.nonce, senderId: reply.senderId }, now());
-
-    if (verdict.kind === "wrong_sender") {
-      // Refused, recorded, and the bound user is told it happened — being told is
-      // part of the mitigation (§17), not a courtesy. Recorded against whichever
-      // mission is live; with none, the terminal is the whole of the record.
-      io.err(`refused a carrier reply from unbound sender '${reply.senderId}'.`);
-      const any = [...sessions.values()][0];
-      if (any) {
-        any.store.emit({
-          type: "envelope_violation",
-          missionId: any.missionId,
-          actor: "runtime",
-          requested: `carrier reply from unbound sender '${reply.senderId}'`,
-          envelope: any.store.state().mission.capabilityEnvelope,
-        });
-      }
-      deps.channel!.carrier
-        .publish({
-          itemId: "violation",
-          kind: "notice",
-          caption: "A reply from another account was refused. Nothing was approved.",
-          nonce: "",
-          missionId: any?.missionId ?? "",
-        })
-        .catch(() => {});
-      return;
-    }
-
-    if (verdict.kind !== "approved") {
-      io.err(`carrier reply ignored: ${verdict.kind}.`);
-      return;
-    }
-
-    const answer = reply.text?.trim();
-    const session = sessionForItem(verdict.itemId);
-    if (!answer || !session) {
-      io.err("carrier reply validated but carried no answer text, or nothing is live.");
-      return;
-    }
-    const result = handleFromDashboard(
-      { kind: "answer", questionId: verdict.itemId, answer },
-      session.human,
-      session.store,
-      session.missionId,
-      io,
-      session.onPanic,
-    );
-    if (!result.ok) io.err(`carrier answer not applied: ${result.problem}`);
-    server.publish();
   });
 
   /**
@@ -591,22 +530,13 @@ export async function serve(
    *  the first one's registration. */
   const surfaceFor = (workspace: string): RunDeps["surface"] => ({
     // `server` is assigned before any client can compose: startWebServer resolves
-    // below, and `register` only ever runs inside a message handler. The mirror
-    // rides every publish, so a question reaches the phone the same moment it
-    // reaches the tabs.
+    // below, and `register` only ever runs inside a message handler.
     get server() {
-      return {
-        publish: () => {
-          server.publish();
-          mirror();
-        },
-        url: server.url,
-      };
+      return server;
     },
     register: (missionId, session) => {
       sessions.set(workspace, { missionId, ...session });
       server.publish();
-      mirror();
     },
     release: (missionId) => {
       if (sessions.get(workspace)?.missionId === missionId) sessions.delete(workspace);

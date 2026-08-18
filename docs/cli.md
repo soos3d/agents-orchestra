@@ -68,6 +68,14 @@ at any time without blocking the loop, and panic stops dispatch immediately.
 | `--saved <name>` | replay a saved mission — goal, envelope, criteria skeleton. Scan and research still re-run. |
 | `--force` | the explicit acknowledgement `--unattended` needs when there is no `--saved`. |
 | `--no-web` | no dashboard. For CI, where binding a port is a nuisance and nobody will open it. |
+| `--harness <id>` | how the workers run: `<transport>/<agent>`, e.g. `acp/claude`. Defaults to what this machine offers — see `doctor`. |
+| `--worker-model <m>` | the model workers run on. `acp/claude` and `acp/codex` pick their own and ignore it; `acp/opencode` honours it. |
+| `--orchestrator-model <m>` | the model the decision points run on, for this mission only. |
+| `--staff <pairs>` | run named decision points on a verified model card: `--staff plan=<card>,research=<card>`. `doctor` is what makes a card offerable; `judge` is not staffable. See [models](./models.md). |
+| `--scan <name>` | let the outcome spec gate on a security scanner (`deepsec`). Off by default — a scan runs an AI agent over the changed files and costs real money per file. Not with `--quick`. |
+| `--research-web` | let the research pass read the web (WebSearch, WebFetch). Off by default; not with `--quick` or `--staff research=<card>`. |
+| `--domain <host>` | a host `--research-web` may fetch (repeatable). WebFetch is held to the list; search is not, because results come from a backend rather than a host. A denied fetch lands in the inbox. |
+| `--env <NAME>` | let this mission's workers read one environment variable, by name (repeatable). Without it a mission plans against mocks and asks. The value is read from your shell, never typed here and never written to the log. |
 
 ### On budgets
 
@@ -150,7 +158,7 @@ orchestra resume <missionId>               # replay the log, reconcile orphans, 
 orchestra forget <missionId>               # delete everything a mission wrote
 orchestra save <missionId> --as <name>     # keep the mission to replay with --saved
 orchestra promote <missionId> <taskId> --as <name>   # keep the agent as a role
-orchestra metrics <missionId> [--json]     # what each decision point cost
+orchestra metrics <missionId> [--json] [--staffing]   # what each decision point cost
 orchestra doctor                           # what is installed, authed, and missing
 ```
 
@@ -161,7 +169,9 @@ declared.
 
 **`orchestra metrics --json`** is the form that matters while tuning, because the point of collecting
 any of it is diffing two runs of the same goal. Spend is attributed per decision point —
-`call:research`, `call:plan` — rather than lumped into one "orchestration" figure.
+`call:research`, `call:plan` — rather than lumped into one "orchestration" figure. Add
+`--staffing` for the model split: per decision point, what it was staffed to, what actually
+answered, tokens, cost, and send-backs.
 
 **`orchestra resume`** is not a repair tool, it is the normal way back in. A mission left at its
 sign-off screen overnight survives a restart and is approved through the same code path an attended

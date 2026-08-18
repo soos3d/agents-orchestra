@@ -235,8 +235,8 @@ export function workspaceForRoots(
  * The config a mission in this workspace runs under.
  *
  * Everything a directory can answer comes from the directory; everything about *this
- * process* — the state dir, the model, the concurrency cap, the gateway — comes from
- * the serve process's own config. `worktreeRoot` is derived per workspace rather than
+ * process* — the state dir, the model — comes from the serve process's own config.
+ * `worktreeRoot` is derived per workspace rather than
  * carried over, because a worktree is a checkout of one repo and cannot be shared
  * across two.
  */

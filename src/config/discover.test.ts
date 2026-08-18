@@ -141,7 +141,6 @@ describe("doctor", () => {
     worktreeRoot: "/work/../.orchestra-worktrees",
     agents: ["claude"],
     orchestratorModel: "fable",
-    maxConcurrency: 4,
   };
 
   test("is ready when a worker is installed and node is new enough", () => {

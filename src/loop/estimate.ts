@@ -20,11 +20,7 @@
 import { type PlannedTask } from "../domain/ledger.js";
 import { type Estimate } from "../domain/mission.js";
 
-export interface EstimateInput {
-  plan: readonly PlannedTask[];
-}
-
-export function estimatePlan({ plan }: EstimateInput): Estimate {
+export function estimatePlan(plan: readonly PlannedTask[]): Estimate {
   return {
     taskCount: plan.length,
     wallMs: criticalPathMs(plan),

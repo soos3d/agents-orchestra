@@ -23,7 +23,7 @@ const task = (
 
 describe("estimatePlan", () => {
   test("counts the tasks", () => {
-    const estimate = estimatePlan({ plan: [task("t1"), task("t2")] });
+    const estimate = estimatePlan([task("t1"), task("t2")]);
 
     assert.equal(estimate.taskCount, 2);
   });
@@ -31,13 +31,13 @@ describe("estimatePlan", () => {
   test("takes the critical path, not the sum, when tasks fan out", () => {
     const plan = [task("t1"), task("t2"), task("t3")];
 
-    assert.equal(estimatePlan({ plan }).wallMs, 60_000);
+    assert.equal(estimatePlan(plan).wallMs, 60_000);
   });
 
   test("adds up a chain", () => {
     const plan = [task("t1"), task("t2", ["t1"]), task("t3", ["t2"])];
 
-    assert.equal(estimatePlan({ plan }).wallMs, 180_000);
+    assert.equal(estimatePlan(plan).wallMs, 180_000);
   });
 
   test("takes the longest branch when two chains converge", () => {
@@ -47,11 +47,11 @@ describe("estimatePlan", () => {
       task("t3", ["t1", "t2"], { estimatedWallMs: 5_000 }),
     ];
 
-    assert.equal(estimatePlan({ plan }).wallMs, 95_000);
+    assert.equal(estimatePlan(plan).wallMs, 95_000);
   });
 
   test("an empty plan costs no wall-clock", () => {
-    assert.equal(estimatePlan({ plan: [] }).wallMs, 0);
+    assert.equal(estimatePlan([]).wallMs, 0);
   });
 
   // The estimate predicts no token figure, and the two tests this replaces asserted
@@ -60,7 +60,7 @@ describe("estimatePlan", () => {
   // because growing in the right direction is not the same as being of any quantity.
   // A silent reintroduction is what this asserts against.
   test("predicts no token figure at all", () => {
-    const estimate = estimatePlan({ plan: [task("t1"), task("t2")] });
+    const estimate = estimatePlan([task("t1"), task("t2")]);
 
     assert.deepEqual(Object.keys(estimate).sort(), ["expectedGates", "taskCount", "wallMs"]);
   });
@@ -68,7 +68,7 @@ describe("estimatePlan", () => {
   test("expects one gate per computer task and none for code", () => {
     const plan = [task("t1"), task("t2", [], { worker: "computer" })];
 
-    assert.equal(estimatePlan({ plan }).expectedGates, 1);
+    assert.equal(estimatePlan(plan).expectedGates, 1);
   });
 
   // validatePlan rejects a cycle before this runs; this is what stops a bug there
@@ -76,6 +76,6 @@ describe("estimatePlan", () => {
   test("terminates on a cycle rather than recursing forever", () => {
     const plan = [task("t1", ["t2"]), task("t2", ["t1"])];
 
-    assert.ok(estimatePlan({ plan }).wallMs >= 0);
+    assert.ok(estimatePlan(plan).wallMs >= 0);
   });
 });

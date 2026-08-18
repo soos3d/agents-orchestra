@@ -28,8 +28,8 @@ foreground command alive, and nothing in the package knows about either.
 
 - **Node 20 or newer.** `MIN_NODE_MAJOR` in `src/config/doctor.ts` is 20, and `orchestra doctor`
   fails the `node` check below it.
-- **git**, if the missions write code. Without a repo `doctor` warns rather than fails — research and
-  computer-use missions need none — but `code` tasks are unavailable.
+- **git**, if the missions write code. Without a repo `doctor` warns rather than fails — research
+  tasks need none — but `code` tasks are unavailable.
 - **`claude` or `codex` on PATH, already logged in.** Log in once interactively over SSH:
   ```bash
   npm i -g @anthropic-ai/claude-code && claude   # log in, then quit
@@ -37,14 +37,15 @@ foreground command alive, and nothing in the package knows about either.
   ```
   `doctor` reports which transports this machine can actually start.
 - **Provider keys exported in the shell that starts `serve`.** There is no dotenv and no env
-  validation layer: `process.env` is read in exactly two places, `src/config/discover.ts` and
-  `src/index.ts`. `discoverConfig` reads `NEBIUS_API_KEY` and `OLLAMA_API_KEY` through
+  validation layer: configuration is read from `process.env` in two places, `src/config/discover.ts`
+  and `src/index.ts`. `discoverConfig` reads `NEBIUS_API_KEY` and `OLLAMA_API_KEY` through
   `readProviderKeys` (the names come from `PROVIDERS` in `src/providers/openaiCompatible.ts`), plus
   the optional overrides `TARGET_REPO`, `ORCHESTRA_STATE_DIR`, `WORKTREE_ROOT`,
-  `ORCHESTRATOR_MODEL`, `MAX_CONCURRENCY`, `ORCHESTRA_CONTAINER_IMAGE` and `ORCHESTRA_GATEWAY_URL`.
-  `src/index.ts` reads `ORCHESTRA_DEBUG`. Every one of them is optional; a variable set in some
-  other shell than the one `serve` was launched from does not exist as far as the process is
-  concerned.
+  `ORCHESTRATOR_MODEL` and `ORCHESTRA_CONTAINER_IMAGE`.
+  `src/index.ts` reads `ORCHESTRA_DEBUG`. `ANTHROPIC_API_KEY` matters on a box with no logged-in
+  CLI session: it authenticates the orchestrator's own calls and is allowlisted into `claude` and
+  `pi` worker environments. Every one of them is optional; a variable set in some other shell than
+  the one `serve` was launched from does not exist as far as the process is concerned.
 
 Then, on the box:
 

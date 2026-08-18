@@ -264,6 +264,37 @@ describe("prepareMission", () => {
       assert.ok(!result.ok && /could never legitimately report success/.test(result.reason));
       assert.equal(types(store).includes("outcome_spec_written"), false);
     });
+
+    // The failure mode under test, seen on a real VPS: two missions printed "The
+    // outcome spec was rejected twice", exited 1, and left a log ending at
+    // `outcome_spec_rejected` — so `mission.json`, which is folded from that log,
+    // still read `specifying` and the dashboard showed a dead mission as working
+    // forever. The process exiting is not a fact the log carries.
+    test("leaves the mission blocked rather than reading as still specifying", async () => {
+      const store = testStore();
+      const vague = {
+        criteria: [{ id: "c1", statement: "make it nicer" }],
+        designNote: "# Design",
+      };
+
+      const result = await prepareMission({
+        store,
+        calls: callsFor({ architect: [vague, vague] }),
+      });
+
+      assert.equal(result.ok, false);
+      assert.equal(store.state().mission.status, "blocked");
+      const last = store.inputs.at(-1);
+      assert.equal(last?.type, "mission_status");
+      assert.ok(
+        last?.type === "mission_status" && /rejected twice/.test(last.reason),
+        "the terminal event has to say what happened",
+      );
+      assert.ok(
+        last?.type === "mission_status" && /Re-run/.test(last.reason),
+        "and what the human can do about it",
+      );
+    });
   });
 
   // Sign-off is the one place blocking pays for itself (§2b): reviewing a plan costs a
@@ -1209,5 +1240,85 @@ describe("the web grant in prepare", () => {
     await prepareMission({ store, calls: callsFor({}) });
 
     assert.equal(store.inputs.some((event) => event.type === "question_asked"), false);
+  });
+});
+
+// The scan (§2b) is the same decision point at a cheaper depth, and it was the half with
+// no gate: the first real VPS mission ran `research: "closed"` and its `scan_completed`
+// carried three `"web"` findings citing `nodejs.org` and MDN, which then entered
+// `factsVerified` before intake asked its first question. Filtering the deep pass alone
+// leaves the recollection in the ledger the deep pass appends to.
+describe("the web grant covers the scan and the send-back research", () => {
+  const webFinding = {
+    claim: "node:test reports TAP by default",
+    source: "https://nodejs.org/api/test.html",
+    sourceKind: "web" as const,
+    confidence: "high" as const,
+  };
+
+  test("a closed mission's scan finding reaches neither the event nor the ledger", async () => {
+    const store = testStore();
+    const warnings: string[] = [];
+
+    await prepareMission({
+      store,
+      calls: callsFor({ scan: aScanResult({ findings: [webFinding] }) }),
+      onWarn: (message) => warnings.push(message),
+    });
+
+    const scanned = store.inputs.find((event) => event.type === "scan_completed");
+    assert.deepEqual((scanned as { findings: unknown[] }).findings, []);
+    // The deep pass's own (codebase) finding is legitimate and stays; nothing sourced to
+    // a URL this mission could not fetch is in the ledger the architect and planner read.
+    assert.equal(
+      store.state().mission.ledger.factsVerified.some((fact) => fact.source.ref.startsWith("http")),
+      false,
+    );
+    assert.match(warnings.join("\n"), /--research-web/);
+  });
+
+  test("a granted scan keeps the host it was granted and drops the one it was not", async () => {
+    const store = testStore([
+      missionCreated({ envelope: anEnvelope({ research: "web", domains: ["nodejs.org"] }) }),
+    ]);
+
+    await prepareMission({
+      store,
+      calls: callsFor({
+        scan: aScanResult({
+          findings: [webFinding, { ...webFinding, source: "https://undici.nodejs.org/#/docs/api/Fetch" }],
+        }),
+      }),
+    });
+
+    const refs = store.state().mission.ledger.factsVerified.map((fact) => fact.source.ref);
+    assert.ok(refs.includes("https://nodejs.org/api/test.html"));
+    // `undici.nodejs.org` is a different machine, which is the rule the live fetch is
+    // refused under.
+    assert.equal(refs.includes("https://undici.nodejs.org/#/docs/api/Fetch"), false);
+  });
+
+  // The send-back path: a quick mission whose plan was refused buys the deep research it
+  // skipped, and that answer went to the ledger with no gate of its own.
+  test("the research a send-back buys is grounded too", async () => {
+    const store = testStore([missionCreated({ quick: true })]);
+    let asked = 0;
+    const human: HumanPort = {
+      askIntake: async () => [],
+      awaitSignoff: async () =>
+        asked++ === 0 ? { kind: "revise", feedback: "smaller steps" } : { kind: "approve" },
+    };
+
+    const calls = callsFor({
+      // Criteria on the scan, so the quick mission's spec is accepted and the only deep
+      // call is the one the send-back buys.
+      scan: aScanResult({ brief: "small job", criteria: [aCriterion()] }),
+      research: [aResearchResult({ findings: [webFinding] })],
+    });
+
+    await prepareMission({ store, calls, human });
+
+    assert.deepEqual(calls.depths, ["scan", "deep"]);
+    assert.deepEqual(store.state().mission.ledger.factsVerified, []);
   });
 });

@@ -37,7 +37,6 @@ const baseConfig = (stateDir: string): DiscoveredConfig => ({
   worktreeRoot: path.join(stateDir, "worktrees"),
   agents: [],
   orchestratorModel: "sonnet",
-  maxConcurrency: 4,
 });
 
 describe("workspaceId", () => {

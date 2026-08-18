@@ -10,8 +10,7 @@ import { describe, test } from "node:test";
 import { type Note } from "../events/fold.js";
 import { emptyLedger } from "../domain/ledger.js";
 import { aMission, aMissionState } from "../testing/fixtures.js";
-import { noteAsFact, pendingNotes } from "./notes.js";
-import { buildProgressInput } from "./prompts.js";
+import { buildProgressInput, noteAsFact, pendingNotes } from "./prompts.js";
 import { reviseLedger } from "./revise.js";
 
 const aNote = (patch: Partial<Note> = {}): Note => ({

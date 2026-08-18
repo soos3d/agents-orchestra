@@ -15,10 +15,9 @@
 // What this deliberately does *not* do yet is bind the worker. The `cli` transport
 // spawns a subscription CLI holding its own default toolset, so today the catalogue
 // governs what synthesis may grant rather than what the subprocess can reach.
-// Enforcement at the worker's own tool boundary is ACP's permission channel (Phase 7)
-// for code and the action classifier (§11) for the browser. The registry has to exist
-// before either, and a spec asking for `Bash` under a read-only envelope should fail
-// at validation now rather than at whichever of those lands first.
+// Enforcement at the worker's own tool boundary is ACP's permission channel.
+// The registry has to exist before that, and a spec asking for `Bash` under a
+// read-only envelope should fail at validation now rather than at the worker.
 //
 // It lives beside `AVAILABLE_TRANSPORTS` for the same reason that list does: this is
 // the file that would have to change to grant a new capability, so the two cannot
@@ -51,20 +50,6 @@ export const TOOL_CATALOGUE: readonly ToolClass[] = [
     id: "net.read",
     tools: ["WebFetch", "WebSearch"],
     summary: "fetch pages from allowlisted hosts",
-  },
-  // Declared with no tools on purpose. An envelope may name a class §11 describes and
-  // Phase 8 builds, and it should resolve to *nothing* rather than to an unknown-class
-  // error: the class is real, the tools are not. A mission that grants `browser.commit`
-  // today therefore grants no capability at all, which is the honest answer.
-  {
-    id: "browser.read",
-    tools: [],
-    summary: "navigate and read a real browser session (Phase 8)",
-  },
-  {
-    id: "browser.commit",
-    tools: [],
-    summary: "submit, send, pay — gated in code, never auto (Phase 8)",
   },
 ];
 

@@ -1,8 +1,8 @@
 # How it got here
 
 Background only. Nothing in this file is needed to make a correct change — it is here so a session
-can answer "why does this subsystem exist" without opening `PLAN.md`. `PLAN.md` §3 (what landed),
-§4 (decisions — do not reopen) and §7 (defects 1–42) are the authority.
+can answer "why does this subsystem exist". For what to do next, `plans/v2-plan.md` is the
+authority; for why that order, `plans/ecosystem-analysis.md`.
 
 ## Phases
 
@@ -16,12 +16,10 @@ can answer "why does this subsystem exist" without opening `PLAN.md`. `PLAN.md` 
   loading are optional deps wired in `runCommand.ts` and `buildLoopDeps`, each with a
   composition-root test. Replays of a saved mission re-run scan and research; `--unattended`
   requires `--saved` or `--force`.
-- **6 — `src/channel/`**, the carrier-independent trust core: `trust.ts` (single-use nonce, bound
-  sender identity, replay-approves-once as a property of the store), `cards.ts` (a `credential` gate
-  has no card; `GateCard` has no field an image could ride in), and the `Carrier` interface. The
-  serve process mirrors a live mission's open questions through an optional `channel` dep; no
-  concrete carrier ships yet. `doctor` refuses a non-loopback `ORCHESTRA_GATEWAY_URL` — the spike
-  showed the client would allow remote `wss://`, so that refusal is load-bearing.
+- **6 — `src/channel/` (since deleted).** The carrier-independent trust core (`trust.ts`,
+  `cards.ts`, the `Carrier` interface) was built, no concrete carrier ever shipped, and the whole
+  module was removed from the tree in August 2026 — cleanly; nothing in `src/` references it. A
+  future phone/chat carrier starts from zero, which the v2 plan is fine with ("no phone mirror").
 - **7 — `src/workers/acp/`**, ACP as a worker transport. See `.claude/notes/workers.md`.
 - **P1–P5, on top of 7.** A criterion checked `false` is re-checkable (`loop/criteria.ts`); every
   task has an artifact directory it may write to; decision points run in the target repo rather than
@@ -46,19 +44,23 @@ said nothing, and one real run said everything.
 
 ## Still open
 
-Defect 42 (a worker inherits every secret on the machine — `.claude/notes/workers.md`). Kill-task,
-the retention sweep, artifact content serving, envelope editing on compose, and the concrete carrier
-are unbuilt; panic has no browser session to close until Phase 8. Next track is U8, then publish,
-then Phase 8 — `PLAN.md` §2.
+(Corrected 2026-08-18 — three items previously listed here are done: defect 42 is closed by
+`workers/childEnv.ts`, artifact content serving landed with the dashboard's `show` frame, and
+server-side resume exists.) Still genuinely open: kill-task, the scheduled retention sweep,
+envelope editing on compose, streaming live worker activity, and any carrier (`src/channel/` was
+deleted; see Phases above). The active plan is `plans/v2-plan.md` (receipts first, then the
+Tuesday path, then `verify`/import); the definitive open-items list is
+`plans/incomplete-tasks.md`.
 
 ## The documents
 
-`specs.md` and `PLAN.md` live on the maintainer's machine and are gitignored. `ROADMAP.md`,
-`NEXT-PLAN.md` and `PHASE-8-PLAN.md` no longer exist — `PLAN.md` consolidated them, and §1.1 records
-what they disagreed about rather than quietly fixing it.
+Planning documents live in `plans/` (gitignored): `v2-plan.md` and `ecosystem-analysis.md` are
+active; `plans/archive/` holds the superseded ones (`PLAN-NEXT.md`, the condensed `specs.md`,
+`SPECS-AUDIT.md`, session handoffs). The earlier generations — `ROADMAP.md`, `NEXT-PLAN.md`,
+`PHASE-8-PLAN.md`, `PLAN.md`, the long-form spec — no longer exist. The still-accurate conceptual
+content of `specs.md` was folded into `docs/architecture.md` (2026-08-18, with the audit's
+corrections applied).
 
-**The `§N` citations in the source no longer resolve.** `specs.md` was condensed and renumbered into
-nine sections; the code cites twenty-odd, including several that the current file has no counterpart
-for at all (`§9.4`, `§9.5`, `§17`, `§12`…). `SPECS-AUDIT.md` (16 Aug 2026) has the full mapping
-table and the three ways out. Until one is chosen: read the comment beside a citation, not the
-number.
+**The `§N` citations in the source resolve against nothing on disk.** They referred to the retired
+long-form spec. `CLAUDE.md` carries the subject map; `plans/archive/SPECS-AUDIT.md` (16 Aug 2026)
+has the full audit. Read the comment beside a citation, not the number.

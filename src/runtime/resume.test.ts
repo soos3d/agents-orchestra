@@ -1,6 +1,5 @@
-// §9.2. The rule that matters most here is the one for `computer` tasks: a worker
-// that died mid-flight may already have submitted the form, so it is never
-// auto-retried whatever else is true.
+// §9.2. Replay rebuilds state; this file decides what to do with processes that
+// died mid-flight.
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { fold } from "../events/fold.js";
@@ -11,11 +10,11 @@ import { type Task } from "../domain/task.js";
 
 const orchestrator = { missionId: "m1", actor: "orchestrator" } as const;
 
-const aComputerTask = (patch: Partial<Task> = {}): Task =>
+const aResearchTask = (patch: Partial<Task> = {}): Task =>
   ({
     ...aCodeTask(),
-    id: "t9",
-    worker: "computer",
+    id: "t2",
+    worker: "research",
     branch: undefined,
     owns: undefined,
     ...patch,
@@ -75,23 +74,11 @@ describe("reconcileOrphans", () => {
   });
 
   test("requeues a research task, which is cheap to redo", async () => {
-    const research = { ...aCodeTask(), id: "t2", worker: "research" } as unknown as Task;
-    const state = stateWith([research], { t2: "running" });
+    const state = stateWith([aResearchTask()], { t2: "running" });
 
     const [decision] = (await reconcileOrphans(state, noCommits)).decisions;
 
     assert.equal(decision.to, "todo");
-  });
-
-  // The rule that exists because a side effect may already have landed.
-  test("blocks a computer task rather than auto-retrying it", async () => {
-    const state = stateWith([aComputerTask()], { t9: "running" });
-
-    const [decision] = (await reconcileOrphans(state, withCommits)).decisions;
-
-    assert.equal(decision.to, "blocked");
-    assert.equal(decision.countsAsAttempt, false);
-    assert.match(decision.action, /a human must confirm/);
   });
 
   test("treats a task orphaned mid-verification as an orphan too", async () => {
@@ -101,9 +88,9 @@ describe("reconcileOrphans", () => {
   });
 
   test("emits a resumed event naming every orphan, then one status event each", async () => {
-    const state = stateWith([aCodeTask({ worktree: "/tmp/wt" }), aComputerTask()], {
+    const state = stateWith([aCodeTask({ worktree: "/tmp/wt" }), aResearchTask()], {
       t1: "running",
-      t9: "running",
+      t2: "running",
     });
 
     const { events } = await reconcileOrphans(state, noCommits);
@@ -112,7 +99,7 @@ describe("reconcileOrphans", () => {
     assert.equal(events.length, 3);
     assert.deepEqual(
       events.slice(1).map((e) => e.taskId),
-      ["t1", "t9"],
+      ["t1", "t2"],
     );
   });
 
@@ -141,7 +128,7 @@ describe("liveWorktrees", () => {
   });
 
   test("ignores tasks that never had a worktree", () => {
-    const state = stateWith([aComputerTask()], { t9: "running" });
+    const state = stateWith([aResearchTask()], { t2: "running" });
 
     assert.deepEqual(liveWorktrees(state), []);
   });

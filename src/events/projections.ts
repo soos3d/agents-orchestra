@@ -4,8 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DIR_MODE, writeFileAtomic } from "../config/hygiene.js";
-import { type Event } from "./schema.js";
-import { fold, type MissionState } from "./fold.js";
+import { type MissionState } from "./fold.js";
 
 export const MISSION_FILE = "mission.json";
 export const TASKS_FILE = "tasks.json";
@@ -24,10 +23,4 @@ function writeJsonAtomic(file: string, value: unknown): void {
 export function writeProjections(missionDir: string, state: MissionState): void {
   writeJsonAtomic(path.join(missionDir, MISSION_FILE), state.mission);
   writeJsonAtomic(path.join(missionDir, TASKS_FILE), state.tasks);
-}
-
-export function rebuildProjections(missionDir: string, events: readonly Event[]): MissionState {
-  const state = fold(events);
-  writeProjections(missionDir, state);
-  return state;
 }

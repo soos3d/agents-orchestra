@@ -28,17 +28,6 @@ const ORPHAN_STATUSES: readonly TaskStatus[] = ["running", "verifying"];
 async function decide(task: Task, probe: WorktreeProbe): Promise<OrphanDecision> {
   const base = { taskId: task.id, from: task.status };
 
-  // Never auto-retried. A side effect on a real app may already have landed, and a
-  // human confirms the state of the world before it runs again.
-  if (task.worker === "computer") {
-    return {
-      ...base,
-      to: "blocked",
-      action: "computer task interrupted — a human must confirm what already happened",
-      countsAsAttempt: false,
-    };
-  }
-
   if (isCodeTask(task) && task.worktree && (await probe.hasCommits(task))) {
     return {
       ...base,

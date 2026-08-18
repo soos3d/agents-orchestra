@@ -114,9 +114,8 @@ export const unattendedHuman = (): HumanPort => ({
  *
  * §10's rule is one inbox rather than three surfaces, and this is the same rule one
  * level down. A mission started in a terminal that also serves a dashboard has two
- * places the same approval can come from, and making the human pick the right one
- * before they know which they will be near is the problem the phone mirror exists to
- * solve, not one to introduce here.
+ * places the same approval can come from. Making them pick one surface in advance
+ * is not a problem this function should introduce.
  *
  * `Promise.any` rather than `Promise.race`, and the difference is the whole point: a
  * terminal with no tty rejects immediately, and a race would take that rejection as

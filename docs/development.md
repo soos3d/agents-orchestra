@@ -2,7 +2,7 @@
 
 ```bash
 npm run build     # tsc → dist/, then the dashboard bundle → dist/web/app.js
-npm test          # 1191 tests, ~95s
+npm test          # ~1,760 tests, ~110s
 npm run typecheck
 npm run dev -- doctor
 ```
@@ -37,12 +37,13 @@ That applies to the roster too, and to its whole reason for existing. The suite 
 offered, resolved, and composed; it cannot tell you the arrangement saves anything. Run the same goal
 twice — once with `agents/` moved aside — and diff `call:synthesize` in `orchestra metrics --json`.
 
-## On the design document
+## On the `§N` citations
 
-The design document and the roadmap are kept privately and are not part of this repository. Code
-comments cite them by section (`§9.1`) and by defect number ("defect 30"), and those citations are
-left in deliberately: each one says *why* a piece of code is shaped the way it is, and the reason is
-usually a bug that a real mission found.
+Code comments cite a design document by section (`§9.1`) and by defect number ("defect 30"). The
+document those sections belonged to has been retired; the citations are left in deliberately, as
+markers: each one says *why* a piece of code is shaped the way it is, and the reason is usually a
+bug that a real mission found. Read the comment beside a citation and the test header, not the
+number — `CLAUDE.md` carries a subject map for the numbers.
 
-You do not need either document to run a mission or to send a patch —
+You do not need any design document to run a mission or to send a patch —
 [`CONTRIBUTING.md`](../CONTRIBUTING.md) and `CLAUDE.md` carry what a change has to respect.
