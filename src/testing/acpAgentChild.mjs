@@ -8,13 +8,20 @@
 // field, including the empty first `agent_message_chunk` and the `tool_call` that arrives
 // once with an empty `rawInput` and again with the real one.
 //
-// Scenario comes from argv[2] or FAKE_ACP_SCENARIO; the texts come from the env so a test
-// can make the final message a valid WorkerReport without editing this file.
+// Scenario comes from argv[2] or FAKE_ACP_SCENARIO; the texts come from the env
+// (or `*_FILE` when the payload would blow Linux ARG_MAX) so a test can make the
+// final message a valid WorkerReport without editing this file.
+import { readFileSync } from "node:fs";
 import process from "node:process";
 
+const fromEnvOrFile = (key, fallback) =>
+  process.env[`${key}_FILE`] !== undefined
+    ? readFileSync(process.env[`${key}_FILE`], "utf8")
+    : (process.env[key] ?? fallback);
+
 const scenario = process.argv[2] ?? process.env.FAKE_ACP_SCENARIO ?? "happy";
-const finalText = process.env.FAKE_ACP_FINAL_TEXT ?? "Done.";
-const rejectedText = process.env.FAKE_ACP_REJECTED_TEXT ?? "I was not allowed to do that.";
+const finalText = fromEnvOrFile("FAKE_ACP_FINAL_TEXT", "Done.");
+const rejectedText = fromEnvOrFile("FAKE_ACP_REJECTED_TEXT", "I was not allowed to do that.");
 const writePath = process.env.FAKE_ACP_WRITE_PATH ?? "/tmp/fake-acp-hello.txt";
 
 const SESSION_ID = "e638581a-6861-40a8-8840-9f6e27ea0858";

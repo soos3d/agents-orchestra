@@ -13,6 +13,10 @@
 // it also means the fake cannot drift into agreeing with our parsers by sharing their
 // code. Its frames are copied from the captures in `acp-transcripts/`; when a capture is
 // added or an agent changes, the child is the second file to update after `protocol.ts`.
+import { randomUUID } from "node:crypto";
+import { writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
@@ -57,17 +61,31 @@ export interface FakeAcpAgent {
 const CHILD = fileURLToPath(new URL("./acpAgentChild.mjs", import.meta.url));
 
 /**
- * Describe a scripted agent. Pure — nothing is spawned here, so a test decides the cwd,
+ * Describe a scripted agent. Nothing is spawned here, so a test decides the cwd,
  * the timeout, and the abort signal through `spawnDuplex` like any other worker.
  */
 export function fakeAcpAgent(options: FakeAcpAgentOptions): FakeAcpAgent {
   const env: NodeJS.ProcessEnv = { FAKE_ACP_SCENARIO: options.scenario };
-  if (options.finalText !== undefined) env["FAKE_ACP_FINAL_TEXT"] = options.finalText;
-  if (options.rejectedText !== undefined) env["FAKE_ACP_REJECTED_TEXT"] = options.rejectedText;
+  if (options.finalText !== undefined) putText(env, "FAKE_ACP_FINAL_TEXT", options.finalText);
+  if (options.rejectedText !== undefined) putText(env, "FAKE_ACP_REJECTED_TEXT", options.rejectedText);
   if (options.writePath !== undefined) env["FAKE_ACP_WRITE_PATH"] = options.writePath;
   if (options.unknownModel !== undefined) env["FAKE_ACP_UNKNOWN_MODEL"] = options.unknownModel;
 
   // The scenario rides on argv as well as the env so a failing spawn is readable in a
   // process listing rather than being a bare `node <path>`.
   return { command: process.execPath, args: [CHILD, options.scenario], env };
+}
+
+// Linux ARG_MAX is argv+env and MAX_ARG_STRLEN is 128KiB; a 400k payload in the
+// env is `spawn E2BIG` on CI. Short strings stay in env so existing tests do not change.
+const ENV_TEXT_LIMIT = 32_768;
+
+function putText(env: NodeJS.ProcessEnv, key: string, value: string): void {
+  if (value.length <= ENV_TEXT_LIMIT) {
+    env[key] = value;
+    return;
+  }
+  const file = join(tmpdir(), `fake-acp-${key}-${process.pid}-${randomUUID()}`);
+  writeFileSync(file, value, { encoding: "utf8", mode: 0o600 });
+  env[`${key}_FILE`] = file;
 }
